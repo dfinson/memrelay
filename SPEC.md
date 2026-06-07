@@ -425,7 +425,7 @@ The daemon determines context from the session it's observing:
 
 ### 5.5 Graph Lifecycle
 
-- **Compaction**: Triggered by retrieval quality degradation. When `memory_recall` latency exceeds acceptable bounds or precision drops, the daemon runs a compaction pass: oldest episodes with the lowest reference frequency are summarized into compressed episodes.
+- **Compaction**: Triggered by retrieval quality degradation. When `memory_recall` latency exceeds acceptable bounds or precision drops (measured by tracking query-to-result relevance over time), the daemon runs a compaction pass: oldest episodes with the lowest reference frequency are summarized into compressed episodes. The graph self-regulates — busier namespaces compact more aggressively.
 - **Forgetting**: `memrelay forget --repo X` deletes episodes tagged with that repo. `memrelay forget --namespace X` deletes the entire namespace graph.
 - **Staleness**: Graphiti's temporal edges handle contradiction. The plugin adds `last_commit_sha` metadata to file-related episodes for explicit invalidation on major refactors.
 
@@ -501,6 +501,19 @@ class LocalEmbedder(EmbedderClient):
 - Model auto-downloads on first run (~67MB, cached in `~/.memrelay/models/`)
 - BAAI/bge-small-en-v1.5: 384-dim, strong retrieval quality, fast on CPU
 - No GPU needed, works offline after first download
+
+**Trade-offs: Copilot vs Direct API**
+
+|  | Copilot (default) | Direct API (override) |
+| --- | --- | --- |
+| Setup | Zero config | Requires API key |
+| Cost | Included in subscription | Pay-per-token |
+| Structured output | Schema-in-prompt + parse | Native JSON mode |
+| Latency | Slightly higher (process overhead) | Lower |
+| Rate limits | Copilot's limits apply | Provider limits |
+| Embeddings | Local (fastembed) | Same provider |
+
+fastembed uses ONNX Runtime (C++ inference) — fast even on modest hardware. No GPU needed.
 
 ### 6.4 Override: Direct API Keys
 
@@ -636,6 +649,35 @@ dependencies = [
     "structlog>=23.0",
 ]
 ```
+
+---
+
+## §8.1 — Relationship to tracemill
+
+memrelay is a simpler consumer of tracemill than CodePlane. The division of responsibilities:
+
+| Concern | Where it lives |
+| --- | --- |
+| Event parsing, enrichment, pipeline | tracemill |
+| Storage sinks (SQLite, OTEL export) | tracemill (built-in) |
+| Storage sink (Graphiti) | memrelay (`GraphitiSink`) |
+| Job orchestration, approvals, UI, SSE | CodePlane only |
+| Memory retrieval, MCP server, daemon | memrelay only |
+| Session file watching, process management | Each consumer owns its own |
+
+memrelay's daemon extracts and simplifies the session observation pattern from CodePlane: no RuntimeService, no job creation, no approval flows. Just discover sessions and tail their events.
+
+The `GraphitiSink` is the only piece memrelay adds to the tracemill pipeline. Everything else — adapters, enricher, pipeline orchestration — comes from tracemill.
+
+## §8.2 — What memrelay Does NOT Do
+
+- **Event parsing or enrichment.** That's tracemill's job.
+- **Job orchestration.** No jobs, queues, or scheduling — just continuous observation.
+- **Approval flows.** No user confirmations for memory operations.
+- **UI.** No web interface, no dashboards, no visualization.
+- **SSE streaming.** No real-time event broadcast.
+- **Process management for agents.** Does not spawn or manage Copilot CLI processes.
+- **Replace Graphiti.** Does not reimplement entity extraction, graph operations, or temporal reasoning. Graphiti is the memory engine; memrelay is the integration layer.
 
 ---
 
