@@ -111,7 +111,7 @@ Each agent discovers MCP servers through its own config file; registration is a 
 {
   "mcpServers": {
     "memrelay": {
-      "type": "stdio",
+      "type": "local",
       "command": "memrelay",
       "args": ["mcp"],
       "env": {},
@@ -120,6 +120,8 @@ Each agent discovers MCP servers through its own config file; registration is a 
   }
 }
 ```
+
+> **Note:** Copilot CLI labels stdio subprocess servers `"type": "local"` (not `"stdio"`); `memrelay init` writes `local` accordingly — see `src/memrelay/providers/copilot.py`.
 
 Other agents use the same command with their own config location (Claude Code, Cursor/Continue, Codex, …). The entry is identical — memrelay's MCP server is agent-neutral. The built-in GitHub MCP server runs alongside — no conflict. Changes take effect without restarting the agent. Agents that do not speak MCP can still be **observed** (ingestion only); they simply have no recall channel until they add MCP support.
 
@@ -132,29 +134,54 @@ memrelay ingests from and serves to any agent behind a single abstraction. An `A
 | # | Responsibility | What it supplies |
 | --- | --- | --- |
 | 1 | **Source + mapping** | Which TraceForge `Source` reads the agent's on-disk (or live) trace, plus the TraceForge mapping/pre-parser that normalizes it to `SessionEvent`. |
-| 2 | **LLM strategy** | How Graphiti's extraction LLM is satisfied: `borrow-host` (reuse the agent's own model, zero-key), `byo-key`, or `local` (§6). |
+| 2 | **LLM strategy** | How Graphiti's extraction LLM is satisfied — a lightweight `LLMStrategyHint` advertising `borrow-host` (reuse the agent's own model, zero-key) or `byo-key`; a `local` strategy is planned (§6, [#64](https://github.com/dfinson/memrelay/issues/64)). |
 | 3 | **Serving / registration** | How the agent discovers the memrelay MCP server (which config file, what merge rules). |
 
 Everything else — episode assembly, spool, graph, retrieval, formatting — sits *below* `SessionEvent` and is written **once**, agent-agnostic.
 
 ```python
-class AgentProvider(Protocol):
-    id: str                                   # "copilot", "claude", "codex", …
-    def make_source(self) -> Source: ...      # TraceForge Source (sqlite / file_watch / sse / …)
-    def make_adapter(self) -> Adapter: ...    # MappedJsonAdapter(mapping) + optional pre-parser
-    def llm_strategy(self) -> LLMStrategy: ...
-    def register(self) -> None: ...           # write MCP config for this agent
+import abc
+from collections.abc import Iterable, Iterator
+from pathlib import Path
+
+class AgentProvider(abc.ABC):                 # an abc.ABC, not a Protocol — conformance
+    id: str                                   # is enforced at instantiation (E12)
+
+    @classmethod
+    @abc.abstractmethod
+    def from_home(cls, home: str | Path | None = None) -> "AgentProvider": ...
+    @abc.abstractmethod
+    def is_present(self) -> bool: ...                     # cheap auto-detect check
+    @abc.abstractmethod
+    def make_source(self, session_id=None, *, path=None): ...   # TraceForge Source
+    @abc.abstractmethod
+    def make_adapter(self, session_id: str): ...          # MappedJsonAdapter + optional pre-parser
+    @abc.abstractmethod
     def discover_sessions(self) -> Iterable[SessionRef]: ...
+    @abc.abstractmethod
+    def read_raw(self, ref: SessionRef) -> Iterator: ...  # raw records for the adapter
+    @abc.abstractmethod
+    def llm_strategy(self) -> LLMStrategyHint: ...         # metadata only (§6.2)
+    @property
+    @abc.abstractmethod
+    def mcp_config_path(self) -> Path: ...                # the agent's MCP registry file
+    @abc.abstractmethod
+    def mcp_server_entry(self, *, command="memrelay", args=("mcp",)) -> dict: ...
+    @abc.abstractmethod
+    def register(self, *, command="memrelay", args=("mcp",)) -> Path: ...
 ```
 
-**Built-in providers.** TraceForge already ships mappings for ~18 agents. memrelay wraps them progressively:
+`SessionRef` and `LLMStrategyHint` are small memrelay-owned dataclasses (traceforge 0.1.0 ships neither). `AgentProvider` is an `abc.ABC` (**not** a `Protocol`) so a subclass that omits any method cannot be instantiated or registered.
 
-- **Reference:** Copilot CLI (`SqliteSource` → `CopilotPreParser` → `copilot` mapping; borrow-host LLM).
-- **Second:** Claude Code (`claude` mapping) — proves the seam holds with no core changes.
+**Registration & discovery.** A provider joins the registry by decorating its class with `@register` (`memrelay.providers.registry`). `get_registry()` lazily imports every sibling module under `memrelay.providers` via `pkgutil`, so a new `providers/<agent>.py` self-registers with **no edit to any central list**. The registry resolves a provider three ways: by explicit id (`create`), by auto-detection (`detect` / `resolve` — the first agent whose `is_present()` is true, falling back to the default `copilot`), or as the default. Providers are built through the uniform `from_home(home=None)` classmethod.
+
+**Built-in providers.** TraceForge already ships mappings for ~18 agents; memrelay wraps them progressively. **Only Copilot CLI ships today** — the reference provider (canonical `copilot.yaml` mapping over per-session `events.jsonl`, with the SQLite `turns` → `CopilotPreParser` → `copilot_markdown` fallback; borrow-host LLM). The rest are planned:
+
+- **Next:** Claude Code (`claude` mapping) — proves the seam holds with no core changes ([#70](https://github.com/dfinson/memrelay/issues/70)).
 - **Coding agents:** Codex, Cursor/Continue, Cline, Aider, Amazon Q, Goose, OpenCode, OpenHands, SWE-agent, Antigravity.
 - **Framework runtimes (opt-in, live sources):** CrewAI, LangGraph, Microsoft Agent Framework, OpenAI Agents, Pydantic AI, smolagents — via `http_poll` / `sse`.
 
-**Auto-detection.** `memrelay init` / `status` uses TraceForge's `auto_detect` plus the provider registry to report which agents are present on the machine and wire them automatically. Unknown or opted-out agents are skipped.
+**Auto-detection.** `memrelay init` / `status` uses the provider registry's `detect()` — each provider's cheap `is_present()` check — to report which agents are present on the machine and wire them automatically. Unknown or opted-out agents are skipped.
 
 ---
 
@@ -421,7 +448,7 @@ No force-injection. No invisible context manipulation. The agent decides.
 A **namespace** is the unit of memory aggregation. All episodes within a namespace form one connected graph. Repos are assigned to namespaces; memory flows freely within a namespace but not across them.
 
 ```toml
-# ~/.config/memrelay/config.toml
+# ~/.memrelay/config.toml   (also discoverable at ~/.config/memrelay/config.toml)
 
 [namespaces.default]
 repos = ["dfinson/codeplane", "dfinson/codeplane-docs"]
@@ -431,6 +458,8 @@ repos = ["dfinson/dotfiles", "dfinson/scripts"]
 ```
 
 If unconfigured, the default namespace is inferred from the GitHub org/owner of the repo being observed. All repos under the same owner share memory automatically.
+
+> **Not yet wired:** the config-driven `[namespaces.*]` repo→namespace map is planned but **not currently threaded into recall** — the MCP server resolves the namespace with no config map today (`src/memrelay/mcp/server.py`). Owner-inference and the machine-username fallback (§5.2) do work now.
 
 ```python
 # Graphiti group_id = namespace name
@@ -478,7 +507,7 @@ The daemon determines context from the session it's observing:
 ### 5.5 Graph Lifecycle
 
 - **Compaction**: Triggered by retrieval quality degradation. When `memory_recall` latency exceeds acceptable bounds or precision drops (measured by tracking query-to-result relevance over time), the daemon runs a compaction pass: oldest episodes with the lowest reference frequency are summarized into compressed episodes. The graph self-regulates — busier namespaces compact more aggressively.
-- **Forgetting**: `memrelay forget --repo X` deletes episodes tagged with that repo. `memrelay forget --namespace X` deletes the entire namespace graph.
+- **Forgetting**: `memrelay forget --repo X` deletes episodes tagged with that repo. `memrelay forget --namespace X` deletes the entire namespace graph. *(Planned — `forget` is a stub today; see §7.)*
 - **Staleness**: Graphiti's temporal edges handle contradiction. The plugin adds `last_commit_sha` metadata to file-related episodes for explicit invalidation on major refactors.
 
 ---
@@ -488,7 +517,9 @@ The daemon determines context from the session it's observing:
 ### 6.1 Default Stack (Zero API Keys)
 
 ```toml
-# ~/.config/memrelay/config.toml (auto-generated on first run)
+# ~/.memrelay/config.toml
+# Written by `memrelay init` under ~/.memrelay; the reader also searches
+# $XDG_CONFIG_HOME/memrelay/ and ~/.config/memrelay/ (see src/memrelay/config.py).
 
 [graph]
 backend = "kuzu"
@@ -496,7 +527,9 @@ path = "~/.memrelay/graph.db"
 
 [llm]
 # Default strategy: borrow-host — reuse the agent's own model (zero API keys).
-# Alternatives: strategy = "byo-key" (litellm/OpenAI/Anthropic) or "local" (Ollama/llama.cpp).
+# Alternative: strategy = "byo-key" — graphiti's native OpenAIClient
+# (OpenAI or any OpenAI-compatible endpoint via OPENAI_BASE_URL). A "local"
+# strategy (Ollama/llama.cpp) is planned but not yet implemented (#64).
 strategy = "borrow-host"
 host = "copilot"          # which host model to borrow (provider-detected)
 
@@ -504,9 +537,17 @@ host = "copilot"          # which host model to borrow (provider-detected)
 # Default: local ONNX model via fastembed. No API keys.
 provider = "local"
 model = "BAAI/bge-small-en-v1.5"   # 384-dim, CPU, ~67MB
+
+[ingest]
+# Transport-only by default: the phase/boundary ONNX inferencers are off for a
+# lean, deterministic, offline pipeline (§3.3).
+enable_phase = false
+enable_boundary = false
 ```
 
-The default stack requires **zero API keys** when a borrow-host agent (e.g. Copilot) is present — it reuses that agent's model. The byo-key and local strategies need no host agent at all.
+The default stack requires **zero API keys** when a borrow-host agent (e.g. Copilot) is present — it reuses that agent's model. The byo-key strategy needs no host agent at all (a fully local `local` strategy is planned — [#64](https://github.com/dfinson/memrelay/issues/64)).
+
+> **Backend caveat:** Kuzu is memrelay's committed graph backend today, but it is deprecated upstream in graphiti-core 0.29.2; tracking a successor is [#76](https://github.com/dfinson/memrelay/issues/76).
 
 ### 6.2 LLM Strategy (pluggable)
 
@@ -515,10 +556,10 @@ Graphiti requires an LLM for entity extraction, edge extraction, deduplication, 
 | Strategy | How | Keys | Best for |
 | --- | --- | --- | --- |
 | `borrow-host` | Reuse the host agent's own model via a background process (e.g. Copilot CLI) | None | Anyone already running a subscription agent |
-| `byo-key` | Call OpenAI/Anthropic/etc. directly via litellm | Yes | Users wanting native structured output / lowest latency |
-| `local` | Local model server (Ollama / llama.cpp) | None | Offline / privacy-sensitive setups |
+| `byo-key` | Call OpenAI (or any OpenAI-compatible endpoint via `OPENAI_BASE_URL`) directly through graphiti-core's native `OpenAIClient` | Yes | Users wanting native structured output / lowest latency |
+| `local` *(planned — [#64](https://github.com/dfinson/memrelay/issues/64))* | Local model server (Ollama / llama.cpp) | None | Offline / privacy-sensitive setups |
 
-All three implement the same `LLMClient` interface, so nothing downstream of extraction cares which is active. The reference `borrow-host` implementation spawns a background agent process:
+All three share the same `LLMClient` interface, so nothing downstream of extraction cares which is active (the `local` client is a deferred stub today — [#64](https://github.com/dfinson/memrelay/issues/64)). The reference `borrow-host` implementation spawns a background agent process:
 
 ```python
 class BorrowHostLLMClient(LLMClient):
@@ -619,10 +660,14 @@ memrelay init          # First-time setup: create dirs, generate config, registe
 memrelay start         # Start the daemon (background process)
 memrelay stop          # Stop the daemon gracefully
 memrelay status        # Show daemon health: sessions observed, episodes ingested, spool depth
+memrelay observe       # Replay a discovered session through the pipeline into the spool
+                       #   options: --session ID, --spool PATH, --copilot-home PATH
+memrelay config        # Show current configuration
+
+# Planned — not yet implemented (currently stubs):
 memrelay forget --repo <owner/name>       # Delete all episodes from a specific repo
 memrelay forget --namespace <name>        # Delete entire namespace graph
 memrelay seed          # Ingest git history as episodes (bootstrap memory for existing repos)
-memrelay config        # Show current configuration
 ```
 
 All commands use `click` or `typer` for CLI parsing. The `memrelay` entry point is defined in `pyproject.toml`:
@@ -647,62 +692,63 @@ memrelay/
 │
 ├── src/memrelay/
 │   ├── __init__.py
-│   ├── __main__.py             # CLI: init, start, stop, status, forget, seed, config
+│   ├── __main__.py             # entry point → memrelay.cli:main
+│   ├── cli.py                  # CLI: init, start, stop, status, observe, mcp, config (forget/seed = stubs)
+│   ├── config.py               # Config loading (TOML, defaults, env + XDG discovery)
 │   │
-│   ├── daemon/                 # Background process (owns Graphiti + Kuzu)
+│   ├── daemon/                 # Background process (owns the engine + Kuzu; query API for MCP)
 │   │   ├── __init__.py
-│   │   ├── server.py           # Unix socket / named pipe listener (query API for MCP)
-│   │   ├── watcher.py          # Session discovery + file tailing
-│   │   ├── filter.py           # Visibility-based filtering
-│   │   ├── assembler.py        # SessionEvent → episode assembly
+│   │   ├── lifecycle.py        # start/stop/status, PID + health probing, foreground runner
+│   │   ├── protocol.py         # socket method schema (search/detail/note/health) + StubBackend
+│   │   ├── runtime.py          # builds the MemoryEngine, hosts the spool → engine ingester
+│   │   ├── server.py           # accept loop, request dispatch, graceful shutdown
+│   │   └── transport.py        # per-OS endpoint: Unix socket / Windows named pipe
+│   │
+│   ├── engine/                 # Graphiti wrapper (used by the daemon only)
+│   │   ├── __init__.py
+│   │   ├── graphiti.py         # MemoryEngine — config-driven Graphiti init (backend/LLM/embedder)
+│   │   ├── kuzu_backend.py     # embedded Kuzu driver wiring (graphiti-core 0.29.2)
+│   │   ├── embedder.py         # LocalEmbedder — fastembed ONNX (key-less)
+│   │   └── llm/                # Pluggable LLM strategies (§6.2)
+│   │       ├── __init__.py
+│   │       ├── strategy.py     # strategy registry + selection (borrow-host / byo-key / local)
+│   │       ├── borrow_host.py  # BorrowHostLLMClient — reuse host agent's model
+│   │       ├── byo_key.py      # ByoKeyLLMClient — graphiti's native OpenAIClient
+│   │       └── local.py        # LocalLLMClient — Ollama / llama.cpp (deferred, #64)
+│   │
+│   ├── ingest/                 # SessionEvent → episode → durable spool → Graphiti
+│   │   ├── __init__.py
+│   │   ├── episode.py          # the episode record that crosses the spool
+│   │   ├── graphiti_sink.py    # GraphitiSink + the `observe` runner (visible events → episodes)
+│   │   ├── console_sink.py     # debug StorageSink (walking-skeleton)
 │   │   ├── spool.py            # SQLite durable queue + cursor tracking
-│   │   └── ingester.py         # Spool → Graphiti (batched, retried, backoff)
+│   │   ├── ingester.py         # spool → Graphiti (batched, retried, backoff)
+│   │   └── fixture_runner.py   # replay a Copilot events.jsonl through traceforge (no Graphiti)
 │   │
 │   ├── mcp/                    # Stdio subprocess (spawned by any MCP agent)
 │   │   ├── __init__.py
 │   │   ├── server.py           # MCP lifecycle, stdio transport
-│   │   ├── client.py           # Connects to daemon socket for queries
+│   │   ├── client.py           # thin client → daemon socket (stateless)
 │   │   ├── tools.py            # memory_recall, memory_detail, memory_note
-│   │   └── format.py           # Results → markdown (graph-as-map, density tiers)
+│   │   ├── namespace.py        # namespace + repo resolution (§5.2)
+│   │   └── format.py           # results → markdown (graph-as-map)
 │   │
-│   ├── engine/                 # Graphiti wrapper (used by daemon only)
-│   │   ├── __init__.py
-│   │   ├── client.py           # Config-driven Graphiti init (backend/LLM/embedder)
-│   │   ├── llm/                # Pluggable LLM strategies (§6.2)
-│   │   │   ├── borrow_host.py  # BorrowHostLLMClient — reuse host agent's model
-│   │   │   ├── byo_key.py      # ByoKeyLLMClient — litellm / OpenAI / Anthropic
-│   │   │   └── local.py        # LocalLLMClient — Ollama / llama.cpp
-│   │   ├── local_embedder.py   # LocalEmbedder — fastembed ONNX
-│   │   ├── scoping.py          # Namespace resolution + repo tagging
-│   │   └── lifecycle.py        # Compaction, forgetting, health metrics
-│   │
-│   ├── providers/              # AgentProvider framework (§2.1): source+mapping, LLM strategy, registration
-│   │   ├── __init__.py
-│   │   ├── base.py             # AgentProvider Protocol + registry + auto-detect
-│   │   ├── copilot.py          # Reference provider (SqliteSource + CopilotPreParser)
-│   │   └── claude.py           # Second provider (proves the seam)
-│   │
-│   ├── config.py               # Config loading (TOML, defaults, env overrides)
-│   └── graphiti_sink.py        # StorageSink implementation for Graphiti
+│   └── providers/              # AgentProvider framework (§2.1): source+mapping, LLM hint, registration
+│       ├── __init__.py
+│       ├── base.py             # AgentProvider ABC + SessionRef + LLMStrategyHint
+│       ├── registry.py         # @register decorator + pkgutil auto-discovery (E12)
+│       └── copilot.py          # Reference provider (events.jsonl canonical, SQLite fallback)
 │
-├── tests/
+├── scripts/                    # dev utilities (capture_fixture, ingest_fixture, engine_demo)
+├── tests/                      # pytest suites
 │   ├── conftest.py
-│   ├── unit/
-│   │   ├── test_assembler.py   # Episode assembly from events
-│   │   ├── test_filter.py      # Visibility filtering
-│   │   ├── test_format.py      # Graph-as-map formatting
-│   │   ├── test_spool.py       # SQLite spool operations
-│   │   ├── test_scoping.py     # Namespace resolution
-│   │   └── test_config.py      # Config parsing
-│   ├── integration/
-│   │   ├── test_graphiti.py    # Kuzu in-memory + mock LLM roundtrips
-│   │   ├── test_daemon.py      # Daemon socket listener + MCP client
-│   │   └── test_pipeline.py    # Full pipeline: events → spool → Graphiti
-│   └── e2e/
-│       └── test_roundtrip.py   # Daemon + MCP + real Graphiti
+│   ├── unit/                   # cli, config, daemon, engine/llm, ingest, mcp, providers …
+│   └── integration/            # walking skeleton, spool → ingester, observe → engine e2e …
 │
 └── docs/
-    └── architecture.md         # Diagrams for contributors
+    ├── e0-spike.md             # Copilot ingestion spike (traceforge deltas)
+    ├── e4-engine-notes.md      # engine wiring notes (graphiti-core 0.29.2)
+    └── e6e7-skeleton-notes.md  # daemon + MCP skeleton notes
 ```
 
 **Note:** `sources/`, `adapters/`, `pipeline.py`, `enricher.py`, and the per-agent mappings are NOT in this repo. They live in TraceForge. memrelay depends on TraceForge for multi-agent event normalization:
@@ -710,15 +756,15 @@ memrelay/
 ```toml
 # pyproject.toml
 [project]
+requires-python = ">=3.11,<3.14"     # traceforge-toolkit pins Python <3.14
 dependencies = [
-    "traceforge-toolkit>=0.1",   # import name: traceforge — normalizes ~18 agents
-    "graphiti-core>=0.29",
-    "mcp>=1.0",
-    "kuzu>=0.4",
-    "fastembed>=0.3",
-    "tomli>=2.0; python_version < '3.11'",
-    "click>=8.0",
-    "structlog>=23.0",
+    "traceforge-toolkit>=0.1,<0.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent
+    "graphiti-core>=0.29,<0.30",     # knowledge graph engine (Kuzu backend deprecated upstream in 0.29.2, #76)
+    "kuzu>=0.11.3",                  # embedded graph database (floor matches graphiti-core 0.29.2)
+    "fastembed>=0.3",                # local ONNX embeddings (key-less)
+    "mcp>=1.0",                      # Model Context Protocol server
+    "click>=8.0",                    # CLI
+    "structlog>=23.0",               # structured logging
 ]
 ```
 
