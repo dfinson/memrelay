@@ -23,8 +23,8 @@ from pathlib import Path
 
 from memrelay.config import Config, ensure_home
 from memrelay.daemon import transport
-from memrelay.daemon.protocol import SHUTDOWN, Backend, StubBackend
-from memrelay.daemon.server import DaemonServer
+from memrelay.daemon.protocol import SHUTDOWN, Backend
+from memrelay.daemon.runtime import DaemonRuntime, IngesterFactory, default_ingester_factory
 from memrelay.daemon.transport import resolve_endpoint
 
 PID_FILENAME = "daemon.pid"
@@ -234,8 +234,19 @@ def _terminate(pid: int) -> None:
 # ─── Foreground runner (the detached process body) ───────────────────────────
 
 
-def run_foreground(config: Config, backend: Backend | None = None) -> None:
+def run_foreground(
+    config: Config,
+    backend: Backend | None = None,
+    *,
+    ingester_factory: IngesterFactory = default_ingester_factory,
+) -> None:
     """Run the daemon in the foreground until shutdown (used by ``memrelay _serve``).
+
+    Builds the real async :class:`~memrelay.engine.graphiti.MemoryEngine` (the E4
+    backend) unless a ``backend`` is injected for tests, hosts the spool→engine
+    ingester as a background task sharing that single engine, and closes the engine
+    it built on the way out. An injected ``backend`` is used as-is (never rebuilt or
+    closed); the ``ingester_factory`` seam lets tests host a fake ingester.
 
     Installs best-effort SIGTERM/SIGINT handlers for graceful stop where the
     platform supports them (POSIX); on Windows, ``memrelay stop`` drives shutdown
@@ -243,18 +254,19 @@ def run_foreground(config: Config, backend: Backend | None = None) -> None:
     """
     ensure_home(config)
     endpoint = resolve_endpoint(config.home_path)
-    server = DaemonServer(backend or StubBackend(), endpoint)
+    runtime = DaemonRuntime(config, endpoint, backend=backend, ingester_factory=ingester_factory)
 
     async def _main() -> None:
+        await runtime.start()
         loop = asyncio.get_running_loop()
         for signame in ("SIGTERM", "SIGINT"):
             sig = getattr(signal, signame, None)
             if sig is None:
                 continue
             try:
-                loop.add_signal_handler(sig, server.request_shutdown)
+                loop.add_signal_handler(sig, runtime.request_shutdown)
             except (NotImplementedError, RuntimeError):
                 pass  # not supported on this platform/loop (e.g. Windows)
-        await server.run()
+        await runtime.serve()
 
     asyncio.run(_main())
