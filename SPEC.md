@@ -160,34 +160,41 @@ class AgentProvider(Protocol):
 
 ## §3 — Observation & Ingestion
 
+> The code in §3.2–§3.3 is illustrative; the authoritative, tested wiring against traceforge 0.1.0 lives in `src/memrelay/providers/copilot.py` and is catalogued in `docs/e0-spike.md`.
+
 ### 3.1 Session Discovery
 
-The daemon polls each enabled provider for active sessions via `provider.discover_sessions()`. The Copilot provider reads `~/.copilot/session-store.db`; other providers read their agent's own store or log directory. Discovery is uniform to the daemon — it just receives `SessionRef`s.
+The daemon polls each enabled provider for active sessions via `provider.discover_sessions()`. The Copilot provider's canonical source is the per-session `~/.copilot/session-state/<id>/events.jsonl` file — the high-fidelity trace carrying real tool-call, hook, and turn ids; `~/.copilot/session-store.db` (the `turns` table) is a documented fallback. Other providers read their agent's own store or log directory. Discovery is uniform to the daemon — it just receives `SessionRef`s. `SessionRef` is a memrelay-owned type (traceforge 0.1.0 ships none of its own) — see `docs/e0-spike.md` delta #5.
 
 **Polling interval:** Check for new sessions every 2 seconds. This is acceptable because session creation is infrequent and the check is a lightweight directory listing + DB read.
 
 ### 3.2 Event Normalization
 
-Each provider supplies a TraceForge `Source` + `Adapter`. There is **no** `CLIJsonlAdapter` — TraceForge uses a `MappedJsonAdapter` driven by a per-agent YAML mapping (with an optional pre-parser for agents whose raw records need shaping first). For Copilot this is a three-stage wiring against the session store:
+Each provider supplies a TraceForge `Source` + `Adapter`. There is **no** `CLIJsonlAdapter` — TraceForge uses a `MappedJsonAdapter` driven by a per-agent YAML mapping (with an optional pre-parser for agents whose raw records need shaping first). For Copilot the canonical wiring runs the `copilot.yaml` mapping over the per-session `events.jsonl` file; the SQLite `turns` table (shredded by `CopilotPreParser` into the `copilot_markdown` mapping) is the documented fallback:
 
 ```python
-from traceforge import EventPipeline, Enricher
-from traceforge.sources import SqliteSource
-from traceforge.adapters import MappedJsonAdapter
-from traceforge.preparse import CopilotPreParser   # ships with traceforge
-
 # Copilot provider (reference). Other providers swap the source + mapping only.
-source  = SqliteSource(path="~/.copilot/session-store.db")   # turns, forge_trajectory_events
-pre     = CopilotPreParser()                                 # rows -> normalized JSON records
-adapter = MappedJsonAdapter.from_yaml("copilot_markdown", session_id=session_id)
+# Canonical, high-fidelity path: the copilot.yaml mapping over the per-session
+# events.jsonl file. (traceforge's own mapping headers call SQLite+markdown a
+# "thin fallback".) Full API deltas vs traceforge 0.1.0 are in docs/e0-spike.md.
+from importlib import resources
+from traceforge import EventPipeline, Enricher, MappedJsonAdapter
 
-for raw in source.read(session_ref):          # provider-specific source
-    for record in pre.parse(raw):             # optional pre-parse stage
-        for event in adapter.parse(record):   # sync generator, must never raise
-            await pipeline.push(event)         # push() is async
+# from_yaml needs a filesystem PATH (traceforge.mappings ships no name->path resolver):
+mapping = str(resources.files("traceforge.mappings").joinpath("copilot.yaml"))
+adapter = MappedJsonAdapter.from_yaml(mapping, session_id)
+
+for line in read_events_jsonl(ref.path):        # ~/.copilot/session-state/<id>/events.jsonl
+    for event in adapter.parse(line):            # sync generator; never raises; str/bytes in
+        await pipeline.push(event)                # push() is async
+
+# Documented fallback -- SQLite `turns` -> CopilotPreParser -> copilot_markdown mapping:
+#   from traceforge.sources import SqliteSource             # async; positional `name`; start_at="end"
+#   from traceforge.parsers.copilot import CopilotPreParser  # .parse_turn(row: dict) -> Iterator[dict]
+#   feed preparser dicts via adapter.parse_dict(record)      # parse() itself takes a JSON str/bytes
 ```
 
-`adapter.parse()` is a synchronous generator contracted never to raise (bad input is dropped defensively). `pipeline.push()` is async. A file-based provider swaps `SqliteSource` for `FileWatchSource` + the agent's JSONL mapping; a framework provider uses `HttpPollSource` / `SseSource`. The daemon loop above is identical across providers.
+`adapter.parse()` is a synchronous generator contracted never to raise (bad input is dropped defensively); `pipeline.push()` is async. Other providers keep this daemon loop identical and swap only the source + mapping — the live Copilot source file-watches `events.jsonl`, while a framework provider uses `HttpPollSource` / `SseSource`. The documented SQLite fallback reads the `turns` table through an async `SqliteSource` into `CopilotPreParser`, whose per-turn dicts feed the `copilot_markdown` mapping via `adapter.parse_dict`.
 
 ### 3.3 Pipeline
 
@@ -211,6 +218,8 @@ class GraphitiSink(StorageSink):
 # Governance is opt-out — observation-only, no gate policy installed.
 pipeline = EventPipeline(sinks=[GraphitiSink(spool)], enricher=Enricher(), governance=None)
 ```
+
+The real `EventPipeline` constructor also defaults `enable_phase=True` / `enable_boundary=True`, which lazy-load packaged ONNX bundles. memrelay's `IngestConfig` defaults **both to `False`** — a lean, offline, deterministic transport pipeline — and threads them through to the constructor; see `docs/e0-spike.md` delta #7 and `src/memrelay/config.py` (`IngestConfig`).
 
 ### 3.4 Filtering
 
