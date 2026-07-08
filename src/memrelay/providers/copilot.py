@@ -17,6 +17,7 @@ report): the pre-parser import path, ``from_yaml`` taking a filesystem path,
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Iterator
 from importlib import resources
 from pathlib import Path
@@ -31,6 +32,12 @@ DEFAULT_COPILOT_HOME = "~/.copilot"
 SESSION_STATE_DIR = "session-state"
 EVENTS_FILENAME = "events.jsonl"
 SESSION_STORE_DB = "session-store.db"
+
+#: Copilot CLI's MCP registry file and the memrelay entry key (SPEC §2 Registration).
+#: NOTE (de-risk delta, see docs/e6e7-skeleton-notes.md): the installed Copilot CLI
+#: uses ``"type": "local"`` for stdio subprocess servers, not SPEC's ``"stdio"``.
+MCP_CONFIG_FILENAME = "mcp-config.json"
+MCP_SERVER_KEY = "memrelay"
 
 
 def mapping_path(name: str) -> str:
@@ -132,3 +139,52 @@ class CopilotProvider:
         pre = CopilotPreParser()
         adapter = MappedJsonAdapter.from_yaml(mapping_path(FALLBACK_MAPPING), session_id)
         return pre, adapter
+
+    # ── MCP registration (E7-S6, SPEC §2 Registration) ───────────────────────
+
+    @property
+    def mcp_config_path(self) -> Path:
+        """Path to Copilot CLI's MCP registry (``~/.copilot/mcp-config.json``)."""
+        return self.copilot_home / MCP_CONFIG_FILENAME
+
+    def mcp_server_entry(
+        self, *, command: str = "memrelay", args: Iterable[str] = ("mcp",)
+    ) -> dict[str, Any]:
+        """The stdio ``memrelay mcp`` entry Copilot spawns (``type: local``)."""
+        return {
+            "type": "local",
+            "command": command,
+            "args": list(args),
+            "tools": ["*"],
+            "env": {},
+        }
+
+    def register(self, *, command: str = "memrelay", args: Iterable[str] = ("mcp",)) -> Path:
+        """Merge the memrelay stdio server into Copilot's ``mcp-config.json``.
+
+        Idempotent and non-destructive: existing servers under ``mcpServers`` are
+        preserved; only the ``memrelay`` key is (re)written. Raises if the file
+        exists but is not valid JSON, rather than clobbering a user's config.
+        """
+        path = self.mcp_config_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        data: dict[str, Any] = {}
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            if text.strip():
+                try:
+                    loaded = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"{path} is not valid JSON; refusing to overwrite it") from exc
+                if isinstance(loaded, dict):
+                    data = loaded
+
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict):
+            servers = {}
+        servers[MCP_SERVER_KEY] = self.mcp_server_entry(command=command, args=args)
+        data["mcpServers"] = servers
+
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        return path

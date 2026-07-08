@@ -55,6 +55,7 @@ def test_forget_requires_a_target() -> None:
 
 
 def test_stub_command_exits_cleanly() -> None:
-    result = CliRunner().invoke(main, ["status"])
+    # `seed` is still a stub in this wave (retrieval epic); it must exit cleanly.
+    result = CliRunner().invoke(main, ["seed"])
     assert result.exit_code == 0
     assert "not implemented yet" in result.output
