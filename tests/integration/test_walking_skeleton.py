@@ -18,23 +18,26 @@ from memrelay.ingest.fixture_runner import replay
 from memrelay.providers.copilot import CopilotProvider
 
 #: The exact kind histogram the copilot.yaml adapter produces for the fixture
-#: (verified by scripts/capture_fixture.py — redaction preserves it). 103 events.
+#: (verified by scripts/capture_fixture.py — redaction preserves it). The fixture
+#: is a minimal 14-record excerpt: exactly one event per mapped kind, including
+#: file.edited (from a raw ``session.workspace_file_changed`` record).
 EXPECTED_ADAPTER_KINDS: dict[str, int] = {
-    "tool.call.started": 13,
-    "tool.call.completed": 13,
-    "permission.requested": 13,
-    "permission.granted": 13,
-    "hook.started": 13,
-    "hook.completed": 13,
-    "turn.started": 7,
-    "turn.ended": 7,
-    "message.assistant": 7,
     "session.started": 1,
     "message.system": 1,
     "message.user": 1,
+    "turn.started": 1,
+    "message.assistant": 1,
+    "tool.call.started": 1,
+    "tool.call.completed": 1,
+    "permission.requested": 1,
+    "permission.granted": 1,
+    "hook.started": 1,
+    "hook.completed": 1,
+    "file.edited": 1,
+    "turn.ended": 1,
     "session.ended": 1,
 }
-EXPECTED_TOTAL = sum(EXPECTED_ADAPTER_KINDS.values())  # 103
+EXPECTED_TOTAL = sum(EXPECTED_ADAPTER_KINDS.values())  # 14
 
 VALID_VISIBILITIES = {"visible", "system", "collapsed"}
 
@@ -81,7 +84,7 @@ def test_walking_skeleton_pipeline_delivers(copilot_fixture: Path) -> None:
     result = replay(copilot_fixture, "fixture-session", echo=True, writer=collected.append)
 
     # Adapter output is exact; pipeline delivery is a subset (enricher coalesces
-    # tool.call.started into its completed pair, so delivered < parsed).
+    # tool.call.started into its completed pair, so delivered == parsed - 1).
     assert result.parsed == EXPECTED_TOTAL
     assert 0 < result.delivered <= result.parsed
     assert len(collected) == result.delivered
@@ -90,10 +93,44 @@ def test_walking_skeleton_pipeline_delivers(copilot_fixture: Path) -> None:
     assert result.by_kind["session.started"] == 1
     assert result.by_kind["session.ended"] == 1
     assert result.by_kind["message.user"] == 1
-    assert result.by_kind["tool.call.completed"] == 13
+    assert result.by_kind["tool.call.completed"] == 1
+    assert result.by_kind["file.edited"] == 1
 
     assert set(result.by_visibility) <= VALID_VISIBILITIES
     assert result.by_visibility["visible"] > 0
+
+
+def test_runner_forwards_ingest_flags(copilot_fixture: Path, monkeypatch) -> None:
+    """replay() forwards IngestConfig.enable_phase/boundary into EventPipeline (Point 5).
+
+    Later epics flip these on via config; E0 must prove the wiring reaches the
+    pipeline constructor rather than being hardcoded.
+    """
+    import traceforge
+
+    from memrelay.config import Config, IngestConfig
+
+    captured: dict[str, bool] = {}
+
+    class SpyPipeline:
+        def __init__(self, *, sinks, enricher, governance, enable_phase, enable_boundary):
+            captured["enable_phase"] = enable_phase
+            captured["enable_boundary"] = enable_boundary
+
+        async def push(self, event) -> None:  # noqa: ANN001 - test spy
+            pass
+
+        async def flush(self) -> None:
+            pass
+
+        async def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(traceforge, "EventPipeline", SpyPipeline)
+
+    cfg = Config(ingest=IngestConfig(enable_phase=True, enable_boundary=True))
+    replay(copilot_fixture, "fixture-session", echo=False, config=cfg)
+    assert captured == {"enable_phase": True, "enable_boundary": True}
 
 
 def test_adapter_never_raises_on_bad_input() -> None:

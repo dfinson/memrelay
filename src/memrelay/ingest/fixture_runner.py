@@ -4,8 +4,9 @@ This is the E0 walking skeleton (SPEC §3.2–§3.4) with **no Graphiti**: a rea
 fixture) session file is normalized by the ``copilot.yaml`` adapter and pushed
 through a lean ``EventPipeline`` to a :class:`ConsoleSink`.
 
-The pipeline runs with ``enable_phase=False`` / ``enable_boundary=False`` (the ML
-inferencers need extra deps and only stamp optional metadata — see delta #7) and
+The pipeline runs with ``enable_phase`` / ``enable_boundary`` taken from
+:class:`~memrelay.config.IngestConfig` (both default **False** — the ML
+inferencers need extra deps and only stamp optional metadata, see delta #7) and
 ``governance=None`` (observation-only opt-out, SPEC §3.3).
 """
 
@@ -16,9 +17,13 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from memrelay.ingest.console_sink import ConsoleSink
 from memrelay.providers.copilot import CopilotProvider
+
+if TYPE_CHECKING:
+    from memrelay.config import Config
 
 
 @dataclass
@@ -39,9 +44,23 @@ async def replay_async(
     *,
     echo: bool = True,
     writer=print,
+    config: Config | None = None,
+    enable_phase: bool | None = None,
+    enable_boundary: bool | None = None,
 ) -> IngestResult:
-    """Normalize + push a session's events; return an :class:`IngestResult`."""
+    """Normalize + push a session's events; return an :class:`IngestResult`.
+
+    The ML inferencer flags come from :class:`~memrelay.config.IngestConfig`
+    (default off, see delta #7); pass ``enable_phase`` / ``enable_boundary``
+    explicitly to override the resolved config for a single run.
+    """
     from traceforge import Enricher, EventPipeline
+
+    from memrelay.config import load_config
+
+    cfg = config if config is not None else load_config()
+    phase = cfg.ingest.enable_phase if enable_phase is None else enable_phase
+    boundary = cfg.ingest.enable_boundary if enable_boundary is None else enable_boundary
 
     provider = CopilotProvider()
     adapter = provider.make_adapter(session_id)
@@ -50,8 +69,8 @@ async def replay_async(
         sinks=[sink],
         enricher=Enricher(),
         governance=None,
-        enable_phase=False,
-        enable_boundary=False,
+        enable_phase=phase,
+        enable_boundary=boundary,
     )
 
     result = IngestResult(session_id=session_id)
@@ -82,6 +101,19 @@ def replay(
     *,
     echo: bool = True,
     writer=print,
+    config: Config | None = None,
+    enable_phase: bool | None = None,
+    enable_boundary: bool | None = None,
 ) -> IngestResult:
     """Synchronous wrapper around :func:`replay_async`."""
-    return asyncio.run(replay_async(events_path, session_id, echo=echo, writer=writer))
+    return asyncio.run(
+        replay_async(
+            events_path,
+            session_id,
+            echo=echo,
+            writer=writer,
+            config=config,
+            enable_phase=enable_phase,
+            enable_boundary=enable_boundary,
+        )
+    )

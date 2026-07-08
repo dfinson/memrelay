@@ -50,6 +50,20 @@ class EmbeddingsConfig:
 
 
 @dataclass
+class IngestConfig:
+    """Observation/normalization pipeline knobs (SPEC §3.3, delta #7).
+
+    traceforge's ``EventPipeline`` defaults both ML inferencers ``True`` (they
+    lazy-load packaged ONNX bundles). memrelay defaults them **off** for a lean,
+    deterministic, offline transport pipeline; later epics flip them on once their
+    inputs are guaranteed present.
+    """
+
+    enable_phase: bool = False
+    enable_boundary: bool = False
+
+
+@dataclass
 class Config:
     """Fully resolved memrelay configuration."""
 
@@ -57,6 +71,7 @@ class Config:
     graph: GraphConfig = field(default_factory=GraphConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
 
     @property
     def home_path(self) -> Path:
@@ -178,8 +193,9 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
     graph = GraphConfig(**_known(GraphConfig, data.get("graph")))
     llm = LLMConfig(**_known(LLMConfig, data.get("llm")))
     embeddings = EmbeddingsConfig(**_known(EmbeddingsConfig, data.get("embeddings")))
+    ingest = IngestConfig(**_known(IngestConfig, data.get("ingest")))
     home = data.get("home", Config.home)
-    return Config(home=home, graph=graph, llm=llm, embeddings=embeddings)
+    return Config(home=home, graph=graph, llm=llm, embeddings=embeddings, ingest=ingest)
 
 
 def _known(cls: type, section: Any) -> dict[str, Any]:

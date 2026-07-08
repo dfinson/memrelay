@@ -116,3 +116,49 @@ def test_ensure_home_creates_dir(tmp_path: Path) -> None:
     created = ensure_home(cfg)
     assert created.is_dir()
     assert created == target.resolve()
+
+
+def test_ingest_flags_default_off() -> None:
+    """ML inferencers are off by default (SPEC §3.3, delta #7 — lean E0 pipeline)."""
+    cfg = load_config(environ={})
+    assert cfg.ingest.enable_phase is False
+    assert cfg.ingest.enable_boundary is False
+
+
+def test_ingest_flags_via_kwargs() -> None:
+    """Explicit overrides flip the ingest flags (later epics opt in)."""
+    cfg = load_config(environ={}, ingest={"enable_phase": True, "enable_boundary": True})
+    assert cfg.ingest.enable_phase is True
+    assert cfg.ingest.enable_boundary is True
+
+
+def test_ingest_flags_via_env_coerce() -> None:
+    """``MEMRELAY_INGEST__ENABLE_PHASE`` nests and coerces to bool like other flags."""
+    cfg = load_config(
+        environ={
+            "MEMRELAY_INGEST__ENABLE_PHASE": "true",
+            "MEMRELAY_INGEST__ENABLE_BOUNDARY": "no",
+        }
+    )
+    assert cfg.ingest.enable_phase is True
+    assert cfg.ingest.enable_boundary is False
+
+
+def test_ingest_flags_via_file_and_env_precedence(tmp_path: Path) -> None:
+    """An ``[ingest]`` TOML section loads; env still beats file."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        """
+        [ingest]
+        enable_phase = true
+        enable_boundary = true
+        """,
+        encoding="utf-8",
+    )
+    cfg = load_config(path=cfg_file, environ={})
+    assert cfg.ingest.enable_phase is True
+    assert cfg.ingest.enable_boundary is True
+
+    cfg2 = load_config(path=cfg_file, environ={"MEMRELAY_INGEST__ENABLE_PHASE": "false"})
+    assert cfg2.ingest.enable_phase is False  # env beats file
+    assert cfg2.ingest.enable_boundary is True  # untouched file value survives

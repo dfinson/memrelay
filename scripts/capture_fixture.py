@@ -12,14 +12,23 @@ remains a faithful mapping regression sample, but replaces free text with
 ``[redacted]`` and remaps every id to a deterministic placeholder (so
 ``parentId`` links survive de-identification).
 
-After writing, it replays both the original and the redacted files through the
-real adapter and asserts the produced ``SessionEvent`` **kind histogram is
+After writing, it replays the selected records and the redacted output through
+the real adapter and asserts the produced ``SessionEvent`` **kind histogram is
 identical** — proving redaction did not change how the trace maps.
+
+By default the capture is also **minimized** (``--minimal``, on by default): from
+the sampled session it keeps one *coherent* representative of each event category
+the walking-skeleton test needs — messages, a turn, a tool call, a permission
+exchange, a hook, and a file edit — rather than the full, redundant trace. Paired
+events (tool/turn/hook) keep a matching id so the pipeline's coalescing stays
+meaningful, and a synthetic ``file.edited`` record is injected when the sampled
+session never touched the workspace. Pass ``--full`` to redact the whole session.
 
 Usage::
 
-    python scripts/capture_fixture.py                 # auto-pick a session
+    python scripts/capture_fixture.py                 # auto-pick, minimal fixture
     python scripts/capture_fixture.py --session-id <id>
+    python scripts/capture_fixture.py --full          # whole session, redacted
     python scripts/capture_fixture.py --out tests/fixtures/copilot_session.jsonl
 """
 
@@ -105,6 +114,93 @@ class Redactor:
         return obj  # numbers, booleans, null pass through
 
 
+# ── Minimal coherent selection ───────────────────────────────────────────────
+
+#: A real-*shaped* ``session.workspace_file_changed`` record — the raw wire type
+#: the copilot.yaml mapping turns into ``file.edited`` (payload: path, operation).
+#: The shape was confirmed against live data; the content here is **synthetic**
+#: (no real path or id is embedded) so the fixture always exercises file.edited
+#: even when the sampled session never touched the workspace. operation ∈
+#: {create, edit, delete}.
+FILE_CHANGED_EXEMPLAR: dict = {
+    "type": "session.workspace_file_changed",
+    "data": {"path": "src/example/module.py", "operation": "edit"},
+    "id": "file-changed-exemplar",
+    "timestamp": "2026-01-01T00:00:00.000Z",
+    "parentId": "turn-exemplar-parent",
+}
+
+#: (start type, end type, shared ``data.*`` id) — the minimal fixture keeps a
+#: *coherent* pair (same tool call / turn / hook), not two unrelated events.
+_PAIRS: tuple[tuple[str, str, str], ...] = (
+    ("tool.execution_start", "tool.execution_complete", "toolCallId"),
+    ("assistant.turn_start", "assistant.turn_end", "turnId"),
+    ("hook.start", "hook.end", "hookInvocationId"),
+)
+
+#: Wire types kept as a single first-seen record (no pairing id needed).
+_SINGLETONS: tuple[str, ...] = (
+    "session.start",
+    "user.message",
+    "assistant.message",
+    "system.message",
+    "permission.requested",
+    "permission.completed",
+    "session.shutdown",
+)
+
+#: Emit order for the minimal fixture — a coherent one-turn mini-session,
+#: ordered to match real event chronology.
+_MINIMAL_ORDER: tuple[str, ...] = (
+    "session.start",
+    "system.message",
+    "user.message",
+    "assistant.turn_start",
+    "assistant.message",
+    "tool.execution_start",
+    "permission.requested",
+    "permission.completed",
+    "hook.start",
+    "hook.end",
+    "tool.execution_complete",
+    "session.workspace_file_changed",
+    "assistant.turn_end",
+    "session.shutdown",
+)
+
+
+def select_minimal(records: list[dict]) -> list[dict]:
+    """Reduce a full session to the minimum coherent set of records that still
+    exercises every category the walking-skeleton test needs: messages, a turn,
+    a tool call, a permission exchange, a hook, and a file edit.
+
+    Paired events keep a matching id so the pipeline's tool/turn/hook coalescing
+    is meaningful; a synthetic ``file.edited`` record is injected when the sampled
+    session never touched the workspace.
+    """
+    by_type: dict[str, list[dict]] = {}
+    for record in records:
+        by_type.setdefault(str(record.get("type", "")), []).append(record)
+
+    chosen: dict[str, dict] = {}
+    for start_t, end_t, link in _PAIRS:
+        starts, ends = by_type.get(start_t, []), by_type.get(end_t, [])
+        if starts and ends:
+            start = starts[0]
+            start_id = start.get("data", {}).get(link)
+            end = next((e for e in ends if e.get("data", {}).get(link) == start_id), ends[0])
+            chosen[start_t] = start
+            chosen[end_t] = end
+    for wire_type in _SINGLETONS:
+        if by_type.get(wire_type):
+            chosen[wire_type] = by_type[wire_type][0]
+    chosen.setdefault("session.workspace_file_changed", FILE_CHANGED_EXEMPLAR)
+
+    ordered = [chosen[t] for t in _MINIMAL_ORDER if t in chosen]
+    ordered += [r for t, r in chosen.items() if t not in _MINIMAL_ORDER]
+    return ordered
+
+
 # ── Session selection ────────────────────────────────────────────────────────
 
 
@@ -171,45 +267,61 @@ def kind_histogram(events_path: Path, session_id: str) -> Counter[str]:
     return hist
 
 
+def hist_from_records(records: list[dict], session_id: str) -> Counter[str]:
+    """Map in-memory records through the real copilot adapter; count kinds."""
+    from memrelay.providers.copilot import CopilotProvider
+
+    adapter = CopilotProvider().make_adapter(session_id)
+    hist: Counter[str] = Counter()
+    for record in records:
+        for event in adapter.parse_dict(record):
+            hist[str(event.kind)] += 1
+    return hist
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
-def capture(copilot_home: Path, session_id: str, out_path: Path) -> None:
+def capture(copilot_home: Path, session_id: str, out_path: Path, *, minimal: bool = True) -> None:
     src = _session_root(copilot_home) / session_id / "events.jsonl"
     if not src.is_file():
         raise SystemExit(f"no events.jsonl for session {session_id!r} at {src}")
 
-    redactor = Redactor()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    kept = 0
-    with (
-        open(src, encoding="utf-8") as fh,
-        open(out_path, "w", encoding="utf-8", newline="\n") as out,
-    ):
+    records: list[dict] = []
+    with open(src, encoding="utf-8") as fh:
         for line in fh:
             line = line.strip()
             if not line:
                 continue
             try:
-                record = json.loads(line)
+                records.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
-            out.write(json.dumps(redactor.redact(record), ensure_ascii=False) + "\n")
-            kept += 1
 
-    print(f"captured {kept} redacted records: {src}  ->  {out_path}")
+    selected = select_minimal(records) if minimal else records
+
+    redactor = Redactor()
+    redacted = [redactor.redact(record) for record in selected]
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8", newline="\n") as out:
+        for record in redacted:
+            out.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+    scope = "minimal" if minimal else "full"
+    print(f"captured {len(redacted)} redacted records ({scope}): {src}  ->  {out_path}")
 
     # Self-verify: redaction must not change how the trace maps.
-    original = kind_histogram(src, "fixture-session")
-    redacted = kind_histogram(out_path, "fixture-session")
-    if original == redacted:
-        print(f"OK  kind histogram identical after redaction ({sum(redacted.values())} events)")
+    original = hist_from_records(selected, "fixture-session")
+    result = hist_from_records(redacted, "fixture-session")  # type: ignore[arg-type]
+    if original == result:
+        print(f"OK  kind histogram identical after redaction ({sum(result.values())} events)")
     else:
         print("MISMATCH  redaction changed the kind histogram:")
-        print("  only in original:", original - redacted)
-        print("  only in redacted:", redacted - original)
+        print("  only in original:", original - result)
+        print("  only in redacted:", result - original)
         raise SystemExit(1)
-    for kind, count in redacted.most_common():
+    for kind, count in sorted(result.items()):
         print(f"  {kind:<26} {count}")
 
 
@@ -221,6 +333,11 @@ def main() -> None:
         Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "copilot_session.jsonl"
     )
     parser.add_argument("--out", default=str(default_out))
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="redact the whole session instead of the minimal coherent subset",
+    )
     args = parser.parse_args()
 
     home = Path(args.copilot_home).expanduser()
@@ -228,7 +345,7 @@ def main() -> None:
     if not session_id:
         raise SystemExit("no suitable session found; pass --session-id explicitly")
     print(f"session: {session_id}")
-    capture(home, session_id, Path(args.out))
+    capture(home, session_id, Path(args.out), minimal=not args.full)
 
 
 if __name__ == "__main__":

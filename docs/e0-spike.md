@@ -23,13 +23,19 @@ fictional traceforge symbols were stubbed to make anything compile.
 - **Real data is present on this machine:** `~/.copilot/session-store.db` (128 MB;
   `turns` table = 5219 rows) **and** thousands of
   `~/.copilot/session-state/<id>/events.jsonl` files. There is **no missing-DB blocker**.
-- **Reference session:** `035e0daa-…` — 103 JSONL records covering the full lifecycle
-  (session start/shutdown, user/assistant/system messages, turns, tool calls,
-  permissions, hooks). Captured **redacted** into
-  [`tests/fixtures/copilot_session.jsonl`](../tests/fixtures/copilot_session.jsonl).
+- **Reference session:** `035e0daa-…` — a real 103-record session covering the full
+  lifecycle (session start/shutdown, user/assistant/system messages, turns, tool calls,
+  permissions, hooks). It is the **de-risking measurement** in §6a.
+- **Committed fixture:** a **redacted, minimal 14-record excerpt** of that session —
+  exactly one event per mapped kind the tests need, **including `file.edited`** (injected
+  as a synthetic `session.workspace_file_changed` record, since the reference session did
+  no file writes). Captured into
+  [`tests/fixtures/copilot_session.jsonl`](../tests/fixtures/copilot_session.jsonl); see
+  [that folder's README](../tests/fixtures/README.md) for redaction + composition details.
 - **Walking skeleton** ([`scripts/ingest_fixture.py`](../scripts/ingest_fixture.py) +
   [`tests/integration/test_walking_skeleton.py`](../tests/integration/test_walking_skeleton.py))
-  runs the fixture through the real adapter and pipeline on every CI run.
+  runs the committed fixture through the real adapter and pipeline on every CI run —
+  hermetically (tests assert against the committed fixture, never live `~/.copilot`).
 
 ---
 
@@ -95,13 +101,17 @@ One JSON object per line; `type` is the discriminator, `data.*` is camelCase:
  "data": {"toolCallId": "…", "toolName": "view", "arguments": {…}}}
 {"type": "tool.execution_complete", "id": "…", "timestamp": "…",
  "data": {"toolCallId": "…", "success": true, "result": {"content": "…"}}}
+{"type": "session.workspace_file_changed", "id": "…", "timestamp": "…", "parentId": "…",
+ "data": {"path": "…", "operation": "create"}}   // operation ∈ create | edit | delete
 ```
 
 `copilot.yaml` maps these to kinds like `session.started`, `message.user/assistant/system`,
 `turn.started/ended`, `tool.call.started/completed`, `permission.requested/granted`,
-`hook.started/completed`, `file.edited`, `telemetry.usage`. This path carries **real
-tool-call ids, hook ids, turn ids, and success flags** — the high-fidelity source, and
-the one traceforge's own mapping header recommends.
+`hook.started/completed`, `file.edited`, `telemetry.usage`. Note **`file.edited` comes from
+the raw `session.workspace_file_changed` type** (not from a tool call) — its `operation`
+enum maps straight through. This path carries **real tool-call ids, hook ids, turn ids, and
+success flags** — the high-fidelity source, and the one traceforge's own mapping header
+recommends.
 
 ### 3b. Fallback — `~/.copilot/session-store.db` `turns` table
 
@@ -164,8 +174,12 @@ flags (delta 7). These are doc-level corrections; the *design* is unaffected.
 
 ## 6. Walking-skeleton evidence
 
-Replaying the redacted fixture (`enable_phase=False`, `enable_boundary=False`,
-`governance=None`, `enricher=Enricher()`):
+Two measurements, both with `enable_phase=False`, `enable_boundary=False`,
+`governance=None`, `enricher=Enricher()`.
+
+### 6a. Full reference session (de-risking measurement)
+
+Replaying the real 103-record session `035e0daa-…`:
 
 ```
 parsed:    103 SessionEvent(s) from adapter        (1:1 with the 103 JSONL records)
@@ -178,13 +192,30 @@ by kind (delivered):  permission.requested 13, permission.granted 13, hook.start
 by visibility:        visible 88, system 2
 ```
 
+### 6b. Committed hermetic fixture (what CI asserts)
+
+The committed [`copilot_session.jsonl`](../tests/fixtures/copilot_session.jsonl) is the
+minimal 14-record excerpt — one event per mapped kind, **including `file.edited`**:
+
+```
+parsed:    14 SessionEvent(s) from adapter        (one per mapped kind)
+delivered: 13 to sink                             (the 1 tool.call.started is coalesced)
+by kind (delivered):  file.edited 1, hook.started 1, hook.completed 1,
+                      message.system 1, message.user 1, message.assistant 1,
+                      permission.requested 1, permission.granted 1,
+                      tool.call.completed 1, turn.started 1, turn.ended 1,
+                      session.started 1, session.ended 1
+by visibility:        visible 11, system 2
+```
+
 Two enrichment behaviors are demonstrated and asserted in tests:
 
-- **Tool pairing:** the 13 `tool.call.started` events are coalesced into their
-  `tool.call.completed` partners (103 parsed → 90 delivered), matching SPEC §3.3's
-  "tool pairing, duration".
-- **Visibility classification:** the `Enricher` reclassifies 2 events to `system`
-  visibility, exactly the signal `GraphitiSink` will later filter on (SPEC §3.4).
+- **Tool pairing:** `tool.call.started` events are coalesced into their
+  `tool.call.completed` partners (103→90 for the full session; 14→13 for the committed
+  fixture), matching SPEC §3.3's "tool pairing, duration".
+- **Visibility classification:** the `Enricher` reclassifies events to `system`
+  visibility (2 in each measurement), exactly the signal `GraphitiSink` will later filter
+  on (SPEC §3.4).
 
 > Note: in a full install, `requests` is present transitively (via `litellm`/
 > `graphiti-core`), so `enable_phase=True` would attempt to load the ONNX phase model
