@@ -30,6 +30,10 @@ The agent decides when to call these tools — you don't manage memory manually.
 
 ## Install
 
+> **Under active development (v0.0.1, not yet on PyPI).** Install from source for
+> now — clone this repo and `pip install -e ".[dev]"` (see [Development](#development)).
+> The `pip install memrelay` flow below is the intended experience once published.
+
 ```bash
 pip install memrelay
 memrelay init      # creates ~/.memrelay/, auto-detects your agents, registers the MCP server with each
@@ -54,7 +58,9 @@ The default stack requires **zero API keys**:
 | LLM | borrow-host — reuse an agent's own model (e.g. your Copilot subscription) | Entity extraction, summarization |
 | Embeddings | fastembed (ONNX, CPU, ~67MB) | Semantic similarity for retrieval |
 
-Everything runs locally. No Docker, no Neo4j, no cloud services. Prefer your own key or a fully local model? Switch the LLM strategy to `byo-key` or `local` (see Configuration).
+Everything runs locally. No Docker, no Neo4j, no cloud services. Prefer your own key? Switch the LLM strategy to `byo-key` (see Configuration). A fully local LLM strategy (`local` — Ollama/llama.cpp) is planned but **not yet implemented** ([#64](https://github.com/dfinson/memrelay/issues/64)).
+
+> **Backend note:** Kuzu is memrelay's committed graph backend today, but it is deprecated upstream in graphiti-core 0.29.2; a successor backend is tracked in [#76](https://github.com/dfinson/memrelay/issues/76).
 
 ## Architecture
 
@@ -84,11 +90,16 @@ memrelay init                        # First-time setup
 memrelay start                       # Start daemon (background)
 memrelay stop                        # Stop daemon
 memrelay status                      # Health: sessions, episodes, spool depth
+memrelay observe                     # Replay a discovered session through the pipeline into the spool
+memrelay config                      # Show current config
+
+# Planned — not yet implemented (currently stubs):
 memrelay forget --repo owner/name    # Delete memories for a repo
 memrelay forget --namespace name     # Delete entire namespace
 memrelay seed                        # Bootstrap memory from git history
-memrelay config                      # Show current config
 ```
+
+`memrelay observe` accepts `--session ID` (default: the most recently updated session), `--spool PATH` (default `<home>/spool/spool.db`), and `--copilot-home PATH`.
 
 ## Configuration
 
@@ -106,9 +117,13 @@ host = "copilot"
 [embeddings]
 provider = "local"
 model = "BAAI/bge-small-en-v1.5"
+
+[ingest]
+enable_phase = false
+enable_boundary = false
 ```
 
-**Override the LLM strategy** — `byo-key` for direct API keys (faster inference, native structured output) or `local` for a fully offline model:
+**Override the LLM strategy** — `byo-key` for direct API keys (faster inference, native structured output). A `local` fully-offline strategy (Ollama/llama.cpp) is planned but not yet implemented ([#64](https://github.com/dfinson/memrelay/issues/64)):
 
 ```toml
 [llm]
@@ -132,7 +147,7 @@ memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `
 
 ## How it works
 
-1. **Observe** — Each agent provider discovers active sessions (Copilot reads `~/.copilot/session-store.db`; other agents read their own store or logs) and the daemon tails them for events
+1. **Observe** — Each agent provider discovers active sessions (Copilot reads the per-session `~/.copilot/session-state/<id>/events.jsonl` trace, falling back to `~/.copilot/session-store.db`; other agents read their own store or logs) and the daemon tails them for events
 2. **Normalize** — Events pass through a TraceForge pipeline (parse → enrich → filter) into a common `SessionEvent` model, regardless of which agent produced them
 3. **Ingest** — Filtered events are written to a durable SQLite spool, then batch-ingested into Graphiti
 4. **Extract** — Graphiti extracts entities, relationships, facts, and temporal information
@@ -155,7 +170,7 @@ Requires Python 3.11–3.13.
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-memrelay --help                # CLI (subcommands are E0 stubs except `config`)
+memrelay --help                # CLI (all subcommands work except `forget`/`seed`, still stubs)
 memrelay config                # print the resolved configuration
 
 ruff check . && ruff format --check .             # lint
@@ -171,10 +186,27 @@ traceforge 0.1.0 API used and the deltas from `SPEC.md`.
 
 ## Status
 
-🚧 **Under development** — not yet functional. **E0 (foundations + Copilot ingestion
-spike) landed:** package skeleton, config, CLI surface, CI, and a verified
-Copilot → `SessionEvent` walking skeleton. See [SPEC.md](SPEC.md) for the full plan and
-[docs/e0-spike.md](docs/e0-spike.md) for the spike report.
+🚧 **Pre-1.0 and under active development** — the core is functional but still being
+assembled epic by epic, and the package is unpublished (v0.0.1). What works today:
+
+- **CLI** — `init`, `start`, `stop`, `status`, `observe`, `mcp`, and `config` are all
+  implemented (`forget` and `seed` remain stubs).
+- **Engine (E4)** — a config-driven Graphiti wrapper over an embedded Kuzu database,
+  with local fastembed embeddings and the `borrow-host` / `byo-key` LLM strategies.
+- **Daemon (E6/E7)** — a background process that owns the Kuzu engine, hosts the
+  spool → Graphiti ingester, and answers `search` / `detail` / `note` / `health` over
+  a local socket.
+- **MCP server (E6/E7)** — a stdio server exposing `memory_recall`, `memory_detail`,
+  and `memory_note` to any MCP-capable agent.
+- **Copilot ingestion** — Copilot session → `SessionEvent` normalization into a durable
+  SQLite spool; `memrelay observe` replays a discovered session through the pipeline.
+- **Provider framework (E12)** — the `AgentProvider` seam plus a registry with
+  auto-detection; Copilot ships as the reference provider.
+
+Still early: the `local` LLM strategy ([#64](https://github.com/dfinson/memrelay/issues/64))
+and additional agent providers such as Claude Code ([#70](https://github.com/dfinson/memrelay/issues/70))
+are planned. See [SPEC.md](SPEC.md) for the full plan and
+[docs/e0-spike.md](docs/e0-spike.md) for the original Copilot ingestion spike.
 
 ## License
 
