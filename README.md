@@ -1,8 +1,8 @@
 # memrelay
 
-Persistent memory for GitHub Copilot CLI — powered by [Graphiti](https://github.com/getzep/graphiti).
+Portable, persistent memory for your coding agents — powered by [Graphiti](https://github.com/getzep/graphiti) and [TraceForge](https://github.com/dfinson/traceforge).
 
-memrelay automatically observes your Copilot CLI sessions, extracts knowledge into a local graph, and surfaces relevant memories before each interaction. No memory files. No manual summaries. No graph terminology. Just `copilot` with memory that works.
+memrelay automatically observes your agent sessions — Copilot CLI, Claude Code, Codex, Cursor/Continue, Cline, Aider, and more — extracts knowledge into a single local graph, and surfaces relevant memories on demand. **Memory made in one agent is recalled in another.** No memory files. No manual summaries. No graph terminology.
 
 ## What it does
 
@@ -12,10 +12,11 @@ memrelay automatically observes your Copilot CLI sessions, extracts knowledge in
 - File reads and writes
 - Git commits and pull request discussions
 
-**Automatically retrieves:**
-- Relevant context injected before each Copilot interaction
+**Retrieves on demand:**
+- Relevant context when the agent asks for it (`memory_recall`)
 - Cross-session continuity (remembers what you worked on yesterday)
 - Cross-repo knowledge (patterns from one project inform another)
+- Cross-agent knowledge (a fix learned in Claude Code surfaces in Copilot)
 
 **Exposes three MCP tools to the agent:**
 
@@ -31,17 +32,17 @@ The agent decides when to call these tools — you don't manage memory manually.
 
 ```bash
 pip install memrelay
-memrelay init      # creates ~/.memrelay/, registers MCP server with Copilot CLI
+memrelay init      # creates ~/.memrelay/, auto-detects your agents, registers the MCP server with each
 memrelay start     # starts the background daemon
 ```
 
-Then just use Copilot normally:
+Then just use your agent normally:
 
 ```bash
-copilot
+copilot        # or: claude, codex, cursor, aider, …
 ```
 
-Memory is automatic. The daemon observes sessions in the background and the MCP server provides memory tools to the agent.
+Memory is automatic. The daemon observes sessions in the background and the MCP server provides memory tools to every registered agent.
 
 ## Zero configuration
 
@@ -50,28 +51,29 @@ The default stack requires **zero API keys**:
 | Component | Default | What it does |
 | --- | --- | --- |
 | Graph database | Kuzu (embedded, local file) | Stores the knowledge graph |
-| LLM | Copilot CLI (your existing subscription) | Entity extraction, summarization |
+| LLM | borrow-host — reuse an agent's own model (e.g. your Copilot subscription) | Entity extraction, summarization |
 | Embeddings | fastembed (ONNX, CPU, ~67MB) | Semantic similarity for retrieval |
 
-Everything runs locally. No Docker, no Neo4j, no cloud services.
+Everything runs locally. No Docker, no Neo4j, no cloud services. Prefer your own key or a fully local model? Switch the LLM strategy to `byo-key` or `local` (see Configuration).
 
 ## Architecture
 
 ```
-┌─────────────────┐       ┌──────────────────────┐
-│  Copilot CLI     │       │  memrelay daemon     │
-│  (agent process) │       │  (background)        │
-│                  │       │                      │
-│  ┌────────────┐  │       │  Session watcher     │
-│  │ MCP Server │──┼─sock──│  → tracemill pipeline│
-│  │ (tools)    │  │       │  → Graphiti ingestion │
-│  └────────────┘  │       │  → Kuzu graph DB     │
-└─────────────────┘       └──────────────────────┘
+┌──────────────────────────┐          ┌──────────────────────────┐
+│  Any coding agent        │          │  memrelay daemon         │
+│  Copilot / Claude /      │          │  (background)            │
+│  Codex / Cursor / …      │          │                          │
+│                          │          │  Provider watchers       │
+│  ┌────────────┐          │          │  → traceforge pipeline   │
+│  │ MCP Server │          ┼──socket──┤  → Graphiti ingestion    │
+│  │ (tools)    │          │          │  → Kuzu graph DB         │
+│  └────────────┘          │          │                          │
+└──────────────────────────┘          └──────────────────────────┘
 ```
 
 **Two processes:**
 - **Daemon** — persistent background process that owns the Kuzu database and Graphiti instance. Watches session files, ingests events, answers queries via Unix socket.
-- **MCP server** — spawned by Copilot CLI as a stdio subprocess. Thin client that forwards tool calls to the daemon.
+- **MCP server** — spawned by each agent as a stdio subprocess. Thin client that forwards tool calls to the daemon.
 
 This split exists because Kuzu requires exclusive file access — only one process can open the database.
 
@@ -98,17 +100,19 @@ backend = "kuzu"
 path = "~/.memrelay/graph.db"
 
 [llm]
-provider = "copilot"    # uses your Copilot subscription, no API key
+strategy = "borrow-host"   # reuse an agent's own model (e.g. Copilot), no API key
+host = "copilot"
 
 [embeddings]
 provider = "local"
 model = "BAAI/bge-small-en-v1.5"
 ```
 
-**Override with direct API keys** (faster inference, native structured output):
+**Override the LLM strategy** — `byo-key` for direct API keys (faster inference, native structured output) or `local` for a fully offline model:
 
 ```toml
 [llm]
+strategy = "byo-key"
 provider = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o-mini"
@@ -116,11 +120,11 @@ model = "gpt-4o-mini"
 
 ## Dependencies
 
-memrelay depends on [tracemill](https://github.com/dfinson/tracemill) for event parsing and normalization. tracemill handles the pipeline; memrelay handles memory.
+memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `traceforge-toolkit`) for multi-agent session capture and normalization. TraceForge already normalizes ~18 agents to a common event model; memrelay handles memory.
 
 | Dependency | Purpose |
 | --- | --- |
-| `tracemill` | Event normalization pipeline |
+| `traceforge-toolkit` | Multi-agent event normalization (~18 agents) |
 | `graphiti-core` | Knowledge graph engine |
 | `kuzu` | Embedded graph database |
 | `fastembed` | Local ONNX embeddings |
@@ -128,8 +132,8 @@ memrelay depends on [tracemill](https://github.com/dfinson/tracemill) for event 
 
 ## How it works
 
-1. **Observe** — The daemon watches `~/.copilot/sessions/` for new session files and tails them for events
-2. **Normalize** — Events pass through a tracemill pipeline (parse → enrich → filter)
+1. **Observe** — Each agent provider discovers active sessions (Copilot reads `~/.copilot/session-store.db`; other agents read their own store or logs) and the daemon tails them for events
+2. **Normalize** — Events pass through a TraceForge pipeline (parse → enrich → filter) into a common `SessionEvent` model, regardless of which agent produced them
 3. **Ingest** — Filtered events are written to a durable SQLite spool, then batch-ingested into Graphiti
 4. **Extract** — Graphiti extracts entities, relationships, facts, and temporal information
 5. **Retrieve** — When the agent calls `memory_recall`, the MCP server queries the daemon, which searches Graphiti using hybrid semantic + graph search
@@ -140,7 +144,8 @@ memrelay depends on [tracemill](https://github.com/dfinson/tracemill) for event 
 - **Zero config** — works with `pip install` + `memrelay init`
 - **Local-first** — everything runs on your machine, no cloud required
 - **Invisible** — when working correctly, you never think about memory
-- **Thin layer** — memrelay is integration glue around Graphiti, not a replacement
+- **Portable** — one memory graph shared across every agent you use
+- **Thin layer** — memrelay is integration glue around Graphiti and TraceForge, not a replacement
 
 ## Status
 

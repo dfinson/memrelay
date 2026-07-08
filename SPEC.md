@@ -1,21 +1,23 @@
 # memrelay
 
-*Memory relay for AI coding agents.*
+*Portable, graph-based memory for AI coding agents.*
 
-Graphiti-powered memory for GitHub Copilot CLI. Automatic session memory — no configuration, no memory files, no graph terminology exposed to users.
+Graphiti-powered persistent memory that works across coding agents — Copilot CLI, Claude Code, Codex, Cursor/Continue, Cline, Aider, and more. Automatic session memory: no configuration, no memory files, no graph terminology exposed to users. **Memory made in one agent is recalled in another.**
 
-**Dependency:** memrelay depends on [tracemill](https://github.com/dfinson/tracemill) for event parsing, enrichment, and pipeline infrastructure. Read the tracemill SPEC.md first.
+**Dependency:** memrelay depends on [traceforge](https://github.com/dfinson/traceforge) (PyPI `traceforge-toolkit`, import `traceforge`) for multi-agent session sourcing, event parsing, enrichment, and pipeline infrastructure. Read the traceforge SPEC.md first.
+
+**Positioning:** memrelay is a *portable memory layer*, not a Copilot feature. TraceForge already normalizes ~18 agents to one `SessionEvent` schema, so everything downstream (episode assembly, graph, retrieval) is agent-agnostic by construction. Copilot is the **reference provider** because it offers the smoothest zero-key path (borrow-host LLM, §6); other agents plug in behind a thin `AgentProvider` seam (§2.1), using whichever LLM strategy fits.
 
 ---
 
 ## §1 — What It Does
 
-A background daemon observes Copilot CLI sessions, normalizes events through tracemill's EventPipeline, ingests them into Graphiti, and exposes retrieval through an MCP server. Memory accumulates automatically and surfaces relevant context when the agent needs it.
+A background daemon observes coding-agent sessions through TraceForge providers, normalizes events through TraceForge's EventPipeline, ingests them into Graphiti, and exposes retrieval through an MCP server. Memory accumulates automatically — across every supported agent — and surfaces relevant context when any agent needs it.
 
 ```
-Copilot CLI                    MCP Server (stdio)               Daemon (background)
+Agents (Copilot/Claude/Codex)  MCP Server (stdio)               Daemon (background)
     │                                │                                │
-    │  spawns on session start       │  queries daemon via socket     │  tails session files
+    │  spawns on session start       │  queries daemon via socket     │  tails sessions per provider
     │  calls memory_recall           │  formats results               │  normalizes → SessionEvent
     │  receives formatted context    │  returns to agent              │  filters, assembles episodes
     │                                │                                │  ingests into Graphiti
@@ -26,7 +28,7 @@ Copilot CLI                    MCP Server (stdio)               Daemon (backgrou
                     │           Graphiti Engine            │
                     │                                     │
                     │   Backend: Kuzu (embedded file)      │
-                    │   LLM: Copilot CLI (background)     │
+                    │   LLM: pluggable strategy (§6.2)     │
                     │   Embeddings: fastembed (local ONNX) │
                     └─────────────────────────────────────┘
 ```
@@ -35,12 +37,12 @@ Copilot CLI                    MCP Server (stdio)               Daemon (backgrou
 
 ```bash
 pip install memrelay
-memrelay init
+memrelay init            # auto-detects installed agents, registers with each
 memrelay start
-copilot          # memory just works
+copilot        # or: claude, codex, cursor …  — memory just works
 ```
 
-No memory files. No `memory.md`. No manual summaries. No graph terminology. No memory management commands required for normal operation.
+No memory files. No `memory.md`. No manual summaries. No graph terminology. No memory management commands required for normal operation. It works the same regardless of which agent you launch.
 
 ---
 
@@ -50,13 +52,13 @@ Two processes. Separate concerns.
 
 ### Observation Daemon
 
-Runs as a background process. Watches for Copilot CLI sessions. Tails their event streams. Normalizes raw CLI events into tracemill's canonical `SessionEvent` schema via adapter + EventPipeline. Filters, assembles episodes, queues for Graphiti ingestion.
+Runs as a background process. Discovers sessions for every enabled `AgentProvider` (§2.1) and tails their event streams. Normalizes raw agent events into TraceForge's canonical `SessionEvent` schema via each provider's source + mapping + EventPipeline. Filters, assembles episodes, queues for Graphiti ingestion. The daemon core contains **no agent-specific logic** — all of that lives behind providers.
 
 **The daemon is the sole owner of the Kuzu database.** Kuzu enforces a file-level exclusive lock — only one process can open a `READ_WRITE` database at a time. The daemon holds this lock for the lifetime of its process.
 
 ### MCP Server
 
-Exposes `memory_recall`, `memory_detail`, and `memory_note` tools to the agent. Copilot CLI spawns it via stdio transport when a session starts. Queries the daemon over a local socket for graph results. This is the only interface the agent sees.
+Exposes `memory_recall`, `memory_detail`, and `memory_note` tools to the agent. The agent (Copilot CLI, Claude Code, Cursor, …) spawns it via stdio transport when a session starts — every MCP-capable harness uses the same server. Queries the daemon over a local socket for graph results. This is the only interface the agent sees.
 
 The MCP server is **stateless** — it can be spawned and killed freely by Copilot CLI. All state lives in the daemon.
 
@@ -103,7 +105,7 @@ MCP servers are spawned by Copilot CLI on demand (stdio subprocess). They don't 
 
 ### Registration
 
-Copilot CLI discovers MCP servers via `~/.copilot/mcp-config.json`:
+Each agent discovers MCP servers through its own config file; registration is a per-provider responsibility (§2.1). `memrelay init` auto-detects installed agents and writes the memrelay stdio entry into each one's config (merging with existing entries). For Copilot CLI that file is `~/.copilot/mcp-config.json`:
 
 ```json
 {
@@ -119,7 +121,40 @@ Copilot CLI discovers MCP servers via `~/.copilot/mcp-config.json`:
 }
 ```
 
-`memrelay init` writes this file (merges with existing entries if present). The built-in GitHub MCP server runs alongside — no conflict. Changes take effect immediately without restarting Copilot CLI.
+Other agents use the same command with their own config location (Claude Code, Cursor/Continue, Codex, …). The entry is identical — memrelay's MCP server is agent-neutral. The built-in GitHub MCP server runs alongside — no conflict. Changes take effect without restarting the agent. Agents that do not speak MCP can still be **observed** (ingestion only); they simply have no recall channel until they add MCP support.
+
+---
+
+## §2.1 — Agent Providers
+
+memrelay ingests from and serves to any agent behind a single abstraction. An `AgentProvider` has exactly three responsibilities:
+
+| # | Responsibility | What it supplies |
+| --- | --- | --- |
+| 1 | **Source + mapping** | Which TraceForge `Source` reads the agent's on-disk (or live) trace, plus the TraceForge mapping/pre-parser that normalizes it to `SessionEvent`. |
+| 2 | **LLM strategy** | How Graphiti's extraction LLM is satisfied: `borrow-host` (reuse the agent's own model, zero-key), `byo-key`, or `local` (§6). |
+| 3 | **Serving / registration** | How the agent discovers the memrelay MCP server (which config file, what merge rules). |
+
+Everything else — episode assembly, spool, graph, retrieval, formatting — sits *below* `SessionEvent` and is written **once**, agent-agnostic.
+
+```python
+class AgentProvider(Protocol):
+    id: str                                   # "copilot", "claude", "codex", …
+    def make_source(self) -> Source: ...      # TraceForge Source (sqlite / file_watch / sse / …)
+    def make_adapter(self) -> Adapter: ...    # MappedJsonAdapter(mapping) + optional pre-parser
+    def llm_strategy(self) -> LLMStrategy: ...
+    def register(self) -> None: ...           # write MCP config for this agent
+    def discover_sessions(self) -> Iterable[SessionRef]: ...
+```
+
+**Built-in providers.** TraceForge already ships mappings for ~18 agents. memrelay wraps them progressively:
+
+- **Reference:** Copilot CLI (`SqliteSource` → `CopilotPreParser` → `copilot` mapping; borrow-host LLM).
+- **Second:** Claude Code (`claude` mapping) — proves the seam holds with no core changes.
+- **Coding agents:** Codex, Cursor/Continue, Cline, Aider, Amazon Q, Goose, OpenCode, OpenHands, SWE-agent, Antigravity.
+- **Framework runtimes (opt-in, live sources):** CrewAI, LangGraph, Microsoft Agent Framework, OpenAI Agents, Pydantic AI, smolagents — via `http_poll` / `sse`.
+
+**Auto-detection.** `memrelay init` / `status` uses TraceForge's `auto_detect` plus the provider registry to report which agents are present on the machine and wire them automatically. Unknown or opted-out agents are skipped.
 
 ---
 
@@ -127,34 +162,41 @@ Copilot CLI discovers MCP servers via `~/.copilot/mcp-config.json`:
 
 ### 3.1 Session Discovery
 
-The daemon polls for active Copilot CLI sessions. It reads `~/.copilot/session-store.db` (or equivalent session directory), filters by active sessions, and discovers session event files.
+The daemon polls each enabled provider for active sessions via `provider.discover_sessions()`. The Copilot provider reads `~/.copilot/session-store.db`; other providers read their agent's own store or log directory. Discovery is uniform to the daemon — it just receives `SessionRef`s.
 
 **Polling interval:** Check for new sessions every 2 seconds. This is acceptable because session creation is infrequent and the check is a lightweight directory listing + DB read.
 
 ### 3.2 Event Normalization
 
-Raw Copilot CLI events are parsed by tracemill's `CLIJsonlAdapter`. The daemon feeds raw JSONL lines from session event files to the adapter and receives `SessionEvent` objects.
+Each provider supplies a TraceForge `Source` + `Adapter`. There is **no** `CLIJsonlAdapter` — TraceForge uses a `MappedJsonAdapter` driven by a per-agent YAML mapping (with an optional pre-parser for agents whose raw records need shaping first). For Copilot this is a three-stage wiring against the session store:
 
 ```python
-from tracemill.adapters import CLIJsonlAdapter
+from traceforge import EventPipeline, Enricher
+from traceforge.sources import SqliteSource
+from traceforge.adapters import MappedJsonAdapter
+from traceforge.preparse import CopilotPreParser   # ships with traceforge
 
-adapter = CLIJsonlAdapter()
+# Copilot provider (reference). Other providers swap the source + mapping only.
+source  = SqliteSource(path="~/.copilot/session-store.db")   # turns, forge_trajectory_events
+pre     = CopilotPreParser()                                 # rows -> normalized JSON records
+adapter = MappedJsonAdapter.from_yaml("copilot_markdown", session_id=session_id)
 
-# Daemon's watcher feeds raw lines:
-for line in tail_session_file(path):
-    for event in adapter.parse(line):
-        await pipeline.push(event)
+for raw in source.read(session_ref):          # provider-specific source
+    for record in pre.parse(raw):             # optional pre-parse stage
+        for event in adapter.parse(record):   # sync generator, must never raise
+            await pipeline.push(event)         # push() is async
 ```
+
+`adapter.parse()` is a synchronous generator contracted never to raise (bad input is dropped defensively). `pipeline.push()` is async. A file-based provider swaps `SqliteSource` for `FileWatchSource` + the agent's JSONL mapping; a framework provider uses `HttpPollSource` / `SseSource`. The daemon loop above is identical across providers.
 
 ### 3.3 Pipeline
 
-Once events are normalized to `SessionEvent`, they flow through tracemill's `EventPipeline`. The pipeline enriches events (tool pairing, duration, classification, visibility) and fans them out to registered sinks.
+Once events are normalized to `SessionEvent`, they flow through TraceForge's `EventPipeline`. The pipeline enriches events (tool pairing, duration, classification, visibility, phase/boundary) and fans them out to registered sinks with per-sink error isolation.
 
-memrelay registers a single sink: `GraphitiSink`.
+memrelay registers a single sink: `GraphitiSink` (a `StorageSink` subclass — its async `on_event` / `flush` / `close` lifecycle justifies subclassing over a bare callback).
 
 ```python
-from tracemill import EventPipeline, Enricher
-from tracemill.adapters import CLIJsonlAdapter
+from traceforge import EventPipeline, Enricher, SessionEvent, StorageSink
 
 class GraphitiSink(StorageSink):
     """Assembles SessionEvents into Graphiti episodes and ingests."""
@@ -163,21 +205,22 @@ class GraphitiSink(StorageSink):
         self.buffer.append(event)
         if self._should_flush(event):  # semantic boundary detection
             episode = self._assemble_episode(self.buffer)
-            await self.graphiti.add_episode(**episode)
+            await self.spool.put(episode)   # durable spool first, then Graphiti
             self.buffer.clear()
 
-pipeline = EventPipeline(sinks=[GraphitiSink(graphiti)])
+# Governance is opt-out — observation-only, no gate policy installed.
+pipeline = EventPipeline(sinks=[GraphitiSink(spool)], enricher=Enricher(), governance=None)
 ```
 
 ### 3.4 Filtering
 
-tracemill's enricher assigns `visibility` to each event. The `GraphitiSink` uses this to filter:
+TraceForge's enricher assigns `visibility` to each event at `event.metadata.visibility`. The enum is `visible | system | collapsed` (the middle value is `system`, not `internal`). The `GraphitiSink` filters on it:
 
 | Visibility | Action |
 | --- | --- |
 | `visible` | Ingest — meaningful tool calls, file edits, messages |
-| `internal` | Skip — `report_intent`, heartbeats, progress |
-| `collapsed` | Summarize — retry sequences become one episode |
+| `system` | Skip — `report_intent`, heartbeats, progress, scaffolding |
+| `collapsed` | Summarize — retry/noise sequences become one episode |
 
 ### 3.5 Episode Assembly
 
@@ -195,7 +238,7 @@ Enriched events become Graphiti episodes. One episode per semantic unit:
 await graphiti.add_episode(
     name=f"tool_{tool_name}_{timestamp}",
     episode_body=f"{tool_name}: {tool_intent} → ✓. Files: src/auth.py",
-    source_description=f"copilot_cli:{repo}:{session_id}",
+    source_description=f"{agent}:{repo}:{session_id}",   # agent = provider id
     reference_time=timestamp,
     source=EpisodeType.text,
     group_id=GROUP_ID,
@@ -232,7 +275,7 @@ Graphiti extraction requires LLM calls. The daemon manages throughput:
 - After session ends: drain the spool fully (bulk ingestion)
 - If LLM is unavailable or rate-limited: spool accumulates, retries with exponential backoff
 - No data loss — the spool is the source of truth until Graphiti confirms ingestion
-- Copilot backend: respects subscription rate limits; prefers ingestion during idle periods when the user isn't actively prompting
+- Borrow-host LLM (e.g. Copilot): respects the host subscription's rate limits; prefers ingestion during idle periods when the user is not actively prompting
 
 ---
 
@@ -351,7 +394,7 @@ The formatting layer uses **score-based thresholds** from Graphiti's reranker sc
 The agent calls `memory_recall` when it decides context would help. Custom instructions guide this:
 
 ```markdown
-# Appended to copilot-instructions.md by `memrelay init`
+# Appended to each agent's instructions file by `memrelay init` (per provider)
 You have a `memory_recall` tool. Call it at the start of complex tasks,
 when working on unfamiliar code, or when the user references previous work.
 The response includes a graph map — use `memory_detail` to drill into
@@ -404,15 +447,15 @@ Edge cases:
 - No git remote (fresh repo) → falls back to OS username as namespace
 - Fork with different owner → defaults to fork owner's namespace (override in config)
 
-### 5.3 Repo Tagging
+### 5.3 Repo & Agent Provenance
 
-Episodes are tagged with their source repo but not isolated by it. Cross-repo patterns within a namespace surface naturally.
+Episodes are tagged with both their source repo and the **agent that produced them** (the provider id), but isolated by neither. Cross-repo *and* cross-agent patterns within a namespace surface naturally: a fix learned while driving Claude Code is recalled in the next Copilot session, because both write into the same namespace graph below `SessionEvent`. The agent tag is provenance and a retrieval signal — never a hard filter.
 
 ```python
 await graphiti.add_episode(
     ...
     group_id=namespace,
-    source_description=f"copilot_cli:{repo}:{session_id}",
+    source_description=f"{agent}:{repo}:{session_id}",   # agent = provider id
 )
 ```
 
@@ -443,9 +486,10 @@ backend = "kuzu"
 path = "~/.memrelay/graph.db"
 
 [llm]
-# Default: route through the user's existing Copilot subscription.
-# No API keys needed.
-provider = "copilot"
+# Default strategy: borrow-host — reuse the agent's own model (zero API keys).
+# Alternatives: strategy = "byo-key" (litellm/OpenAI/Anthropic) or "local" (Ollama/llama.cpp).
+strategy = "borrow-host"
+host = "copilot"          # which host model to borrow (provider-detected)
 
 [embeddings]
 # Default: local ONNX model via fastembed. No API keys.
@@ -453,34 +497,43 @@ provider = "local"
 model = "BAAI/bge-small-en-v1.5"   # 384-dim, CPU, ~67MB
 ```
 
-The entire default stack requires **zero API keys** — only a GitHub Copilot subscription.
+The default stack requires **zero API keys** when a borrow-host agent (e.g. Copilot) is present — it reuses that agent's model. The byo-key and local strategies need no host agent at all.
 
-### 6.2 CopilotLLMClient
+### 6.2 LLM Strategy (pluggable)
 
-Graphiti requires an LLM for entity extraction, edge extraction, deduplication, and summarization. The daemon spawns a background Copilot CLI process and implements a custom `LLMClient`:
+Graphiti requires an LLM for entity extraction, edge extraction, deduplication, and summarization. **How that LLM is provided is a pluggable strategy** selected per install (and overridable per provider):
+
+| Strategy | How | Keys | Best for |
+| --- | --- | --- | --- |
+| `borrow-host` | Reuse the host agent's own model via a background process (e.g. Copilot CLI) | None | Anyone already running a subscription agent |
+| `byo-key` | Call OpenAI/Anthropic/etc. directly via litellm | Yes | Users wanting native structured output / lowest latency |
+| `local` | Local model server (Ollama / llama.cpp) | None | Offline / privacy-sensitive setups |
+
+All three implement the same `LLMClient` interface, so nothing downstream of extraction cares which is active. The reference `borrow-host` implementation spawns a background agent process:
 
 ```python
-class CopilotLLMClient(LLMClient):
-    """Routes Graphiti's LLM calls through a background Copilot CLI process.
-    Uses the developer's existing GitHub Copilot subscription — no API keys."""
+class BorrowHostLLMClient(LLMClient):
+    """Routes Graphiti's LLM calls through a background host-agent process
+    (Copilot CLI in the reference impl). Reuses the developer's existing
+    agent subscription — no API keys. Swappable for ByoKey / Local clients."""
 
     async def _generate_response(self, messages, response_model=None, **kwargs):
         prompt = format_messages_as_prompt(messages)
         if response_model:
             prompt += f"\n\nRespond with JSON matching this schema:\n{response_model.model_json_schema()}"
 
-        response_text = await self._copilot_process.complete(prompt)
+        response_text = await self._host_process.complete(prompt)
 
         if response_model:
             return parse_json_response(response_text, response_model)
         return {"content": response_text}
 ```
 
-This works because:
+The borrow-host strategy works because:
 1. Graphiti's `LLMClient` is an abstract base class — custom implementations are first-class
 2. Graphiti already handles schema-in-prompt for providers without native structured output
-3. Copilot CLI models (GPT-4 class) reliably produce schema-conformant JSON when instructed
-4. The user already has a Copilot subscription (they're using Copilot CLI)
+3. Modern host models (GPT-4 / Claude class) reliably produce schema-conformant JSON when instructed
+4. The user already runs a subscription agent, so inference is effectively free and key-less
 
 ### 6.3 LocalEmbedder
 
@@ -502,25 +555,26 @@ class LocalEmbedder(EmbedderClient):
 - BAAI/bge-small-en-v1.5: 384-dim, strong retrieval quality, fast on CPU
 - No GPU needed, works offline after first download
 
-**Trade-offs: Copilot vs Direct API**
+**Trade-offs: borrow-host vs byo-key**
 
-|  | Copilot (default) | Direct API (override) |
+|  | borrow-host (default) | byo-key (override) |
 | --- | --- | --- |
 | Setup | Zero config | Requires API key |
 | Cost | Included in subscription | Pay-per-token |
 | Structured output | Schema-in-prompt + parse | Native JSON mode |
 | Latency | Slightly higher (process overhead) | Lower |
-| Rate limits | Copilot's limits apply | Provider limits |
+| Rate limits | Host agent's limits apply | Provider limits |
 | Embeddings | Local (fastembed) | Same provider |
 
 fastembed uses ONNX Runtime (C++ inference) — fast even on modest hardware. No GPU needed.
 
-### 6.4 Override: Direct API Keys
+### 6.4 Override: byo-key Strategy
 
 For users who want faster inference or native structured output:
 
 ```toml
 [llm]
+strategy = "byo-key"
 provider = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4.1-mini"
@@ -541,11 +595,11 @@ model = "text-embedding-3-small"
 
 ```bash
 pip install memrelay
-memrelay init          # creates ~/.memrelay/, generates config, writes ~/.copilot/mcp-config.json
+memrelay init          # creates ~/.memrelay/, generates config, registers MCP with each detected agent
 memrelay start         # starts daemon (background, listens on ~/.memrelay/daemon.sock)
 ```
 
-After `memrelay init`, the next `copilot` session automatically has access to `memory_recall`, `memory_detail`, and `memory_note` tools.
+After `memrelay init`, the next session of any registered agent automatically has access to the `memory_recall`, `memory_detail`, and `memory_note` tools.
 
 ---
 
@@ -595,7 +649,7 @@ memrelay/
 │   │   ├── spool.py            # SQLite durable queue + cursor tracking
 │   │   └── ingester.py         # Spool → Graphiti (batched, retried, backoff)
 │   │
-│   ├── mcp/                    # Stdio subprocess (spawned by Copilot CLI)
+│   ├── mcp/                    # Stdio subprocess (spawned by any MCP agent)
 │   │   ├── __init__.py
 │   │   ├── server.py           # MCP lifecycle, stdio transport
 │   │   ├── client.py           # Connects to daemon socket for queries
@@ -605,10 +659,19 @@ memrelay/
 │   ├── engine/                 # Graphiti wrapper (used by daemon only)
 │   │   ├── __init__.py
 │   │   ├── client.py           # Config-driven Graphiti init (backend/LLM/embedder)
-│   │   ├── copilot_llm.py      # CopilotLLMClient — routes LLM through Copilot CLI
+│   │   ├── llm/                # Pluggable LLM strategies (§6.2)
+│   │   │   ├── borrow_host.py  # BorrowHostLLMClient — reuse host agent's model
+│   │   │   ├── byo_key.py      # ByoKeyLLMClient — litellm / OpenAI / Anthropic
+│   │   │   └── local.py        # LocalLLMClient — Ollama / llama.cpp
 │   │   ├── local_embedder.py   # LocalEmbedder — fastembed ONNX
 │   │   ├── scoping.py          # Namespace resolution + repo tagging
 │   │   └── lifecycle.py        # Compaction, forgetting, health metrics
+│   │
+│   ├── providers/              # AgentProvider framework (§2.1): source+mapping, LLM strategy, registration
+│   │   ├── __init__.py
+│   │   ├── base.py             # AgentProvider Protocol + registry + auto-detect
+│   │   ├── copilot.py          # Reference provider (SqliteSource + CopilotPreParser)
+│   │   └── claude.py           # Second provider (proves the seam)
 │   │
 │   ├── config.py               # Config loading (TOML, defaults, env overrides)
 │   └── graphiti_sink.py        # StorageSink implementation for Graphiti
@@ -633,13 +696,13 @@ memrelay/
     └── architecture.md         # Diagrams for contributors
 ```
 
-**Note:** `adapters/`, `pipeline.py`, `enricher.py` are NOT in this repo. They live in tracemill. memrelay depends on tracemill for event normalization:
+**Note:** `sources/`, `adapters/`, `pipeline.py`, `enricher.py`, and the per-agent mappings are NOT in this repo. They live in TraceForge. memrelay depends on TraceForge for multi-agent event normalization:
 
 ```toml
 # pyproject.toml
 [project]
 dependencies = [
-    "tracemill>=0.1",
+    "traceforge-toolkit>=0.1",   # import name: traceforge — normalizes ~18 agents
     "graphiti-core>=0.29",
     "mcp>=1.0",
     "kuzu>=0.4",
@@ -652,31 +715,33 @@ dependencies = [
 
 ---
 
-## §8.1 — Relationship to tracemill
+## §8.1 — Relationship to TraceForge
 
-memrelay is a simpler consumer of tracemill than CodePlane. The division of responsibilities:
+memrelay is a memory-domain consumer of TraceForge (published on PyPI as `traceforge-toolkit`, imported as `traceforge`). TraceForge already normalizes ~18 agents to a common `SessionEvent`; memrelay reuses that wholesale and adds only the memory layer. The division of responsibilities:
 
 | Concern | Where it lives |
 | --- | --- |
-| Event parsing, enrichment, pipeline | tracemill |
-| Storage sinks (SQLite, OTEL export) | tracemill (built-in) |
+| Sources (sqlite / file_watch / http_poll / sse / …) | TraceForge |
+| Per-agent mappings + pre-parsers (~18 agents) | TraceForge |
+| Event parsing, enrichment, pipeline, governance | TraceForge |
+| Built-in storage sinks (SQLite, OTEL export) | TraceForge |
+| `AgentProvider` wrappers (source/mapping/LLM/registration per agent) | memrelay |
 | Storage sink (Graphiti) | memrelay (`GraphitiSink`) |
-| Job orchestration, approvals, UI, SSE | CodePlane only |
-| Memory retrieval, MCP server, daemon | memrelay only |
-| Session file watching, process management | Each consumer owns its own |
+| Memory scoping, retrieval, MCP server, daemon | memrelay only |
+| Session watching, LLM-strategy process management | memrelay owns its own |
 
-memrelay's daemon extracts and simplifies the session observation pattern from CodePlane: no RuntimeService, no job creation, no approval flows. Just discover sessions and tail their events.
+TraceForge ships mappings for roughly 18 agents today — aider, amazonq, antigravity, claude, cline, codex, continue_dev, copilot (+ vscode/markdown variants), crewai, goose, langgraph, maf, openai_agents, opencode, openhands, pydantic_ai, smolagents — plus sources file_watch, file_poll, http_poll, sse, sqlite, replay, and auto_detect. Each becomes a memrelay `AgentProvider` progressively; the memory layer below `SessionEvent` never changes.
 
-The `GraphitiSink` is the only piece memrelay adds to the tracemill pipeline. Everything else — adapters, enricher, pipeline orchestration — comes from tracemill.
+The `GraphitiSink` plus the `providers/` wrappers are the only pieces memrelay adds to the TraceForge pipeline. Everything else — sources, adapters, enricher, pipeline orchestration — comes from TraceForge.
 
 ## §8.2 — What memrelay Does NOT Do
 
-- **Event parsing or enrichment.** That's tracemill's job.
+- **Event parsing or enrichment.** That's TraceForge's job.
 - **Job orchestration.** No jobs, queues, or scheduling — just continuous observation.
 - **Approval flows.** No user confirmations for memory operations.
 - **UI.** No web interface, no dashboards, no visualization.
 - **SSE streaming.** No real-time event broadcast.
-- **Process management for agents.** Does not spawn or manage Copilot CLI processes.
+- **Managing the user's agents.** Does not spawn, supervise, or control the user's coding agents (Copilot, Claude, etc.). *Exception:* the borrow-host LLM strategy runs its own background inference process — that process is memrelay's, not the user's agent.
 - **Replace Graphiti.** Does not reimplement entity extraction, graph operations, or temporal reasoning. Graphiti is the memory engine; memrelay is the integration layer.
 
 ---
@@ -691,7 +756,7 @@ These are the verified Graphiti APIs used by memrelay. All verified against [get
 await graphiti.add_episode(
     name: str,                    # Unique episode identifier
     episode_body: str,            # Content to extract entities/relations from
-    source_description: str,      # Provenance: "copilot_cli:{repo}:{session_id}"
+    source_description: str,      # Provenance: "{agent}:{repo}:{session_id}"
     reference_time: datetime,     # When this happened
     source: EpisodeType,          # EpisodeType.message or EpisodeType.text
     group_id: str,                # Namespace (Graphiti's grouping unit)
@@ -766,9 +831,9 @@ Graphiti extracts entities for everything — file paths, error messages, librar
 - Consider custom entity extraction prompts biased toward architectural concepts
 - Episode assembly pre-filters verbose tool output before ingestion
 
-### Session File Format Stability
+### Agent Format Drift (multi-agent)
 
-Copilot CLI may change its event format. The adapter (tracemill's `CLIJsonlAdapter`) is a single module — one file to update. Defensive parsing handles unknown fields.
+Any agent may change its trace format. Because normalization lives in TraceForge's per-agent mappings (one YAML + optional pre-parser per agent), a drift is a single-file fix upstream — memrelay's core is untouched. Defensive parsing drops unknown fields rather than raising. Breadth adds surface area, but each agent stays isolated behind its own mapping.
 
 ### Daemon Availability
 
@@ -811,9 +876,9 @@ Multi-user (v1.0):
 ### Step 1: Skeleton + MCP Registration
 
 - Repo setup, CI, `pyproject.toml`
-- `memrelay init` writes `~/.copilot/mcp-config.json` with stdio entry
+- `memrelay init` auto-detects installed agents and writes each one's MCP config (Copilot: `~/.copilot/mcp-config.json`) with the stdio entry
 - MCP server subprocess (`memrelay mcp`) with dummy `memory_recall` / `memory_detail` / `memory_note`
-- Verify Copilot CLI spawns it and agent can call tools
+- Verify the reference agent (Copilot CLI) spawns it and can call the tools
 - Daemon socket listener skeleton (responds with dummy data)
 - MCP server connects to daemon socket, round-trips a query
 
@@ -822,9 +887,9 @@ Multi-user (v1.0):
 ### Step 2: Graphiti Engine
 
 - Config-driven Graphiti initialization (Kuzu embedded)
-- `CopilotLLMClient` implementation (background Copilot CLI process for inference)
+- Pluggable LLM strategy seam; `BorrowHostLLMClient` reference impl (background host-agent process for inference)
 - `LocalEmbedder` implementation (fastembed, ONNX, auto-download model)
-- Fallback: direct API clients if keys configured
+- byo-key and local strategies behind the same interface (keys / Ollama optional)
 - `memory_note` → real episode in Graphiti
 - `memory_recall` → real search + formatted response
 - Integration tests (Kuzu in-memory)
@@ -834,7 +899,7 @@ Multi-user (v1.0):
 ### Step 3: Daemon + Observation
 
 - Session file watcher (discovery + tailing)
-- Wire tracemill's `CLIJsonlAdapter` + `EventPipeline` + `Enricher`
+- Wire the Copilot `AgentProvider` (SqliteSource + CopilotPreParser + `copilot` mapping) into TraceForge's `EventPipeline` + `Enricher`
 - `GraphitiSink` with visibility filtering + episode assembly
 - SQLite spool + cursor tracking
 - Batched Graphiti ingestion with retry
@@ -855,6 +920,16 @@ Multi-user (v1.0):
 
 **Gate:** Precision >75%. Ship v0.1.0.
 
+### Step 5: Second Agent + Provider Framework
+
+- Extract the `AgentProvider` Protocol + registry from the Copilot reference impl (§2.1)
+- Add Claude Code as the second provider (source + `claude` mapping + registration) — no core changes below `SessionEvent`
+- `memrelay init` / `status` auto-detect installed agents via TraceForge `auto_detect`
+- Cross-agent recall test: ingest under Copilot, recall the fact while driving Claude Code
+- Multi-agent conformance matrix in CI (one ingestion fixture per supported agent)
+
+**Gate:** A fact learned in one agent is recalled in another. Broaden coverage agent-by-agent thereafter.
+
 ---
 
 ## §13 — Success Criteria
@@ -863,8 +938,10 @@ Multi-user (v1.0):
 
 - Daemon observes sessions and ingests automatically
 - `memory_recall` returns relevant facts from previous sessions
-- Cross-session continuity works (repo-tagged, not repo-isolated)
-- Works with Kuzu (local) + Copilot subscription (LLM) + fastembed (embeddings) — zero API keys
+- Cross-session continuity works (repo- and agent-tagged, isolated by neither)
+- At least two agents supported end-to-end (Copilot CLI + Claude Code) behind the `AgentProvider` seam
+- Cross-agent recall works: a fact learned in one agent surfaces in another within the same namespace
+- Works with Kuzu (local) + borrow-host LLM (e.g. Copilot subscription) + fastembed (embeddings) — zero API keys
 - Retrieval latency imperceptible to the agent
 - Graceful degradation when LLM unavailable (spool accumulates)
 - No data loss (spool is durable)
@@ -873,6 +950,7 @@ Multi-user (v1.0):
 ### v1.0.0
 
 - Shared namespaces via Neo4j + memrelay-sync coordination layer
+- Broad agent coverage: all ~18 TraceForge-supported agents wrapped as providers (coding agents + framework runtimes)
 - Identity attribution (who remembered what)
 - Ollama backend option (fully offline)
 - Cross-repo pattern surfacing refined
