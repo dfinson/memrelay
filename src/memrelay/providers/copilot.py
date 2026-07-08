@@ -50,6 +50,25 @@ def mapping_path(name: str) -> str:
     return str(resource)
 
 
+class CopilotSource:
+    """A replay source: iterate a session's ``events.jsonl`` as raw JSONL lines.
+
+    Mirrors :meth:`CopilotProvider.read_raw` but as a reusable, session-scoped
+    iterable — the seam the observation daemon (later epic) extends with live
+    tailing. Blank lines are skipped; each yielded line is ready for ``adapter.parse``.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def __iter__(self) -> Iterator[str]:
+        with open(self.path, encoding="utf-8") as fh:
+            for line in fh:
+                stripped = line.strip()
+                if stripped:
+                    yield stripped
+
+
 class CopilotProvider:
     """Reference :class:`~memrelay.providers.base.AgentProvider` for Copilot CLI."""
 
@@ -101,12 +120,26 @@ class CopilotProvider:
                 if line:
                     yield line
 
-    def make_source(self) -> Any:
-        """The *live* source is a daemon-epic concern; E0 replays via ``read_raw``."""
-        raise NotImplementedError(
-            "live Copilot source (file-watch) is implemented in the daemon epic; "
-            "E0 replays sessions via read_raw()/events.jsonl"
-        )
+    def make_source(
+        self, session_id: str | None = None, *, path: str | Path | None = None
+    ) -> CopilotSource:
+        """Return a replay :class:`CopilotSource` over a session's ``events.jsonl``.
+
+        Yields raw JSONL lines (ready for :meth:`make_adapter`'s ``parse``) from a
+        session's canonical trace. Scope it by ``session_id`` (resolved under
+        ``~/.copilot/session-state/<id>/events.jsonl``) or an explicit ``path``.
+
+        This is the *replay* capture that backs ``memrelay observe``. Live
+        file-watch tailing of an in-progress session is the deferred daemon epic
+        (#8/#11); the canonical trace + ``copilot.yaml`` remain the source of truth.
+        """
+        if path is not None:
+            events_path = Path(path)
+        elif session_id is not None:
+            events_path = self.session_state_root / session_id / EVENTS_FILENAME
+        else:
+            raise ValueError("make_source requires a session_id or an explicit path")
+        return CopilotSource(events_path)
 
     # ── fallback (SQLite + markdown) path ────────────────────────────────────
 
