@@ -43,12 +43,20 @@ class LLMConfig:
     # borrow-host reuses the host agent's own model (zero API keys); see SPEC §6.2.
     strategy: str = "borrow-host"
     host: str = "copilot"
+    # byo-key strategy only (SPEC §6.4). Left None for the key-less default so the
+    # borrow-host/local paths never need them. ``api_key_env`` names the environment
+    # variable holding the key (the key itself is never stored in config).
+    provider: str | None = None
+    api_key_env: str | None = None
+    model: str | None = None
 
 
 @dataclass
 class EmbeddingsConfig:
     provider: str = "local"
     model: str = "BAAI/bge-small-en-v1.5"
+    # byo-key embeddings only (e.g. provider="openai", model="text-embedding-3-small").
+    api_key_env: str | None = None
 
 
 @dataclass
