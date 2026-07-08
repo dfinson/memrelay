@@ -229,3 +229,43 @@ def test_register_requires_non_empty_id() -> None:
 
     with pytest.raises(ValueError):
         registry.register(_NoId)
+
+
+# ── auto-discovery fails loud (a broken provider must NOT hide behind a green sweep) ─
+
+
+def _write_pkg(root: Path, name: str, modules: dict[str, str]) -> object:
+    """Create an importable package ``name`` under ``root`` with the given submodules."""
+    import importlib
+
+    pkg_dir = root / name
+    pkg_dir.mkdir()
+    (pkg_dir / "__init__.py").write_text("", encoding="utf-8")
+    for mod_name, body in modules.items():
+        (pkg_dir / f"{mod_name}.py").write_text(body, encoding="utf-8")
+    return importlib.import_module(name)
+
+
+def test_discovery_surfaces_import_errors(tmp_path: Path, monkeypatch) -> None:
+    """A provider module that fails to import must raise, not be logged-and-skipped."""
+    from memrelay.providers import registry
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    pkg = _write_pkg(tmp_path, "brokenprov", {"boom": "raise ImportError('boom')\n"})
+
+    with pytest.raises(ImportError):
+        registry._import_provider_modules(pkg)
+
+
+def test_discovery_imports_every_submodule(tmp_path: Path, monkeypatch) -> None:
+    """The happy path imports each submodule (so their ``@register`` decorators run)."""
+    import importlib
+
+    from memrelay.providers import registry
+
+    monkeypatch.syspath_prepend(str(tmp_path))
+    pkg = _write_pkg(tmp_path, "goodprov", {"mod_a": "IMPORTED = True\n"})
+
+    registry._import_provider_modules(pkg)  # must not raise
+
+    assert importlib.import_module("goodprov.mod_a").IMPORTED is True

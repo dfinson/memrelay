@@ -129,21 +129,35 @@ def register(provider_cls: type[AgentProvider]) -> type[AgentProvider]:
     return _REGISTRY.register(provider_cls)
 
 
-def _discover() -> None:
-    """Import every sibling provider module once so their ``@register`` decorators run."""
-    global _discovered
-    if _discovered:
-        return
-    _discovered = True
-    import memrelay.providers as pkg
+def _import_provider_modules(pkg) -> None:
+    """Import every provider submodule of ``pkg`` so their ``@register`` decorators run.
 
+    **Fail loud.** Import errors are deliberately *not* swallowed: a provider module that
+    fails to import is a real bug, and a broken provider hiding behind a green registry is
+    exactly the "green-but-broken" failure class memrelay guards against. The ``ImportError``
+    (or any import-time error) therefore surfaces to the caller instead of being logged and
+    skipped. ``base``/``registry`` are skipped (they define no provider).
+    """
     for info in pkgutil.iter_modules(pkg.__path__):
         if info.name in _SKIP_MODULES:
             continue
-        try:
-            importlib.import_module(f"{pkg.__name__}.{info.name}")
-        except Exception as exc:  # noqa: BLE001 - one bad provider must not break the rest
-            logger.warning("failed to import provider module %r: %s", info.name, exc)
+        importlib.import_module(f"{pkg.__name__}.{info.name}")
+
+
+def _discover() -> None:
+    """Import every sibling provider module once so their ``@register`` decorators run.
+
+    ``_discovered`` is flipped to True only *after* a successful sweep, so a failed import
+    (which surfaces — see :func:`_import_provider_modules`) is retried and re-raised on the
+    next call rather than being silently masked by the once-only guard.
+    """
+    global _discovered
+    if _discovered:
+        return
+    import memrelay.providers as pkg
+
+    _import_provider_modules(pkg)
+    _discovered = True
 
 
 def get_registry() -> ProviderRegistry:
