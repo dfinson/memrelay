@@ -5,7 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 
 from memrelay.providers import CopilotProvider, SessionRef
-from memrelay.providers.copilot import CANONICAL_MAPPING, FALLBACK_MAPPING, mapping_path
+from memrelay.providers.base import AgentProvider, LLMStrategyHint
+from memrelay.providers.copilot import (
+    CANONICAL_MAPPING,
+    DEFAULT_COPILOT_HOME,
+    FALLBACK_MAPPING,
+    mapping_path,
+)
 
 
 def test_mapping_paths_resolve_to_real_files() -> None:
@@ -47,3 +53,44 @@ def test_read_raw_yields_nonblank_lines(tmp_path: Path) -> None:
     ref = SessionRef(session_id="s", agent_id="copilot", path=str(events))
     lines = list(CopilotProvider().read_raw(ref))
     assert lines == ['{"a": 1}', '{"b": 2}']
+
+
+# ── E12 conformance: construction / detection / LLM-strategy advertisement ───
+
+
+def test_from_home_honors_env(monkeypatch, tmp_path: Path) -> None:
+    """``from_home(None)`` resolves ``MEMRELAY_COPILOT_HOME`` (the CLI's env var)."""
+    monkeypatch.setenv("MEMRELAY_COPILOT_HOME", str(tmp_path / "envhome"))
+    provider = CopilotProvider.from_home()
+    assert provider.copilot_home == tmp_path / "envhome"
+
+
+def test_from_home_explicit_overrides_env(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MEMRELAY_COPILOT_HOME", str(tmp_path / "envhome"))
+    provider = CopilotProvider.from_home(str(tmp_path / "explicit"))
+    assert provider.copilot_home == tmp_path / "explicit"
+
+
+def test_from_home_defaults_to_dot_copilot(monkeypatch) -> None:
+    """No override + no env → the bare ``~/.copilot`` default (unchanged behavior)."""
+    monkeypatch.delenv("MEMRELAY_COPILOT_HOME", raising=False)
+    provider = CopilotProvider.from_home()
+    assert provider.copilot_home == Path(DEFAULT_COPILOT_HOME).expanduser()
+
+
+def test_is_present_true_when_session_state_exists(tmp_path: Path) -> None:
+    (tmp_path / "session-state").mkdir()
+    assert CopilotProvider(copilot_home=tmp_path).is_present() is True
+
+
+def test_is_present_false_when_absent(tmp_path: Path) -> None:
+    assert CopilotProvider(copilot_home=tmp_path).is_present() is False
+
+
+def test_llm_strategy_advertises_borrow_host() -> None:
+    hint = CopilotProvider().llm_strategy()
+    assert hint == LLMStrategyHint(strategy="borrow-host", host="copilot")
+
+
+def test_copilot_provider_satisfies_agent_provider() -> None:
+    assert isinstance(CopilotProvider(), AgentProvider)

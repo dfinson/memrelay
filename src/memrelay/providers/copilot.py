@@ -18,12 +18,14 @@ report): the pre-parser import path, ``from_yaml`` taking a filesystem path,
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterable, Iterator
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
-from memrelay.providers.base import SessionRef
+from memrelay.providers.base import AgentProvider, LLMStrategyHint, SessionRef
+from memrelay.providers.registry import register
 
 CANONICAL_MAPPING = "copilot.yaml"
 FALLBACK_MAPPING = "copilot_markdown.yaml"
@@ -38,6 +40,15 @@ SESSION_STORE_DB = "session-store.db"
 #: uses ``"type": "local"`` for stdio subprocess servers, not SPEC's ``"stdio"``.
 MCP_CONFIG_FILENAME = "mcp-config.json"
 MCP_SERVER_KEY = "memrelay"
+
+#: Env var (already honored by the CLI) that overrides the Copilot home; consulted by
+#: :meth:`CopilotProvider.from_home` so auto-detect is testable and CLI-consistent.
+COPILOT_HOME_ENV = "MEMRELAY_COPILOT_HOME"
+
+#: Copilot's key-less default: borrow the host agent's own model (SPEC §6.2). Advertised
+#: via :meth:`CopilotProvider.llm_strategy`; maps onto ``config.llm.{strategy,host}``.
+LLM_STRATEGY = "borrow-host"
+LLM_HOST = "copilot"
 
 
 def mapping_path(name: str) -> str:
@@ -69,13 +80,32 @@ class CopilotSource:
                     yield stripped
 
 
-class CopilotProvider:
+@register
+class CopilotProvider(AgentProvider):
     """Reference :class:`~memrelay.providers.base.AgentProvider` for Copilot CLI."""
 
     id = "copilot"
 
     def __init__(self, copilot_home: str | Path = DEFAULT_COPILOT_HOME) -> None:
         self.copilot_home = Path(copilot_home).expanduser()
+
+    # ── construction / detection (registry seam) ─────────────────────────────
+
+    @classmethod
+    def from_home(cls, home: str | Path | None = None) -> CopilotProvider:
+        """Build a provider, resolving the Copilot home.
+
+        ``home`` overrides it; ``None`` resolves ``MEMRELAY_COPILOT_HOME`` (the env var
+        the CLI already honors) before falling back to ``~/.copilot``. The bare
+        ``CopilotProvider()`` constructor is unchanged and still defaults to ``~/.copilot``.
+        """
+        if home is None:
+            home = os.environ.get(COPILOT_HOME_ENV) or DEFAULT_COPILOT_HOME
+        return cls(home)
+
+    def is_present(self) -> bool:
+        """True when a ``session-state`` dir exists (Copilot CLI has run in this home)."""
+        return self.session_state_root.is_dir()
 
     # ── discovery ────────────────────────────────────────────────────────────
 
@@ -172,6 +202,16 @@ class CopilotProvider:
         pre = CopilotPreParser()
         adapter = MappedJsonAdapter.from_yaml(mapping_path(FALLBACK_MAPPING), session_id)
         return pre, adapter
+
+    # ── (2) LLM strategy (SPEC §2.1 #2, §6.2) ────────────────────────────────
+
+    def llm_strategy(self) -> LLMStrategyHint:
+        """Advertise Copilot's default: borrow the host Copilot model (zero API keys).
+
+        Metadata only — the engine (``memrelay.engine.llm``) still owns building the
+        graphiti ``LLMClient`` and the ``config.llm`` fallback chain.
+        """
+        return LLMStrategyHint(strategy=LLM_STRATEGY, host=LLM_HOST)
 
     # ── MCP registration (E7-S6, SPEC §2 Registration) ───────────────────────
 

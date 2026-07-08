@@ -297,10 +297,10 @@ async def run_observe(
 
     from memrelay.config import load_config
     from memrelay.mcp.namespace import resolve_context
-    from memrelay.providers.copilot import CopilotProvider
+    from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
 
     cfg = config if config is not None else load_config()
-    provider = provider if provider is not None else CopilotProvider()
+    provider = provider if provider is not None else get_registry().create(DEFAULT_PROVIDER_ID)
 
     resolved_cwd = cwd if cwd is not None else resolve_session_cwd(events_path)
     namespace, repo = resolve_context(resolved_cwd, namespace_map)
