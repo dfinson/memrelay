@@ -104,12 +104,14 @@ def _default_idempotency_fn(session_id: str | None, event_id: str | None, conten
     return make_idempotency_key(session_id, event_id, content)
 
 
-def _default_record_factory(**fields: Any) -> Any:
+def _default_record_factory(**fields: Any) -> dict[str, Any]:
     # Lazy: session B owns ``ingest/episode.py``'s ``EpisodeRecord`` and may not be merged
-    # yet. Delegating construction to B keeps C's records schema-locked to B's 8 fields.
+    # yet. ``EpisodeRecord.new`` returns an ``EpisodeRecord``; the spool's ``append`` wants
+    # the plain 8-field dict, so serialise via ``.to_dict()``. Delegating construction to B
+    # keeps C's records schema-locked to B's 8 fields.
     from memrelay.ingest.episode import EpisodeRecord
 
-    return EpisodeRecord.new(**fields)
+    return EpisodeRecord.new(**fields).to_dict()
 
 
 def build_episode_record(

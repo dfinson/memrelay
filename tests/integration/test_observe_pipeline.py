@@ -4,11 +4,12 @@ Unlike the unit tests (which construct ``SessionEvent``s directly), this drives 
 *whole* observe path — ``CopilotProvider`` adapter/source, the traceforge
 ``EventPipeline`` + ``Enricher``, and :class:`GraphitiSink` — over the committed
 Copilot fixture, and proves the namespace/repo are resolved from a **real git remote**
-via the exact ``resolve_context`` that ``memory_recall`` uses (SPEC §5.2). A fake spool
-keeps it independent of session B's durable spool; fake ``idempotency_fn`` +
-``record_factory`` keep it independent of session B's ``make_idempotency_key`` /
-``EpisodeRecord.new`` while still proving the record inputs (and therefore the key) are
-stable across re-observation.
+via the exact ``resolve_context`` that ``memory_recall`` uses (SPEC §5.2). The first
+three tests inject a fake spool + fake ``idempotency_fn`` / ``record_factory`` to stay
+independent of session B (fast, B-agnostic). The final test
+(:func:`test_observe_writes_to_real_spool`) drives the **real** session-B ``Spool`` +
+``EpisodeRecord.new`` + ``make_idempotency_key`` end-to-end now that B is merged to
+main, proving the observe→durable-spool path and its idempotency against real SQLite.
 """
 
 from __future__ import annotations
@@ -130,6 +131,57 @@ def test_observe_can_override_cwd(observed_session, tmp_path: Path) -> None:
     assert spool.records[0]["namespace"] == "globex"
 
 
+def test_observe_writes_to_real_spool(observed_session, tmp_path: Path) -> None:
+    """End-to-end against session B's REAL durable ``Spool`` (post-merge, no fakes).
+
+    ``run_observe`` builds records with B's ``EpisodeRecord.new`` +
+    ``make_idempotency_key`` and appends them to a real SQLite spool laid out at the
+    frozen ``<home>/spool/spool.db`` path. Proves the whole observe→spool path and that
+    re-observing the same session is idempotent (B's ``INSERT OR IGNORE`` on the stable
+    ``idempotency_key``), so the daemon ingester never double-ingests.
+    """
+    from memrelay.ingest.episode import make_idempotency_key
+    from memrelay.ingest.spool import Spool
+
+    events, _ = observed_session
+    # Mirror the frozen daemon-ingester layout: <home>/spool/spool.db.
+    spool_db = tmp_path / "spool" / "spool.db"
+
+    with Spool(spool_db) as spool:
+        result = real_observe_sync(events, "obs-session", spool, cwd=None)
+
+        assert result.namespace == "acme"
+        assert result.repo == "acme/widgets"
+        assert result.appended == 1
+        assert spool.pending() == 1
+
+        batch = spool.read_batch()
+        assert len(batch) == 1
+        _, record = batch[0]
+        assert record["namespace"] == "acme"
+        assert record["repo"] == "acme/widgets"
+        assert record["source"] == "copilot"
+        assert record["session_id"] == "obs-session"
+        assert record["content"]  # non-empty conversational text
+        assert record["event_id"]  # stable wire id
+        assert record["ts"]  # ISO-8601 timestamp
+        # The key is B's real sha256 over the SAME (session_id, stable event_id, content).
+        assert record["idempotency_key"] == make_idempotency_key(
+            "obs-session", record["event_id"], record["content"]
+        )
+        first_key = record["idempotency_key"]
+
+    # Re-observe from a fresh connection (simulating a second run/process): the durable
+    # unique-key guard means the episode is NOT re-appended.
+    with Spool(spool_db) as spool2:
+        assert spool2.pending() == 1
+        real_observe_sync(events, "obs-session", spool2, cwd=None)
+        assert spool2.pending() == 1
+        batch2 = spool2.read_batch()
+        assert len(batch2) == 1
+        assert batch2[0][1]["idempotency_key"] == first_key
+
+
 def run_observe_sync(events: Path, session_id: str, spool: FakeSpool, *, cwd: str | None):
     """Drive the async ``run_observe`` synchronously with the fake idempotency fn."""
     import asyncio
@@ -144,3 +196,10 @@ def run_observe_sync(events: Path, session_id: str, spool: FakeSpool, *, cwd: st
             record_factory=_fake_factory,
         )
     )
+
+
+def real_observe_sync(events: Path, session_id: str, spool, *, cwd: str | None):
+    """Drive ``run_observe`` with session B's REAL episode/idempotency helpers (no fakes)."""
+    import asyncio
+
+    return asyncio.run(run_observe(events, session_id, spool=spool, cwd=cwd))
