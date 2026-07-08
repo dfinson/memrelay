@@ -25,7 +25,7 @@ classifiers = [
 # Runtime dependencies (SPEC §8). traceforge-toolkit pins Python <3.14, which is
 # why requires-python caps there.
 dependencies = [
-    "traceforge-toolkit>=0.1",   # import name: traceforge — normalizes ~18 agents to SessionEvent
+    "traceforge-toolkit>=0.1,<0.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent; capped <0.2 because the walking-skeleton test asserts exact 0.1.x mapping/enrich behavior
     "graphiti-core>=0.29",        # knowledge graph engine
     "kuzu>=0.4",                  # embedded graph database
     "fastembed>=0.3",             # local ONNX embeddings

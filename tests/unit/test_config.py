@@ -16,8 +16,17 @@ from memrelay.config import (
 )
 
 
-def test_defaults_with_no_file_or_env() -> None:
-    cfg = load_config(environ={})
+def test_defaults_with_no_file_or_env(tmp_path: Path) -> None:
+    # Inject a controlled environment so resolution is isolated from the real home
+    # and any MEMRELAY_*/XDG_* the dev or CI environment might carry (config._expand
+    # honors the injected environ). tmp_path holds no config file → pure defaults.
+    env = {
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "XDG_CONFIG_HOME": str(tmp_path / "config"),
+        "XDG_DATA_HOME": str(tmp_path / "data"),
+    }
+    cfg = load_config(environ=env)
     assert cfg.graph.backend == "kuzu"
     assert cfg.graph.path == "~/.memrelay/graph.db"
     assert cfg.llm.strategy == "borrow-host"

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from memrelay import __version__
@@ -23,7 +26,20 @@ def test_version() -> None:
     assert __version__ in result.output
 
 
-def test_config_command_emits_json_defaults() -> None:
+def test_config_command_emits_json_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The CLI reads the real process environment, so isolate it: clear any
+    # MEMRELAY_* overrides and point HOME/USERPROFILE/XDG at an empty tmp dir, so
+    # the command reports built-in defaults rather than a developer's real config.
+    for key in list(os.environ):
+        if key.startswith("MEMRELAY_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
     result = CliRunner().invoke(main, ["config"])
     assert result.exit_code == 0
     data = json.loads(result.output)

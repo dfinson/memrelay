@@ -17,7 +17,9 @@ The env-override convention mirrors traceforge's ``TRACEFORGE_*`` scheme (prefix
 from __future__ import annotations
 
 import os
+import re
 import tomllib
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -90,9 +92,47 @@ class Config:
 # ─── Path resolution ─────────────────────────────────────────────────────────
 
 
-def _expand(value: str) -> Path:
-    """Expand ``~`` and ``$VAR`` / ``${VAR}`` references to an absolute path."""
-    return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
+_VAR_PATTERN = re.compile(r"\$(\w+)|\$\{([^}]*)\}|%([^%]*)%")
+
+
+def _expanduser_with(value: str, env: Mapping[str, str]) -> str:
+    """Expand a leading ``~`` using *env* rather than the real process environment."""
+    if not value.startswith("~"):
+        return value
+    if len(value) > 1 and value[1] not in ("/", "\\"):
+        return value  # ``~user`` form is unsupported — leave it untouched
+    home = env.get("HOME") or env.get("USERPROFILE")
+    if not home:
+        drive, tail = env.get("HOMEDRIVE", ""), env.get("HOMEPATH")
+        home = drive + tail if tail else None
+    if not home:
+        return value  # nothing to expand against — keep the literal ``~``
+    return home + value[1:]
+
+
+def _expandvars_with(value: str, env: Mapping[str, str]) -> str:
+    """Expand ``$VAR`` / ``${VAR}`` / ``%VAR%`` using *env*, leaving unknowns intact."""
+
+    def _sub(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2) or match.group(3)
+        return env.get(name, match.group(0))
+
+    return _VAR_PATTERN.sub(_sub, value)
+
+
+def _expand(value: str, environ: Mapping[str, str] | None = None) -> Path:
+    """Expand ``~`` and ``$VAR`` / ``${VAR}`` references to an absolute path.
+
+    When *environ* is provided, expansion honors that mapping instead of the real
+    process environment, so :func:`load_config` with an injected ``environ`` is
+    genuinely isolated from the caller's real home directory and ``MEMRELAY_*`` /
+    ``XDG_*`` variables (this is what makes the config default tests hermetic).
+    """
+    if environ is None:
+        expanded = os.path.expandvars(os.path.expanduser(value))
+    else:
+        expanded = _expandvars_with(_expanduser_with(value, environ), environ)
+    return Path(expanded).resolve()
 
 
 def default_home(environ: dict[str, str] | None = None) -> Path:
@@ -102,10 +142,10 @@ def default_home(environ: dict[str, str] | None = None) -> Path:
     """
     env = os.environ if environ is None else environ
     if env.get("MEMRELAY_HOME"):
-        return _expand(env["MEMRELAY_HOME"])
+        return _expand(env["MEMRELAY_HOME"], environ)
     if env.get("XDG_DATA_HOME"):
-        return _expand(os.path.join(env["XDG_DATA_HOME"], "memrelay"))
-    return _expand("~/.memrelay")
+        return _expand(os.path.join(env["XDG_DATA_HOME"], "memrelay"), environ)
+    return _expand("~/.memrelay", environ)
 
 
 def candidate_config_paths(environ: dict[str, str] | None = None) -> list[Path]:
@@ -115,13 +155,14 @@ def candidate_config_paths(environ: dict[str, str] | None = None) -> list[Path]:
     """
     env = os.environ if environ is None else environ
     if env.get("MEMRELAY_CONFIG"):
-        return [_expand(env["MEMRELAY_CONFIG"])]
+        return [_expand(env["MEMRELAY_CONFIG"], environ)]
 
     paths: list[Path] = []
     if env.get("XDG_CONFIG_HOME"):
-        paths.append(_expand(os.path.join(env["XDG_CONFIG_HOME"], "memrelay", "config.toml")))
-    paths.append(_expand("~/.config/memrelay/config.toml"))
-    paths.append(_expand("~/.memrelay/config.toml"))
+        xdg = os.path.join(env["XDG_CONFIG_HOME"], "memrelay", "config.toml")
+        paths.append(_expand(xdg, environ))
+    paths.append(_expand("~/.config/memrelay/config.toml", environ))
+    paths.append(_expand("~/.memrelay/config.toml", environ))
     return paths
 
 

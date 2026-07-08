@@ -76,17 +76,22 @@ async def replay_async(
     result = IngestResult(session_id=session_id)
     start = time.perf_counter()
     path = Path(events_path)
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            for event in adapter.parse(line):
-                result.parsed += 1
-                await pipeline.push(event)
-
-    await pipeline.flush()
-    await pipeline.close()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                for event in adapter.parse(line):
+                    result.parsed += 1
+                    await pipeline.push(event)
+        await pipeline.flush()
+    finally:
+        # Always release the pipeline, even if push/flush raised — this is the
+        # pattern GraphitiSink (later epic) will depend on to flush its buffer
+        # and close the graph connection. flush() stays before close() on the
+        # success path; on error we still close.
+        await pipeline.close()
     result.elapsed_s = time.perf_counter() - start
 
     result.delivered = sink.total
