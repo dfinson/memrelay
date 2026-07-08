@@ -103,3 +103,33 @@ def test_observe_errors_when_named_session_missing(monkeypatch, tmp_path: Path) 
 
     assert result.exit_code != 0
     assert "ghost" in result.output
+
+
+def test_observe_resolves_provider_via_registry(monkeypatch, tmp_path: Path) -> None:
+    """The provider is resolved by ``_resolve_provider`` and threaded to select + run."""
+    sentinel = object()
+    captured: dict = {}
+
+    def fake_resolve(copilot_home):
+        captured["home_arg"] = copilot_home
+        return sentinel
+
+    def fake_select(provider, session_id):
+        captured["select_provider"] = provider
+        return SimpleNamespace(session_id="s", path=str(tmp_path / "events.jsonl"))
+
+    async def fake_run_observe(events_path, session_id, *, spool, provider, config):
+        captured["run_provider"] = provider
+        return ObserveResult(session_id=session_id, namespace="ns", repo=None)
+
+    monkeypatch.setattr(cli, "_resolve_provider", fake_resolve)
+    monkeypatch.setattr(cli, "_select_session", fake_select)
+    monkeypatch.setattr(cli, "_open_spool", lambda db_path: _FakeSpool())
+    monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
+    monkeypatch.setattr("memrelay.ingest.graphiti_sink.run_observe", fake_run_observe)
+
+    result = CliRunner().invoke(cli.main, ["observe"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["select_provider"] is sentinel
+    assert captured["run_provider"] is sentinel

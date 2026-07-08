@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from memrelay.ingest.console_sink import ConsoleSink
-from memrelay.providers.copilot import CopilotProvider
 
 if TYPE_CHECKING:
     from memrelay.config import Config
@@ -57,12 +56,13 @@ async def replay_async(
     from traceforge import Enricher, EventPipeline
 
     from memrelay.config import load_config
+    from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
 
     cfg = config if config is not None else load_config()
     phase = cfg.ingest.enable_phase if enable_phase is None else enable_phase
     boundary = cfg.ingest.enable_boundary if enable_boundary is None else enable_boundary
 
-    provider = CopilotProvider()
+    provider = get_registry().create(DEFAULT_PROVIDER_ID)
     adapter = provider.make_adapter(session_id)
     sink = ConsoleSink(writer=writer, echo=echo)
     pipeline = EventPipeline(

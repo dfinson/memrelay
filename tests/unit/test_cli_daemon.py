@@ -29,6 +29,35 @@ def test_init_creates_home_config_and_registers(cli_env: tuple[Path, Path]) -> N
     assert server["args"] == ["mcp"]
 
 
+def test_init_renders_llm_block_from_provider_hint(cli_env: tuple[Path, Path]) -> None:
+    """The generated ``[llm]`` block comes from the resolved provider's strategy hint."""
+    home, _ = cli_env
+    result = CliRunner().invoke(main, ["init"])
+    assert result.exit_code == 0, result.output
+
+    config_text = (home / "config.toml").read_text(encoding="utf-8")
+    assert 'strategy = "borrow-host"' in config_text
+    assert 'host = "copilot"' in config_text
+
+
+def test_init_routes_provider_through_registry(cli_env: tuple[Path, Path], monkeypatch) -> None:
+    """``init`` resolves its provider via ``_resolve_provider`` (the registry seam)."""
+    from memrelay import cli
+
+    calls: list = []
+    real_resolve = cli._resolve_provider
+
+    def spy_resolve(copilot_home):
+        calls.append(copilot_home)
+        return real_resolve(copilot_home)
+
+    monkeypatch.setattr(cli, "_resolve_provider", spy_resolve)
+    result = CliRunner().invoke(main, ["init"])
+
+    assert result.exit_code == 0, result.output
+    assert len(calls) == 1  # provider resolved exactly once, through the seam
+
+
 def test_init_is_idempotent(cli_env: tuple[Path, Path]) -> None:
     _, copilot = cli_env
     runner = CliRunner()
