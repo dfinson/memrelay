@@ -147,9 +147,34 @@ memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `
 - **Portable** — one memory graph shared across every agent you use
 - **Thin layer** — memrelay is integration glue around Graphiti and TraceForge, not a replacement
 
+## Development
+
+Requires Python 3.11–3.13.
+
+```bash
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
+
+memrelay --help                # CLI (subcommands are E0 stubs except `config`)
+memrelay config                # print the resolved configuration
+
+ruff check . && ruff format --check .             # lint
+pytest                                            # tests (incl. the walking skeleton)
+
+python scripts/ingest_fixture.py                  # replay the redacted Copilot fixture
+                                                  #   -> SessionEvents, no Graphiti
+```
+
+The **E0 de-risking spike** (does a real Copilot trace parse cleanly through TraceForge?)
+is written up in [docs/e0-spike.md](docs/e0-spike.md) — verdict **GO**, with the exact
+traceforge 0.1.0 API used and the deltas from `SPEC.md`.
+
 ## Status
 
-🚧 **Under development** — not yet functional. See [SPEC.md](SPEC.md) for the full implementation plan.
+🚧 **Under development** — not yet functional. **E0 (foundations + Copilot ingestion
+spike) landed:** package skeleton, config, CLI surface, CI, and a verified
+Copilot → `SessionEvent` walking skeleton. See [SPEC.md](SPEC.md) for the full plan and
+[docs/e0-spike.md](docs/e0-spike.md) for the spike report.
 
 ## License
 
