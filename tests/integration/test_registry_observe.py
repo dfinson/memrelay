@@ -77,6 +77,10 @@ def copilot_home_with_session(
     events = home / "session-state" / session_id / "events.jsonl"
     _rewrite_cwd(copilot_fixture, events, str(repo))
     monkeypatch.setenv("MEMRELAY_COPILOT_HOME", str(home))
+    # Pin the Claude home to a non-existent path so ``resolve()`` auto-detect stays
+    # copilot-only regardless of whether Claude Code is installed on this machine (the
+    # ClaudeCodeProvider from #70 now also self-registers and detects via ~/.claude).
+    monkeypatch.setenv("MEMRELAY_CLAUDE_HOME", str(tmp_path / "_no_claude_home"))
     return home, session_id
 
 

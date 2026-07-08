@@ -82,6 +82,19 @@ def _make_copilot_home(root: Path, session_ids: tuple[str, ...] = ()) -> Path:
     return root
 
 
+@pytest.fixture(autouse=True)
+def _isolate_claude_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Pin the Claude home to a non-existent dir so registry auto-detect is deterministic.
+
+    Now that a second provider (:class:`ClaudeCodeProvider`, #70) self-registers and detects
+    via ``~/.claude/projects``, these copilot-centric registry tests would otherwise leak the
+    real ``~/.claude`` on a dev machine that has Claude Code installed (CI runs clean). Pinning
+    ``MEMRELAY_CLAUDE_HOME`` at an empty path keeps ``detect``/``resolve`` copilot-only here,
+    without touching the frozen base/registry/copilot source.
+    """
+    monkeypatch.setenv("MEMRELAY_CLAUDE_HOME", str(tmp_path / "_no_claude_home"))
+
+
 # ── the default registry resolves the real CopilotProvider ───────────────────
 
 
