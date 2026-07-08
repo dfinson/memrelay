@@ -1,11 +1,12 @@
 """Unit tests for :mod:`memrelay.ingest.graphiti_sink` (fake spool, no session B).
 
-These tests inject a duck-typed fake spool and a fake ``idempotency_fn`` so they run
-green independently of session B's ``ingest/spool.py`` + ``ingest/episode.py`` (which
-may not be merged yet). Every ``SessionEvent`` is constructed directly so visibility,
-kind, and payload are under full control — the pipeline/enricher is exercised in the
-``run_observe`` test and the integration test, not here. Coroutines are driven with
-``asyncio.run`` (the suite does not depend on pytest-asyncio).
+These tests inject a duck-typed fake spool, a fake ``idempotency_fn``, and a fake
+``record_factory`` so they run green independently of session B's ``ingest/spool.py`` +
+``ingest/episode.py`` (which may not be merged yet). Every ``SessionEvent`` is
+constructed directly so visibility, kind, and payload are under full control — the
+pipeline/enricher is exercised in the ``run_observe`` test and the integration test,
+not here. Coroutines are driven with ``asyncio.run`` (the suite does not depend on
+pytest-asyncio).
 """
 
 from __future__ import annotations
@@ -41,6 +42,11 @@ def _fake_idem(session_id: str | None, event_id: str | None, content: str) -> st
     return f"K|{session_id}|{event_id}|{content}"
 
 
+def _fake_factory(**fields: object) -> dict:
+    """Stand-in for session B's ``EpisodeRecord.new`` — returns the plain 8-field dict."""
+    return dict(fields)
+
+
 def _event(
     *,
     kind: str = "message.user",
@@ -69,6 +75,7 @@ def _sink(spool: FakeSpool, **kwargs) -> GraphitiSink:
     kwargs.setdefault("namespace", "acme")
     kwargs.setdefault("repo", "acme/widgets")
     kwargs.setdefault("idempotency_fn", _fake_idem)
+    kwargs.setdefault("record_factory", _fake_factory)
     return GraphitiSink(spool, **kwargs)
 
 
@@ -215,6 +222,7 @@ def test_build_episode_record_shape() -> None:
         repo=None,
         content="note this",
         idempotency_fn=_fake_idem,
+        record_factory=_fake_factory,
     )
     assert record == {
         "content": "note this",
@@ -242,6 +250,7 @@ def test_run_observe_over_fixture_with_fake_spool(copilot_fixture) -> None:
             "fixture-session",
             spool=spool,
             idempotency_fn=_fake_idem,
+            record_factory=_fake_factory,
         )
     )
 

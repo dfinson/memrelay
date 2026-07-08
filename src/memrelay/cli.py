@@ -176,7 +176,7 @@ def status() -> None:
     "spool_path",
     type=click.Path(dir_okay=False),
     default=None,
-    help="Spool database path (default: <home>/spool.db).",
+    help="Spool database path (default: <home>/spool/spool.db).",
 )
 @click.option(
     "--copilot-home",
@@ -210,7 +210,11 @@ def observe(session_id: str | None, spool_path: str | None, copilot_home: str | 
         )
 
     home = ensure_home(cfg)
-    db_path = Path(spool_path) if spool_path else home / "spool.db"
+    # Frozen contract: the daemon ingester drains <home>/spool/spool.db (note the
+    # "spool/" subdir). Observe MUST write the same file or ingest silently recalls
+    # nothing. sqlite won't create the parent dir, so make it here.
+    db_path = Path(spool_path) if spool_path else home / "spool" / "spool.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     spool = _open_spool(db_path)
 
     result = asyncio.run(

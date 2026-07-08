@@ -5,9 +5,10 @@ Unlike the unit tests (which construct ``SessionEvent``s directly), this drives 
 ``EventPipeline`` + ``Enricher``, and :class:`GraphitiSink` — over the committed
 Copilot fixture, and proves the namespace/repo are resolved from a **real git remote**
 via the exact ``resolve_context`` that ``memory_recall`` uses (SPEC §5.2). A fake spool
-keeps it independent of session B's durable spool; a fake ``idempotency_fn`` keeps it
-independent of session B's ``make_idempotency_key`` while still proving the record
-inputs (and therefore the key) are stable across re-observation.
+keeps it independent of session B's durable spool; fake ``idempotency_fn`` +
+``record_factory`` keep it independent of session B's ``make_idempotency_key`` /
+``EpisodeRecord.new`` while still proving the record inputs (and therefore the key) are
+stable across re-observation.
 """
 
 from __future__ import annotations
@@ -36,6 +37,10 @@ class FakeSpool:
 
 def _fake_idem(session_id: str | None, event_id: str | None, content: str) -> str:
     return f"K|{session_id}|{event_id}|{content}"
+
+
+def _fake_factory(**fields: object) -> dict:
+    return dict(fields)
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -130,5 +135,12 @@ def run_observe_sync(events: Path, session_id: str, spool: FakeSpool, *, cwd: st
     import asyncio
 
     return asyncio.run(
-        run_observe(events, session_id, spool=spool, cwd=cwd, idempotency_fn=_fake_idem)
+        run_observe(
+            events,
+            session_id,
+            spool=spool,
+            cwd=cwd,
+            idempotency_fn=_fake_idem,
+            record_factory=_fake_factory,
+        )
     )

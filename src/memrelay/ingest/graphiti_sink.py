@@ -5,9 +5,9 @@ Wave-3 Session C (E1 observe + minimal E2 assembly). This module owns the
 
 * :class:`GraphitiSink` — a traceforge ``StorageSink`` whose async ``on_event`` maps
   each **visible** ``SessionEvent`` carrying conversational text to an *episode
-  record* (the frozen dict schema owned by session B) and appends it to the durable
-  **Spool**. ``flush``/``close`` are no-ops: the spool is durable, so there is no
-  buffer to drain (SPEC §3.4).
+  record* (built via session B's ``EpisodeRecord.new``, the frozen 8-field schema B
+  owns) and appends it to the durable **Spool**. ``flush``/``close`` are no-ops: the
+  spool is durable, so there is no buffer to drain (SPEC §3.4).
 * :func:`run_observe` — build and drive an ``EventPipeline`` (``Enricher``, no
   governance) over one discovered session's events, writing episode records into a
   Spool.
@@ -27,8 +27,10 @@ the PR body; the E0 spike is in ``docs/e0-spike.md``):
   ``adapter.parse`` marks everything ``visible`` — so the visible-only filter must run
   **here**, downstream of enrichment.
 
-Session B's spool + episode helpers are imported **lazily** (inside functions) so this
-module, and its unit tests which inject a fake spool, import cleanly before B lands.
+Session B's spool + episode helpers (``Spool``, ``EpisodeRecord.new``,
+``make_idempotency_key``) are imported **lazily** (inside functions) so this module,
+and its unit tests which inject a fake spool + fake record factory, import cleanly
+before B lands.
 """
 
 from __future__ import annotations
@@ -57,6 +59,9 @@ DEFAULT_SOURCE = "copilot"
 
 #: ``(session_id, event_id, content) -> idempotency_key`` (session B's helper).
 IdempotencyFn = Callable[[str | None, str | None, str], str]
+
+#: Builds an episode record from the 8 frozen fields (session B's ``EpisodeRecord.new``).
+RecordFactory = Callable[..., Any]
 
 
 class SpoolLike(Protocol):
@@ -99,6 +104,14 @@ def _default_idempotency_fn(session_id: str | None, event_id: str | None, conten
     return make_idempotency_key(session_id, event_id, content)
 
 
+def _default_record_factory(**fields: Any) -> Any:
+    # Lazy: session B owns ``ingest/episode.py``'s ``EpisodeRecord`` and may not be merged
+    # yet. Delegating construction to B keeps C's records schema-locked to B's 8 fields.
+    from memrelay.ingest.episode import EpisodeRecord
+
+    return EpisodeRecord.new(**fields)
+
+
 def build_episode_record(
     event: SessionEvent,
     *,
@@ -107,28 +120,33 @@ def build_episode_record(
     content: str,
     source: str = DEFAULT_SOURCE,
     idempotency_fn: IdempotencyFn | None = None,
-) -> dict[str, Any]:
+    record_factory: RecordFactory | None = None,
+) -> Any:
     """Assemble one episode record (session B's frozen schema) for *event*.
 
-    ``content`` is passed in already-extracted/validated by the caller so the record
-    builder stays a pure mapping. ``idempotency_key`` is computed via session B's
-    ``make_idempotency_key`` (or an injected fake in tests).
+    Construction is delegated to session B's ``EpisodeRecord.new`` (lazy-imported, or an
+    injected fake in tests) so C's records stay schema-locked to B's 8 frozen fields:
+    ``content, namespace, repo, source, session_id, event_id, ts, idempotency_key``.
+    ``content`` is passed in already-extracted/validated by the caller; ``event_id`` is
+    the *stable* wire id and ``idempotency_key`` is computed via session B's
+    ``make_idempotency_key`` (or an injected fake).
     """
-    fn = idempotency_fn or _default_idempotency_fn
+    make_key = idempotency_fn or _default_idempotency_fn
+    factory = record_factory or _default_record_factory
     session_id = getattr(event, "session_id", None)
     event_id = _stable_event_id(event)
     timestamp = getattr(event, "timestamp", None)
     ts_iso = timestamp.isoformat() if timestamp is not None else ""
-    return {
-        "content": content,
-        "namespace": namespace,
-        "repo": repo,
-        "source": source,
-        "session_id": session_id,
-        "event_id": event_id,
-        "ts": ts_iso,
-        "idempotency_key": fn(session_id, event_id, content),
-    }
+    return factory(
+        content=content,
+        namespace=namespace,
+        repo=repo,
+        source=source,
+        session_id=session_id,
+        event_id=event_id,
+        ts=ts_iso,
+        idempotency_key=make_key(session_id, event_id, content),
+    )
 
 
 class GraphitiSink(StorageSink):
@@ -146,6 +164,8 @@ class GraphitiSink(StorageSink):
         deny_kinds: kinds to always drop (applied before ``allow_kinds``).
         idempotency_fn: override for ``make_idempotency_key`` (injected in unit tests
             to stay decoupled from session B).
+        record_factory: override for session B's ``EpisodeRecord.new`` (injected in unit
+            tests to stay decoupled from session B).
     """
 
     def __init__(
@@ -158,6 +178,7 @@ class GraphitiSink(StorageSink):
         allow_kinds: Iterable[str] | None = DEFAULT_ALLOW_KINDS,
         deny_kinds: Iterable[str] = (),
         idempotency_fn: IdempotencyFn | None = None,
+        record_factory: RecordFactory | None = None,
     ) -> None:
         self._spool = spool
         self._namespace = namespace
@@ -166,6 +187,7 @@ class GraphitiSink(StorageSink):
         self._allow_kinds = frozenset(allow_kinds) if allow_kinds is not None else None
         self._deny_kinds = frozenset(deny_kinds)
         self._idempotency_fn = idempotency_fn or _default_idempotency_fn
+        self._record_factory = record_factory or _default_record_factory
         self.appended = 0
         self.skipped = 0
 
@@ -195,6 +217,7 @@ class GraphitiSink(StorageSink):
             content=content,
             source=self._source,
             idempotency_fn=self._idempotency_fn,
+            record_factory=self._record_factory,
         )
         self._spool.append(record)
         self.appended += 1
@@ -257,6 +280,7 @@ async def run_observe(
     allow_kinds: Iterable[str] | None = DEFAULT_ALLOW_KINDS,
     deny_kinds: Iterable[str] = (),
     idempotency_fn: IdempotencyFn | None = None,
+    record_factory: RecordFactory | None = None,
     provider: Any | None = None,
 ) -> ObserveResult:
     """Observe one session: adapter → ``EventPipeline`` → :class:`GraphitiSink` → spool.
@@ -287,6 +311,7 @@ async def run_observe(
         allow_kinds=allow_kinds,
         deny_kinds=deny_kinds,
         idempotency_fn=idempotency_fn,
+        record_factory=record_factory,
     )
     pipeline = EventPipeline(
         sinks=[sink],
