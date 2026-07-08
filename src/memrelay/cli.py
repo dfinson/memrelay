@@ -10,6 +10,8 @@ commands (``config``, ``--help``) stay fast.
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import click
 
@@ -59,6 +61,27 @@ def _write_default_config(home) -> tuple[object, bool]:
         return path, False
     path.write_text(DEFAULT_CONFIG_TOML, encoding="utf-8")
     return path, True
+
+
+def _select_session(provider: CopilotProvider, session_id: str | None):
+    """Pick the session to observe: ``session_id`` if given, else the most recent.
+
+    Multi-session / continuous observation is the daemon epic (#8); here we observe a
+    single discovered session, defaulting to the one whose trace was updated last.
+    """
+    refs = list(provider.discover_sessions())
+    if session_id is not None:
+        return next((ref for ref in refs if ref.session_id == session_id), None)
+    if not refs:
+        return None
+    return max(refs, key=lambda ref: os.path.getmtime(ref.path) if ref.path else 0.0)
+
+
+def _open_spool(db_path: Path):
+    """Open session B's durable ``Spool`` at ``db_path`` (lazy import: B-owned)."""
+    from memrelay.ingest.spool import Spool
+
+    return Spool(str(db_path))
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -138,6 +161,69 @@ def status() -> None:
     click.echo(f"  sessions_observed: {health.get('sessions_observed', 0)}")
     click.echo(f"  episodes_ingested: {health.get('episodes_ingested', 0)}")
     click.echo(f"  spool_pending:     {health.get('spool_pending', 0)}")
+
+
+@main.command()
+@click.option(
+    "--session",
+    "session_id",
+    metavar="ID",
+    default=None,
+    help="Session to observe (default: the most recently updated one).",
+)
+@click.option(
+    "--spool",
+    "spool_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Spool database path (default: <home>/spool.db).",
+)
+@click.option(
+    "--copilot-home",
+    "copilot_home",
+    type=click.Path(file_okay=False),
+    default=None,
+    envvar="MEMRELAY_COPILOT_HOME",
+    help="Copilot CLI home to observe (default ~/.copilot).",
+)
+def observe(session_id: str | None, spool_path: str | None, copilot_home: str | None) -> None:
+    """Observe a Copilot session: map visible events to episodes in the spool.
+
+    Replays one discovered session through the observation pipeline, writing an
+    episode record for every visible, content-bearing message to the durable spool
+    (idempotent — re-running never double-ingests). Continuous multi-session
+    observation is the daemon epic; this is the one-shot capture.
+    """
+    import asyncio
+
+    from memrelay.ingest.graphiti_sink import run_observe
+
+    cfg = load_config()
+    provider = CopilotProvider(copilot_home) if copilot_home else CopilotProvider()
+
+    ref = _select_session(provider, session_id)
+    if ref is None:
+        raise click.ClickException(
+            f"no Copilot session found with id {session_id!r}."
+            if session_id
+            else "no Copilot sessions found to observe."
+        )
+
+    home = ensure_home(cfg)
+    db_path = Path(spool_path) if spool_path else home / "spool.db"
+    spool = _open_spool(db_path)
+
+    result = asyncio.run(
+        run_observe(ref.path, ref.session_id, spool=spool, provider=provider, config=cfg)
+    )
+
+    click.echo(f"observed session {result.session_id}")
+    click.echo(f"  namespace: {result.namespace}")
+    click.echo(f"  repo:      {result.repo}")
+    click.echo(f"  parsed:    {result.parsed}")
+    click.echo(f"  episodes:  {result.appended}")
+    click.echo(f"  skipped:   {result.skipped}")
+    click.echo(f"  spool:     {db_path}")
 
 
 @main.command()
