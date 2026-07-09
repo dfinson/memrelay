@@ -15,9 +15,14 @@ from pathlib import Path
 
 import pytest
 
+from memrelay import cli as _cli
 from memrelay.daemon.protocol import StubBackend
 from memrelay.daemon.server import DaemonServer
 from memrelay.daemon.transport import Endpoint
+
+#: Captured at import (before any autouse patch) so a test can exercise the real
+#: ``init`` model-prefetch seam even while other tests keep it stubbed offline.
+_REAL_PREFETCH = _cli._prefetch_embedding_model
 
 
 class ThreadDaemon:
@@ -64,6 +69,28 @@ class ThreadDaemon:
             except RuntimeError:
                 pass  # loop already stopped/closed
         self._thread.join(timeout=5.0)
+
+
+@pytest.fixture(autouse=True)
+def stub_model_prefetch(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Keep every unit test offline: never trigger a real fastembed download in ``init``.
+
+    ``init`` now prefetches the embedding model (#13), which would otherwise hit the
+    network on each invocation. Unit tests replace the seam with a recorder no-op; a test
+    that needs the real behavior requests the :func:`real_prefetch` fixture instead.
+
+    Returns the list of ``Config`` objects the stub was called with, so a test can assert
+    ``init`` invoked the seam exactly once.
+    """
+    calls: list = []
+    monkeypatch.setattr(_cli, "_prefetch_embedding_model", lambda cfg: calls.append(cfg))
+    return calls
+
+
+@pytest.fixture
+def real_prefetch():
+    """The unpatched ``_prefetch_embedding_model`` for tests that exercise it directly."""
+    return _REAL_PREFETCH
 
 
 @pytest.fixture

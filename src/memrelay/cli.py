@@ -71,6 +71,80 @@ def _todo(command: str, epic: str) -> None:
     click.echo(f"memrelay {command}: {_NOT_YET} (planned for {epic}).")
 
 
+def _model_cache_populated(cfg: Config) -> bool:
+    """Best-effort: True if the embedding-model cache dir already holds files.
+
+    Used only to keep an ``init`` re-run fast and to word the console message; the
+    daemon's own embedder construction is the real guarantee the model is usable.
+    """
+    models_dir = cfg.home_path / "models"
+    return models_dir.is_dir() and any(models_dir.iterdir())
+
+
+def _embedding_model_size_hint(model_name: str) -> str:
+    """Human-readable size suffix for the download message ('' when unknown).
+
+    Reads fastembed's model registry (no download); any failure — including the
+    lazy fastembed import itself — yields an empty hint, never an error.
+    """
+    try:
+        from fastembed import TextEmbedding
+
+        for entry in TextEmbedding.list_supported_models():
+            model = entry.get("model") if isinstance(entry, dict) else getattr(entry, "model", None)
+            if model != model_name:
+                continue
+            size = (
+                entry.get("size_in_GB")
+                if isinstance(entry, dict)
+                else getattr(entry, "size_in_GB", None)
+            )
+            if size:
+                return f", ~{round(float(size) * 1024)} MB"
+    except Exception:  # noqa: BLE001 - the size hint is cosmetic; never fail init over it
+        pass
+    return ""
+
+
+def _prefetch_embedding_model(cfg: Config) -> None:
+    """Trigger the one-time embedding-model download so first run is self-contained (#13).
+
+    Constructing the local embedder makes fastembed download the quantized ONNX model and
+    cache it under ``<home>/models``; a re-run with the model already cached neither
+    re-downloads nor reconstructs (kept fast). Only the key-less ``local`` provider has a
+    model to fetch — byo-key providers resolve lazily and need no local download.
+
+    Failure is non-fatal by contract: ``init`` has already created the home, written the
+    config, and registered the MCP server, so a download problem (offline, a missing
+    dependency, disk) only prints a warning and defers the fetch to first daemon use.
+    """
+    provider = (cfg.embeddings.provider or "local").lower()
+    if provider != "local":
+        click.echo(f"embedding model: none to prefetch (provider {provider!r}).")
+        return
+    if _model_cache_populated(cfg):
+        click.echo("embedding model: already present (skipping download).")
+        return
+
+    model_name = cfg.embeddings.model
+    size_hint = _embedding_model_size_hint(model_name)
+    click.echo(f"embedding model: downloading {model_name} (one-time{size_hint})...")
+    try:
+        # Lazy import: keeps `--help`/`config` fast and confines the fastembed/onnxruntime
+        # dependency to the one command that needs it.
+        from memrelay.engine.graphiti import build_embedder
+
+        build_embedder(cfg)  # constructing the embedder is the download trigger
+    except Exception as exc:  # noqa: BLE001 - any failure must not abort init
+        click.echo(
+            f"embedding model: could not download now ({exc}); memrelay will fetch it "
+            "automatically on first use (needs network).",
+            err=True,
+        )
+        return
+    click.echo("embedding model: done.")
+
+
 def _write_default_config(home, config_text: str) -> tuple[object, bool]:
     """Write the starter config into ``home`` if absent (idempotent).
 
@@ -132,6 +206,7 @@ def init(copilot_home: str | None) -> None:
     click.echo(f"memrelay home:  {home}")
     click.echo(f"config:         {config_file}" + ("" if created else "  (kept existing)"))
     click.echo(f"registered MCP: {mcp_path}")
+    _prefetch_embedding_model(cfg)
     click.echo("Run `memrelay start` to launch the observation daemon.")
 
 
