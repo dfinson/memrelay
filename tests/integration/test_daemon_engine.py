@@ -1,7 +1,7 @@
 """The daemon serving the REAL MemoryEngine end-to-end (E4 behind E6/E7).
 
 Hermetic: an offline ``MemoryEngine`` (deterministic mock LLM + gate embedder,
-temp Kuzu) is injected through the daemon's ``backend=`` seam. Two ingest paths are
+temp Ladybug) is injected through the daemon's ``backend=`` seam. Two ingest paths are
 covered: a fake ingester/spool drives the socket note→recall→drain ordering
 deterministically, and Session B's real ``Spool`` → ``Ingester`` is hosted via the
 default factory to prove the merged spool→engine path. No network, no API key, no
@@ -27,19 +27,21 @@ from memrelay.ingest.spool import Spool
 pytestmark = pytest.mark.integration
 
 NAMESPACE = "proj-a"
-SOCKET_FACT = "memrelay stores persistent agent memory in an embedded Kuzu graph database."
+SOCKET_FACT = "memrelay stores persistent agent memory in an embedded Ladybug graph database."
 SOCKET_QUERY = "which graph database backs memrelay memory"
 SPOOL_FACT = "memrelay caches its hottest lookups in Redis for speed."
 SPOOL_QUERY = "what does memrelay use for caching"
 #: Entities the deterministic mock LLM "extracts". Order matters: the mock emits a
 #: single ``vocab[0] uses vocab[1]`` edge per episode, and graphiti feeds the first
-#: episode back as context into the second — so "Redis" must precede "Kuzu" for the
+#: episode back as context into the second — so "Redis" must precede "Ladybug" for the
 #: spooled Redis episode to yield a distinct "memrelay uses Redis" edge (subject is
 #: always the shared "memrelay"). See the ingester-drain assertion below.
-VOCAB = ["memrelay", "Redis", "Kuzu"]
+VOCAB = ["memrelay", "Redis", "Ladybug"]
 #: A single fact exercised only through the real spool→ingester path (one episode,
-#: so ``["memrelay", "Kuzu"]`` has no cross-episode contamination to order around).
-REAL_SPOOL_FACT = "memrelay keeps its persistent agent memory in an embedded Kuzu graph database."
+#: so ``["memrelay", "Ladybug"]`` has no cross-episode contamination to order around).
+REAL_SPOOL_FACT = (
+    "memrelay keeps its persistent agent memory in an embedded Ladybug graph database."
+)
 REAL_SPOOL_QUERY = "which graph database stores memrelay memory"
 
 
@@ -64,7 +66,7 @@ def _mentions(result: dict | None, needle: str) -> bool:
 def _make_config(tmp_path: Path):
     graph_path = tmp_path / "graph.db"
     cfg = load_config(
-        environ={}, home=str(tmp_path), graph={"path": str(graph_path), "backend": "kuzu"}
+        environ={}, home=str(tmp_path), graph={"path": str(graph_path), "backend": "ladybug"}
     )
     assert cfg.graph_path == graph_path.resolve()
     return cfg
@@ -89,7 +91,7 @@ class _FakeIngester:
     """Drains a spool into the shared engine once ``release`` is set, then idles.
 
     ``release`` lets the test order the socket write before the ingester's write so
-    the two writers never touch the one Kuzu connection concurrently — keeping the
+    the two writers never touch the one Ladybug connection concurrently — keeping the
     end-to-end assertion deterministic.
     """
 
@@ -152,7 +154,7 @@ def test_daemon_serves_real_engine_and_hosts_ingester(
                 await _roundtrip(
                     endpoint, {"method": "search", "query": SOCKET_QUERY, "namespace": NAMESPACE}
                 ),
-                "kuzu",
+                "ladybug",
             )
 
             # 2) release the hosted ingester; it drains the spool into the SAME engine.
@@ -175,7 +177,7 @@ def test_daemon_serves_real_engine_and_hosts_ingester(
             runtime.request_shutdown()
             await asyncio.wait_for(serve_task, timeout=10.0)
         # We built the engine, so the runtime (given an injected backend) must NOT
-        # have closed it — we own it and release the Kuzu lock here.
+        # have closed it — we own it and release the Ladybug lock here.
         await engine.close()
 
     asyncio.run(scenario())
@@ -213,7 +215,7 @@ def test_daemon_hosts_real_ingester_draining_real_spool(
     an offline engine, and lets the daemon's hosted *real* ingester drain the spool
     into that engine so the fact becomes recallable over the socket — the merged E4
     engine + #37 ingester, proven without any fake. Drain progress is observed
-    in-process via ``ingester.stats()`` (SQLite/counter only, never Kuzu), so the
+    in-process via ``ingester.stats()`` (SQLite/counter only, never Ladybug), so the
     socket recall happens after the single writer is quiescent — no engine contention.
     """
 
@@ -229,7 +231,7 @@ def test_daemon_hosts_real_ingester_draining_real_spool(
             assert seed.pending() == 1
 
         engine = await MemoryEngine.from_config(
-            cfg, llm_client=mock_llm_factory(["memrelay", "Kuzu"]), embedder=gate_embedder
+            cfg, llm_client=mock_llm_factory(["memrelay", "Ladybug"]), embedder=gate_embedder
         )
         # No ingester_factory override → the real default factory builds B's Spool +
         # Ingester against the seeded db and shares this one engine instance.
@@ -254,7 +256,7 @@ def test_daemon_hosts_real_ingester_draining_real_spool(
                     endpoint,
                     {"method": "search", "query": REAL_SPOOL_QUERY, "namespace": NAMESPACE},
                 ),
-                "kuzu",
+                "ladybug",
             )
             health = await _roundtrip(endpoint, {"method": "health"})
             assert health is not None
@@ -264,7 +266,7 @@ def test_daemon_hosts_real_ingester_draining_real_spool(
         finally:
             runtime.request_shutdown()
             await asyncio.wait_for(serve_task, timeout=10.0)
-        # We built the engine (injected as backend), so we release the Kuzu lock here;
+        # We built the engine (injected as backend), so we release the Ladybug lock here;
         # the runtime must not have closed it.
         await engine.close()
 

@@ -43,7 +43,7 @@ def test_config_command_emits_json_defaults(
     result = CliRunner().invoke(main, ["config"])
     assert result.exit_code == 0
     data = json.loads(result.output)
-    assert data["graph"]["backend"] == "kuzu"
+    assert data["graph"]["backend"] == "ladybug"
     assert data["llm"]["strategy"] == "borrow-host"
     assert "resolved_path" in data["graph"]
 

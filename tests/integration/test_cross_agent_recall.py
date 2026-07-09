@@ -6,7 +6,7 @@ synthetic Claude Code ``*.jsonl`` session log) are each observed through their *
 provider** — ``CopilotProvider`` and ``ClaudeCodeProvider`` — while working in the **same git
 repo**. The namespace is **derived** from that shared repo's git remote via the real
 ``resolve_context`` path (the exact function ``memory_recall`` uses), not passed in as a
-hard-coded equal string. Both agents' facts land in one embedded-Kuzu graph under that one
+hard-coded equal string. Both agents' facts land in one embedded-Ladybug graph under that one
 derived namespace, and a single ``engine.search`` recalls a fact contributed by *each* agent.
 
 Integrity notes (deliberate, surfaced rather than papered over):
@@ -21,7 +21,7 @@ Integrity notes (deliberate, surfaced rather than papered over):
   cwd is a separate observe-seam follow-up, out of scope for #70.
 
 Fully hermetic: deterministic mock LLM + real/offline embedder from ``conftest.py``, a temp
-git repo for namespace resolution, embedded Kuzu on ``tmp_path``. No network, no API key,
+git repo for namespace resolution, embedded Ladybug on ``tmp_path``. No network, no API key,
 never a real ``~/.memrelay`` / ``~/.copilot`` / ``~/.claude``.
 """
 
@@ -52,7 +52,7 @@ CLAUDE_FACT = "The widget service health checks are monitored by the Quasar watc
 # Each query names the distinctive entity that agent's fact introduced, and hits the SAME
 # single namespace graph (group_ids=[namespace]). Naming the entity keeps recall deterministic
 # under BOTH the real fastembed embedder and the offline hashing fallback (the invented terms
-# have no semantic neighbours, unlike a real word like "Kuzu"). The proof stands: two different
+# have no semantic neighbours, unlike a real word like "Ladybug"). The proof stands: two different
 # agents, ingested via two different providers into ONE derived namespace, each contribute a
 # fact that the unified graph recalls.
 COPILOT_QUERY = "Zephyr token module used for authentication"
@@ -108,7 +108,7 @@ def _make_config(tmp_path: Path):
     return load_config(
         environ={},
         home=str(tmp_path),
-        graph={"path": str(graph_path), "backend": "kuzu"},
+        graph={"path": str(graph_path), "backend": "ladybug"},
     )
 
 

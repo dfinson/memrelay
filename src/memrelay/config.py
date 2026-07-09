@@ -34,7 +34,7 @@ _META_ENV = frozenset({"MEMRELAY_CONFIG", "MEMRELAY_HOME"})
 
 @dataclass
 class GraphConfig:
-    backend: str = "kuzu"
+    backend: str = "ladybug"
     path: str = "~/.memrelay/graph.db"
 
 
@@ -90,7 +90,7 @@ class Config:
 
     @property
     def graph_path(self) -> Path:
-        """Absolute path to the Kuzu graph database file."""
+        """Absolute path to the embedded graph database file."""
         return _expand(self.graph.path)
 
     def to_dict(self) -> dict[str, Any]:

@@ -27,7 +27,7 @@ def test_defaults_with_no_file_or_env(tmp_path: Path) -> None:
         "XDG_DATA_HOME": str(tmp_path / "data"),
     }
     cfg = load_config(environ=env)
-    assert cfg.graph.backend == "kuzu"
+    assert cfg.graph.backend == "ladybug"
     assert cfg.graph.path == "~/.memrelay/graph.db"
     assert cfg.llm.strategy == "borrow-host"
     assert cfg.llm.host == "copilot"

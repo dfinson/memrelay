@@ -26,8 +26,8 @@ classifiers = [
 # why requires-python caps there.
 dependencies = [
     "traceforge-toolkit>=0.1,<0.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent; capped <0.2 because the walking-skeleton test asserts exact 0.1.x mapping/enrich behavior
-    "graphiti-core>=0.29,<0.30",  # knowledge graph engine; capped <0.30 for CI determinism — the Kuzu backend is deprecated in 0.29.2 and the engine relies on the 0.29 add_episode/search API (see docs/e4-engine-notes.md §6, tracking issue #76)
-    "kuzu>=0.11.3",               # embedded graph database; floor matches graphiti-core 0.29.2's own requirement (Requires-Dist: kuzu>=0.11.3), intentionally left un-upper-bounded
+    "graphiti-core>=0.29,<0.30",  # knowledge graph engine (bitemporal facts, LLM extraction, dedup, RRF); capped <0.30 for CI determinism. We keep graphiti's brain but inject our own storage driver reporting provider=KUZU, so its Kuzu-dialect Cypher is reused verbatim (see docs/adr/0001-graph-storage-ladybug.md, #76)
+    "ladybug>=0.18",              # embedded graph database — the original Kuzu devs' maintained, Kuzu-API/Cypher drop-in fork. Replaces the archived `kuzu` as the OOTB default storage backend (#76); un-upper-bounded
     "fastembed>=0.3",             # local ONNX embeddings
     "mcp>=1.0",                   # Model Context Protocol server
     "click>=8.0",                 # CLI
@@ -39,6 +39,12 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
     "pre-commit>=3.5",
+]
+# Back-compat fallback only (#76, fork D-1): the archived `kuzu==0.11.3` backend,
+# kept behind the Backend seam for anyone with an existing Kuzu graph.db. NOT part
+# of the default install — OOTB memrelay ships LadybugDB and never pulls this.
+kuzu = [
+    "kuzu>=0.11.3",
 ]
 
 [project.urls]
@@ -84,4 +90,5 @@ testpaths = ["tests"]
 addopts = "-ra"
 markers = [
     "integration: end-to-end tests that exercise the traceforge pipeline",
+    "kuzu: back-compat fallback tests that load the archived Kuzu native backend; deselected from the default run and executed in a dedicated CI job (Kuzu and Ladybug share one pybind11 extension and cannot co-load in a single process)",
 ]
