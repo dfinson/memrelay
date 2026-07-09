@@ -100,7 +100,9 @@ _FILE_LIST_KEYS: tuple[str, ...] = ("paths", "files")
 #: Truncation bounds keeping composed episodes lean and offline (tool ``result`` can be
 #: 20KB+). Applied deterministically so re-observation yields byte-identical content.
 MAX_INTENT_CHARS = 280
-MAX_RESULT_CHARS = 500
+#: Tool-result bound. Sized above the empirical median real-session result (~797 chars)
+#: so the typical tool outcome survives whole, while pathological 20KB+ dumps stay bounded.
+MAX_RESULT_CHARS = 800
 MAX_DECISION_CHARS = 280
 MAX_EPISODE_CHARS = 4000
 MAX_SUMMARY_CHARS = 4000
