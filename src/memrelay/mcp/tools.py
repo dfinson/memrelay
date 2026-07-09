@@ -3,7 +3,7 @@
 ``memory_recall`` / ``memory_detail`` / ``memory_note`` each resolve the caller's
 namespace, forward to the daemon over :class:`~memrelay.mcp.client.DaemonClient`,
 and shape the reply. They hold no state of their own — all memory lives in the
-daemon (today backed by ``StubBackend``).
+daemon, which serves the real :class:`~memrelay.engine.graphiti.MemoryEngine`.
 """
 
 from __future__ import annotations
