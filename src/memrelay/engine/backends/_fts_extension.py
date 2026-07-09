@@ -169,6 +169,34 @@ def _ensure_extension_file(plat: str) -> Path | None:
     return dst
 
 
+def prefetch_fts_extension() -> None:
+    """Warm the per-user FTS-extension cache so the first daemon start is offline (#93).
+
+    On a cold first run the daemon's engine build fetches Ladybug's FTS extension over the
+    network (the #76 TLS-workaround path) *before* it serves health, so ``memrelay start``'s
+    fixed readiness window can elapse mid-download. Calling this from ``init`` — exactly as
+    ``init`` prefetches the embedding model (#13) — moves that fetch to setup time, leaving
+    the first ``start`` fully offline for FTS.
+
+    Driver-free by design: only the download half (``_ensure_extension_file``) is exercised;
+    the ``LOAD EXTENSION`` half needs a live driver and stays in
+    :func:`load_ladybug_fts_extension`. We warm **every** candidate tag rather than stopping
+    at the first success: at prefetch time there is no driver to test which ABI will actually
+    ``LOAD``, so on Linux (two ABIs — ``linux_amd64`` / ``linux_old_amd64``) we cache both,
+    guaranteeing the runtime loader finds a cached file for whichever tag it ends up using.
+
+    Best-effort and **never raises**: any failure (missing build, offline, HTTP, or even a
+    failure to import ``ladybug`` for its version) is logged as a warning and skipped, because
+    the runtime loader retains its native ``INSTALL FTS`` fallback — a prefetch miss only
+    defers the fetch to first daemon use, it must never break ``init``.
+    """
+    for plat in _ladybug_platform_candidates():
+        try:
+            _ensure_extension_file(plat)
+        except Exception as exc:  # noqa: BLE001 - prefetch is best-effort; must never break init
+            logger.warning("Ladybug FTS extension prefetch for %s failed: %s", plat, exc)
+
+
 async def load_ladybug_fts_extension(driver: GraphDriver) -> None:
     """Load Ladybug's FTS extension, robust to its native downloader's Linux TLS bug.
 

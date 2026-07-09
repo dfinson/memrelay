@@ -145,6 +145,42 @@ def _prefetch_embedding_model(cfg: Config) -> None:
     click.echo("embedding model: done.")
 
 
+def _prefetch_fts_extension(cfg: Config) -> None:
+    """Warm Ladybug's FTS-extension cache so the first ``start`` does not race the network (#93).
+
+    On a cold first run the daemon builds the full engine — including a first-time network
+    fetch of Ladybug's FTS extension (the #76 TLS-workaround path) — before it serves health,
+    so ``start``'s fixed readiness window can elapse mid-download and report a spurious
+    failure. Warming the per-user cache here (mirroring the embedding-model prefetch, #13)
+    makes the first ``start`` fully offline for FTS.
+
+    Only the embedded ``ladybug`` backend loads this extension; the cloud opt-in backends have
+    nothing to prefetch. Non-fatal by contract: the runtime loader keeps its native
+    ``INSTALL FTS`` fallback, so a prefetch problem (offline, missing build) only prints a
+    warning and defers the fetch to first daemon use.
+    """
+    backend = (cfg.graph.backend or "ladybug").lower()
+    if backend != "ladybug":
+        click.echo(f"FTS extension: none to prefetch (graph backend {backend!r}).")
+        return
+
+    click.echo("FTS extension: prefetching Ladybug full-text search (one-time)...")
+    try:
+        # Lazy import: keeps `--help`/`config` fast and confines the ladybug/network path to
+        # the one command that needs it.
+        from memrelay.engine.backends._fts_extension import prefetch_fts_extension
+
+        prefetch_fts_extension()
+    except Exception as exc:  # noqa: BLE001 - any failure must not abort init
+        click.echo(
+            f"FTS extension: could not prefetch now ({exc}); memrelay will fetch it "
+            "automatically on first daemon start (needs network).",
+            err=True,
+        )
+        return
+    click.echo("FTS extension: ready.")
+
+
 def _write_default_config(home, config_text: str) -> tuple[object, bool]:
     """Write the starter config into ``home`` if absent (idempotent).
 
@@ -207,6 +243,7 @@ def init(copilot_home: str | None) -> None:
     click.echo(f"config:         {config_file}" + ("" if created else "  (kept existing)"))
     click.echo(f"registered MCP: {mcp_path}")
     _prefetch_embedding_model(cfg)
+    _prefetch_fts_extension(cfg)
     click.echo("Run `memrelay start` to launch the observation daemon.")
 
 
