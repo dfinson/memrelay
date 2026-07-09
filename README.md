@@ -133,6 +133,23 @@ api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o-mini"
 ```
 
+**Group repos into a shared namespace** *(optional)* — memories are grouped by *namespace*. Add `[namespaces.<name>]` sections to make several repos share one namespace (and therefore one pool of memory). Omit this entirely and grouping is unchanged from the zero-config default:
+
+```toml
+[namespaces.acme]
+repos = ["acme/api", "acme/web", "acme/shared"]
+
+[namespaces.personal]
+repos = ["me/dotfiles"]
+```
+
+This declares a repo→namespace map that memrelay's namespace resolution consults ahead of its defaults. Rules (all enforced when the config loads, with a message naming the offending namespace or repo):
+
+- **Repo keys are `"owner/name"`, matched case-insensitively.** They're normalized to lowercase, so `Acme/API` and `acme/api` are the same repo.
+- **A repo may belong to at most one namespace** — assigning the same repo to two namespaces is an error.
+- **`repos` must be a list of `"owner/name"` strings** — each with exactly one `/` and a non-empty owner and name.
+- **Namespace names are used verbatim** (only surrounding whitespace is trimmed) and must be non-empty.
+
 ## Dependencies
 
 memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `traceforge-toolkit`) for multi-agent session capture and normalization. TraceForge already normalizes ~18 agents to a common event model; memrelay handles memory.

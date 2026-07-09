@@ -29,6 +29,18 @@ ENV_PREFIX = "MEMRELAY_"
 _META_ENV = frozenset({"MEMRELAY_CONFIG", "MEMRELAY_HOME"})
 
 
+# ─── Errors ──────────────────────────────────────────────────────────────────
+
+
+class NamespaceConfigError(ValueError):
+    """Raised when the optional ``[namespaces.*]`` config section is malformed (#41).
+
+    Subclasses :class:`ValueError` so a caller with a broad value-error guard still
+    catches it, while staying specific enough to assert on in tests. Every message
+    names the offending namespace or repo so a misconfiguration is actionable.
+    """
+
+
 # ─── Schema ──────────────────────────────────────────────────────────────────
 
 
@@ -113,6 +125,53 @@ class IngestConfig:
     enable_boundary: bool = False
 
 
+@dataclass(frozen=True)
+class Namespace:
+    """One declared namespace: a scope *name* and the repos assigned to it (#41).
+
+    ``name`` is preserved verbatim (only surrounding whitespace is trimmed) because
+    it is the shared-memory scope label used downstream as graphiti's ``group_id``.
+    ``repos`` are normalized ``owner/name`` keys (see :func:`_normalize_repo`) in
+    declaration order, with intra-namespace duplicates removed.
+    """
+
+    name: str
+    repos: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NamespacesConfig:
+    """Parsed ``[namespaces.*]`` section plus a derived repo→namespace lookup (#41).
+
+    Optional by design: with no ``[namespaces.*]`` section ``entries`` is empty and
+    :attr:`repo_map` is ``{}``, so zero-config behavior is byte-identical. A future
+    resolver (#39) reads :attr:`repo_map` (an ``owner/name`` → namespace ``Mapping``)
+    to override its default namespace derivation; this layer only *builds and
+    validates* the map — it never consumes it.
+    """
+
+    entries: tuple[Namespace, ...] = ()
+
+    @property
+    def repo_map(self) -> dict[str, str]:
+        """Derived ``owner/name`` → namespace-name lookup (normalized keys).
+
+        A fresh dict on each access, so a caller can never mutate the config's own
+        state. Cross-namespace uniqueness is enforced at load time, so no repo key
+        is silently overwritten here.
+        """
+        return {repo: entry.name for entry in self.entries for repo in entry.repos}
+
+    def namespace_for(self, repo: str) -> str | None:
+        """Return the namespace ``repo`` belongs to, or ``None``.
+
+        Normalizes ``repo`` the same way declared repos are normalized, so callers
+        (e.g. the #39 resolver) need not know the canonical key form. A query that
+        does not resolve to a declared repo simply returns ``None``.
+        """
+        return self.repo_map.get(_normalize_repo(repo))
+
+
 @dataclass
 class Config:
     """Fully resolved memrelay configuration."""
@@ -122,6 +181,8 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
+    #: Optional repo-grouping map from ``[namespaces.*]``; empty unless configured.
+    namespaces: NamespacesConfig = field(default_factory=NamespacesConfig)
 
     @property
     def home_path(self) -> Path:
@@ -283,8 +344,16 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
     llm = LLMConfig(**_known(LLMConfig, data.get("llm")))
     embeddings = EmbeddingsConfig(**_known(EmbeddingsConfig, data.get("embeddings")))
     ingest = IngestConfig(**_known(IngestConfig, data.get("ingest")))
+    namespaces = _namespaces_from_dict(data.get("namespaces"))
     home = data.get("home", Config.home)
-    return Config(home=home, graph=graph, llm=llm, embeddings=embeddings, ingest=ingest)
+    return Config(
+        home=home,
+        graph=graph,
+        llm=llm,
+        embeddings=embeddings,
+        ingest=ingest,
+        namespaces=namespaces,
+    )
 
 
 def _graph_from_dict(section: Any) -> GraphConfig:
@@ -304,6 +373,94 @@ def _graph_from_dict(section: Any) -> GraphConfig:
     else:
         conn = None
     return GraphConfig(connection=conn, **fields)
+
+
+def _normalize_repo(repo: str) -> str:
+    """Canonicalize an ``owner/name`` repo id: trim surrounding whitespace + lowercase.
+
+    GitHub owner/repo slugs are case-insensitive, so lowercasing keeps the
+    repo→namespace map's keys stable and lets uniqueness detection treat
+    ``Owner/Repo`` and ``owner/repo`` as the same repo. Shape is *not* validated here
+    (that is :func:`_validate_repo_entry`'s job) so a lookup with an odd string simply
+    misses rather than raising.
+    """
+    return repo.strip().lower()
+
+
+def _validate_repo_entry(namespace: str, raw: object) -> str:
+    """Validate one declared repo and return its normalized ``owner/name`` key.
+
+    Rejects non-strings, blanks, and anything not shaped exactly ``owner/name``
+    (a single ``/`` with non-empty halves), raising :class:`NamespaceConfigError`.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        raise NamespaceConfigError(
+            f"namespace {namespace!r}: invalid repo {raw!r} "
+            '(expected a non-empty "owner/name" string)'
+        )
+    normalized = _normalize_repo(raw)
+    owner, _, name = normalized.partition("/")
+    if "/" in name or not owner or not name:
+        raise NamespaceConfigError(
+            f"namespace {namespace!r}: invalid repo {raw!r} "
+            '(expected "owner/name" with a single "/")'
+        )
+    return normalized
+
+
+def _namespaces_from_dict(section: Any) -> NamespacesConfig:
+    """Build a validated :class:`NamespacesConfig` from a ``[namespaces.*]`` mapping.
+
+    ``None`` (section absent) yields an empty config — the optional-by-design path
+    that keeps zero-config behavior byte-identical. Any structural problem raises
+    :class:`NamespaceConfigError` naming the offending namespace or repo, so a
+    misconfiguration fails loudly at load time rather than silently mis-grouping
+    memory. A repo listed twice within one namespace is de-duplicated (first-seen
+    order preserved); the same repo across two namespaces is an error.
+    """
+    if section is None:
+        return NamespacesConfig()
+    if not isinstance(section, Mapping):
+        raise NamespaceConfigError(
+            "[namespaces] must be a table of [namespaces.<name>] sections, "
+            f"got {type(section).__name__}"
+        )
+
+    entries: list[Namespace] = []
+    repo_owner: dict[str, str] = {}  # normalized repo -> owning namespace name
+    for raw_name, body in section.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise NamespaceConfigError("namespace name must be a non-empty string")
+        name = raw_name.strip()
+        if not isinstance(body, Mapping):
+            raise NamespaceConfigError(
+                f"namespace {name!r}: section must be a table with a "
+                '"repos" list (e.g. repos = ["owner/name"])'
+            )
+        if "repos" not in body:
+            raise NamespaceConfigError(f'namespace {name!r}: missing required "repos" list')
+        repos = body["repos"]
+        if not isinstance(repos, (list, tuple)):
+            raise NamespaceConfigError(
+                f'namespace {name!r}: "repos" must be a list of "owner/name" strings, '
+                f"got {type(repos).__name__}"
+            )
+
+        normalized_repos: list[str] = []
+        for raw_repo in repos:
+            repo = _validate_repo_entry(name, raw_repo)
+            prior = repo_owner.get(repo)
+            if prior == name:
+                continue  # intra-namespace duplicate → de-duplicate, keep first-seen order
+            if prior is not None:
+                raise NamespaceConfigError(
+                    f"repo {repo!r} assigned to multiple namespaces: {prior!r} and {name!r}"
+                )
+            repo_owner[repo] = name
+            normalized_repos.append(repo)
+        entries.append(Namespace(name=name, repos=tuple(normalized_repos)))
+
+    return NamespacesConfig(entries=tuple(entries))
 
 
 def _known(cls: type, section: Any) -> dict[str, Any]:
