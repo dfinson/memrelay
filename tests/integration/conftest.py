@@ -3,7 +3,7 @@
 Everything here is hermetic: a deterministic in-process ``MockLLMClient`` stands
 in for entity/edge extraction, and embeddings come from the real ``LocalEmbedder``
 when fastembed can download its model, otherwise a deterministic offline
-fallback. No network, no API keys, temp Kuzu only.
+fallback. No network, no API keys, temp Ladybug only.
 """
 
 from __future__ import annotations

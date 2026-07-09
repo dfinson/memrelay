@@ -1,9 +1,9 @@
 """THE E4 GATE (SPEC §12 Step 2): a hermetic note -> recall roundtrip.
 
-Notes a fact into an embedded Kuzu graph via ``MemoryEngine`` using a
+Notes a fact into an embedded Ladybug graph via ``MemoryEngine`` using a
 deterministic in-process mock LLM + a real (or offline-fallback) embedder, then
 recalls it by a *semantic* query and asserts it comes back. No network, no API
-key, temp Kuzu via ``tmp_path`` — never a real ``~/.memrelay/graph.db``.
+key, temp Ladybug via ``tmp_path`` — never a real ``~/.memrelay/graph.db``.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from memrelay.engine.graphiti import MemoryEngine
 from memrelay.mcp.format import format_as_map, format_detail
 
 NAMESPACE = "proj-a"
-FACT = "memrelay stores its persistent agent memory in an embedded Kuzu graph database."
+FACT = "memrelay stores its persistent agent memory in an embedded Ladybug graph database."
 RECALL_QUERY = "which graph database does memrelay use for memory"
 
 
@@ -27,7 +27,7 @@ def _make_config(tmp_path: Path):
     cfg = load_config(
         environ={},
         home=str(tmp_path),
-        graph={"path": str(graph_path), "backend": "kuzu"},
+        graph={"path": str(graph_path), "backend": "ladybug"},
     )
     assert cfg.graph_path == graph_path.resolve()
     return cfg
@@ -38,7 +38,7 @@ def test_note_recall_roundtrip(tmp_path, gate_embedder, mock_llm_factory):
         cfg = _make_config(tmp_path)
         engine = await MemoryEngine.from_config(
             cfg,
-            llm_client=mock_llm_factory(["memrelay", "Kuzu"]),
+            llm_client=mock_llm_factory(["memrelay", "Ladybug"]),
             embedder=gate_embedder,
         )
         try:
@@ -58,13 +58,13 @@ def test_note_recall_roundtrip(tmp_path, gate_embedder, mock_llm_factory):
                 f"{edge.get('name') or ''} {edge.get('fact') or ''}" for edge in results["edges"]
             )
             blob = blob.lower()
-            assert "kuzu" in blob, f"expected the noted fact to be recalled, got: {results!r}"
+            assert "ladybug" in blob, f"expected the noted fact to be recalled, got: {results!r}"
 
             # The real daemon formatter must render this engine output verbatim —
             # importing it here pins the seam so the shapes can never silently drift.
             rendered = format_as_map(results)
             assert rendered != "No relevant memories found.", "formatter saw an empty map"
-            assert "kuzu" in rendered.lower(), f"formatter dropped the fact:\n{rendered}"
+            assert "ladybug" in rendered.lower(), f"formatter dropped the fact:\n{rendered}"
 
             # detail() on a recalled node returns the daemon detail schema.
             node_hit = results["nodes"][0]
@@ -85,7 +85,7 @@ def test_note_recall_roundtrip(tmp_path, gate_embedder, mock_llm_factory):
 
             health = await engine.health()
             assert health["status"] == "ok"
-            assert health["backend"] == "kuzu"
+            assert health["backend"] == "ladybug"
         finally:
             await engine.close()
 
@@ -99,7 +99,7 @@ def test_namespace_isolation(tmp_path, gate_embedder, mock_llm_factory):
         cfg = _make_config(tmp_path)
         engine = await MemoryEngine.from_config(
             cfg,
-            llm_client=mock_llm_factory(["memrelay", "Kuzu"]),
+            llm_client=mock_llm_factory(["memrelay", "Ladybug"]),
             embedder=gate_embedder,
         )
         try:

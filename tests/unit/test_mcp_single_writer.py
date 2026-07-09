@@ -2,7 +2,7 @@
 
 The daemon is the *sole* owner of graph state; the MCP server must reach it only
 through the socket. This test parses every module under ``memrelay.mcp`` and
-asserts none of them import the graph engine, Kuzu/Graphiti, or the daemon's
+asserts none of them import the graph engine, Ladybug/Graphiti, or the daemon's
 server/protocol/lifecycle internals — the shared wire layer
 (``memrelay.daemon.transport``) is the only permitted daemon-package dependency.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 import memrelay.mcp as mcp_pkg
 
 FORBIDDEN_PREFIXES = (
-    "kuzu",
+    "ladybug",
     "graphiti",
     "graphiti_core",
     "memrelay.engine",

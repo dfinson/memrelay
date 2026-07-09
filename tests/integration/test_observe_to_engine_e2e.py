@@ -7,7 +7,7 @@ through the *real* observe path -- ``CopilotProvider`` adapter -> traceforge
 ``EventPipeline`` -> :class:`GraphitiSink` -- into session B's **real** durable
 ``Spool`` at the canonical ``<home>/spool/spool.db``. It is then drained by the
 ingester built by Session A's own :func:`default_ingester_factory` (which
-*independently* recomputes that same spool path) into a real embedded-Kuzu
+*independently* recomputes that same spool path) into a real embedded-Ladybug
 :class:`MemoryEngine`, and the observed fact is recalled by a semantic
 ``engine.search`` under the namespace the observe side derived from the git remote.
 
@@ -16,7 +16,7 @@ a ``spool/`` subdir or record-shape mismatch surfaces here as
 ``episodes_ingested == 0`` and an empty recall -- exactly the class of bug a
 ``FakeSpool`` test cannot catch. Fully hermetic: the deterministic mock LLM + the
 real/offline embedder from ``conftest.py``, a temp git repo for namespace resolution,
-and embedded Kuzu on ``tmp_path``; no network, no API key, never a real ``~/.memrelay``.
+and embedded Ladybug on ``tmp_path``; no network, no API key, never a real ``~/.memrelay``.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from memrelay.ingest.spool import Spool
 REMOTE_URL = "https://github.com/acme/widgets.git"
 FACT = (
     "Team note for memrelay: memrelay stores all persistent agent memory in an embedded "
-    "Kuzu graph database, and the Kuzu database file lives under the memrelay home directory."
+    "Ladybug graph database, and the Ladybug database file lives under the memrelay home directory."
 )
 RECALL_QUERY = "which graph database does memrelay use to store its persistent memory"
 
@@ -72,12 +72,12 @@ def _write_session(dest: Path, *, cwd: str, content: str) -> None:
 
 
 def _make_config(tmp_path: Path):
-    """Hermetic config: temp home + embedded Kuzu graph, isolated from the real env."""
+    """Hermetic config: temp home + embedded Ladybug graph, isolated from the real env."""
     graph_path = tmp_path / "graph.db"
     return load_config(
         environ={},
         home=str(tmp_path),
-        graph={"path": str(graph_path), "backend": "kuzu"},
+        graph={"path": str(graph_path), "backend": "ladybug"},
     )
 
 
@@ -120,7 +120,7 @@ def test_observe_to_spool_to_ingester_to_recall(tmp_path, gate_embedder, mock_ll
         # --- daemon side: A's OWN factory recomputes the path + drains into the engine ---
         engine = await MemoryEngine.from_config(
             cfg,
-            llm_client=mock_llm_factory(["memrelay", "Kuzu"]),
+            llm_client=mock_llm_factory(["memrelay", "Ladybug"]),
             embedder=gate_embedder,
         )
         try:
@@ -144,7 +144,9 @@ def test_observe_to_spool_to_ingester_to_recall(tmp_path, gate_embedder, mock_ll
             blob += " " + " ".join(
                 f"{edge.get('name') or ''} {edge.get('fact') or ''}" for edge in results["edges"]
             )
-            assert "kuzu" in blob.lower(), f"expected the observed fact to be recalled: {results!r}"
+            assert "ladybug" in blob.lower(), (
+                f"expected the observed fact to be recalled: {results!r}"
+            )
         finally:
             await engine.close()
 

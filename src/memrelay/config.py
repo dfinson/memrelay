@@ -33,9 +33,49 @@ _META_ENV = frozenset({"MEMRELAY_CONFIG", "MEMRELAY_HOME"})
 
 
 @dataclass
+class GraphConnectionConfig:
+    """Connection settings for the server-based (cloud) opt-in backends (#76).
+
+    Unused by the embedded ``ladybug`` default (which stores at ``graph.path``). Every
+    field is optional; each cloud adapter reads only the ones it needs and fails loud if
+    a required one is missing:
+
+    - **neo4j**: ``uri`` (required), ``user``, ``password``, ``database`` (→ ``"neo4j"``).
+    - **falkordb**: ``host`` (required), ``port`` (→ 6379), ``username``, ``password``,
+      ``database`` (→ ``"default_db"``).
+    - **neptune**: ``host`` + ``aoss_host`` (both required), ``port`` (→ 8182),
+      ``aoss_port`` (→ 443).
+
+    Set these under ``[graph.connection]`` in the config file, or via env
+    (``MEMRELAY_GRAPH__CONNECTION__URI``, ``MEMRELAY_GRAPH__CONNECTION__HOST``, …).
+    """
+
+    # neo4j
+    uri: str | None = None
+    user: str | None = None
+    # shared: neo4j + falkordb
+    password: str | None = None
+    database: str | None = None
+    # shared: falkordb + neptune
+    host: str | None = None
+    port: int | None = None
+    # falkordb
+    username: str | None = None
+    # neptune
+    aoss_host: str | None = None
+    aoss_port: int | None = None
+
+
+@dataclass
 class GraphConfig:
-    backend: str = "kuzu"
+    #: Storage backend id, resolved via the lazy backend registry (#76). ``"ladybug"``
+    #: is the embedded, zero-config OOTB default; ``"neo4j"``/``"falkordb"``/``"neptune"``
+    #: are server-based opt-ins that additionally read ``connection`` (below).
+    backend: str = "ladybug"
+    #: On-disk path for the embedded (``ladybug``) backend; ignored by the cloud backends.
     path: str = "~/.memrelay/graph.db"
+    #: Connection settings for the cloud opt-in backends; unused by ``ladybug``.
+    connection: GraphConnectionConfig | None = None
 
 
 @dataclass
@@ -90,7 +130,7 @@ class Config:
 
     @property
     def graph_path(self) -> Path:
-        """Absolute path to the Kuzu graph database file."""
+        """Absolute path to the embedded graph database file."""
         return _expand(self.graph.path)
 
     def to_dict(self) -> dict[str, Any]:
@@ -239,12 +279,31 @@ def env_overrides(environ: dict[str, str] | None = None) -> dict[str, Any]:
 
 def _config_from_dict(data: dict[str, Any]) -> Config:
     """Build a :class:`Config`, ignoring unknown keys defensively."""
-    graph = GraphConfig(**_known(GraphConfig, data.get("graph")))
+    graph = _graph_from_dict(data.get("graph"))
     llm = LLMConfig(**_known(LLMConfig, data.get("llm")))
     embeddings = EmbeddingsConfig(**_known(EmbeddingsConfig, data.get("embeddings")))
     ingest = IngestConfig(**_known(IngestConfig, data.get("ingest")))
     home = data.get("home", Config.home)
     return Config(home=home, graph=graph, llm=llm, embeddings=embeddings, ingest=ingest)
+
+
+def _graph_from_dict(section: Any) -> GraphConfig:
+    """Build a :class:`GraphConfig`, nesting the optional ``connection`` sub-config.
+
+    ``connection`` arrives as a plain dict from TOML / env overrides (or, defensively,
+    an already-built :class:`GraphConnectionConfig` from a kwarg override); either is
+    coerced to a :class:`GraphConnectionConfig`, unknown keys dropped. Absent/invalid
+    ``connection`` yields ``None`` (correct for the embedded ``ladybug`` default).
+    """
+    fields = _known(GraphConfig, section)
+    conn = fields.pop("connection", None)
+    if isinstance(conn, GraphConnectionConfig):
+        pass
+    elif isinstance(conn, dict):
+        conn = GraphConnectionConfig(**_known(GraphConnectionConfig, conn))
+    else:
+        conn = None
+    return GraphConfig(connection=conn, **fields)
 
 
 def _known(cls: type, section: Any) -> dict[str, Any]:

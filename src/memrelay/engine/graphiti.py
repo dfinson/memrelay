@@ -1,4 +1,4 @@
-"""The memrelay memory engine: store + recall on embedded Kuzu (E4-S1 / #34).
+"""The memrelay memory engine: store + recall on an embedded graph (E4-S1 / #34).
 
 ``MemoryEngine`` is the single object the daemon injects. It exposes exactly the
 shared async contract — ``search`` / ``detail`` / ``note`` / ``health`` — plus an
@@ -6,9 +6,10 @@ async ``from_config`` factory, and returns only plain, serializable
 dicts/strings so results can later cross a socket unchanged.
 
 Wiring (validated by inspection against graphiti-core 0.29.2, see
-``docs/e4-engine-notes.md``): one embedded ``KuzuDriver`` opened READ_WRITE
-exactly once, a key-less ``LocalEmbedder``, a strategy-selected ``LLMClient``,
-and a no-op key-less cross-encoder (RRF recall never reranks, but Graphiti would
+``docs/e4-engine-notes.md``): one embedded ``GraphDriver`` — resolved from
+``cfg.graph.backend`` via the Backend seam (LadybugDB by default, #76) and opened
+exactly once — a key-less ``LocalEmbedder``, a strategy-selected ``LLMClient``, and
+a no-op key-less cross-encoder (RRF recall never reranks, but Graphiti would
 otherwise default to the OpenAI reranker which needs a key).
 """
 
@@ -27,12 +28,12 @@ from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RR
 
 from memrelay.config import Config, ensure_home, load_config
 
+from .backends import resolve_backend
 from .embedder import LocalEmbedder
-from .kuzu_backend import open_kuzu_driver
 from .llm.strategy import select_llm_client
 
 if TYPE_CHECKING:
-    from graphiti_core.driver.kuzu_driver import KuzuDriver
+    from graphiti_core.driver.driver import GraphDriver
     from graphiti_core.embedder.client import EmbedderClient
     from graphiti_core.llm_client.client import LLMClient
 
@@ -84,9 +85,9 @@ class _EngineParts:
 
 
 class MemoryEngine:
-    """Persistent memory over an embedded Kuzu graph via graphiti-core."""
+    """Persistent memory over an embedded graph backend via graphiti-core."""
 
-    def __init__(self, graphiti: Graphiti, driver: KuzuDriver, cfg: Config) -> None:
+    def __init__(self, graphiti: Graphiti, driver: GraphDriver, cfg: Config) -> None:
         self._graphiti = graphiti
         self._driver = driver
         self._cfg = cfg
@@ -110,7 +111,8 @@ class MemoryEngine:
             cfg = load_config()
         ensure_home(cfg)
 
-        driver = await open_kuzu_driver(cfg.graph_path)
+        backend = resolve_backend(cfg.graph.backend)
+        driver = await backend.open_driver(cfg)
         resolved_embedder = embedder or build_embedder(cfg)
         resolved_llm = llm_client or select_llm_client(cfg)
         resolved_reranker = cross_encoder or PassthroughCrossEncoder()
@@ -248,7 +250,7 @@ class MemoryEngine:
         }
 
     async def health(self) -> dict[str, Any]:
-        """Report backend/config status and a live probe of the Kuzu connection."""
+        """Report backend/config status and a live probe of the graph connection."""
         status = "ok"
         error: str | None = None
         try:
@@ -270,7 +272,7 @@ class MemoryEngine:
         return report
 
     async def close(self) -> None:
-        """Release the Kuzu driver / file lock."""
+        """Release the graph driver / file lock."""
         close = getattr(self._driver, "close", None)
         if close is None:
             return

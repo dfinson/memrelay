@@ -27,7 +27,7 @@ def test_defaults_with_no_file_or_env(tmp_path: Path) -> None:
         "XDG_DATA_HOME": str(tmp_path / "data"),
     }
     cfg = load_config(environ=env)
-    assert cfg.graph.backend == "kuzu"
+    assert cfg.graph.backend == "ladybug"
     assert cfg.graph.path == "~/.memrelay/graph.db"
     assert cfg.llm.strategy == "borrow-host"
     assert cfg.llm.host == "copilot"
@@ -61,7 +61,7 @@ def test_resolve_config_path_returns_none_when_absent(tmp_path: Path) -> None:
 def test_env_overrides_nest_and_coerce() -> None:
     env = {
         "MEMRELAY_LLM__STRATEGY": "byo-key",
-        "MEMRELAY_GRAPH__BACKEND": "kuzu",
+        "MEMRELAY_GRAPH__BACKEND": "neo4j",
         "MEMRELAY_EMBEDDINGS__PROVIDER": "openai",
         "MEMRELAY_CONFIG": "/should/be/ignored",  # meta, not a field
         "UNRELATED": "x",
@@ -69,7 +69,7 @@ def test_env_overrides_nest_and_coerce() -> None:
     overrides = env_overrides(env)
     assert overrides == {
         "llm": {"strategy": "byo-key"},
-        "graph": {"backend": "kuzu"},
+        "graph": {"backend": "neo4j"},
         "embeddings": {"provider": "openai"},
     }
 
@@ -89,7 +89,7 @@ def test_file_load_and_precedence(tmp_path: Path) -> None:
         host = "codex"
 
         [graph]
-        backend = "kuzu"
+        backend = "neo4j"
         path = "/tmp/from-file/graph.db"
         """,
         encoding="utf-8",

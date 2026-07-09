@@ -24,7 +24,7 @@ GOLDEN_INIT_CONFIG = """\
 # Every value below is a built-in default; edit as needed. See SPEC §6.
 
 [graph]
-backend = "kuzu"
+backend = "ladybug"
 path = "~/.memrelay/graph.db"
 
 [llm]

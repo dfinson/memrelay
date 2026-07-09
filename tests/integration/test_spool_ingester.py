@@ -2,7 +2,7 @@
 
 Seeds N episode records into the durable :class:`~memrelay.ingest.spool.Spool`, runs
 :class:`~memrelay.ingest.ingester.Ingester` to drain them into a real
-:class:`~memrelay.engine.graphiti.MemoryEngine` (embedded Kuzu on ``tmp_path``, the
+:class:`~memrelay.engine.graphiti.MemoryEngine` (embedded Ladybug on ``tmp_path``, the
 deterministic mock LLM + real/offline embedder from ``conftest.py``), and asserts a
 noted fact comes back via a *semantic* ``engine.search``. Fully hermetic: no network,
 no API key, never a real ``~/.memrelay``.
@@ -24,9 +24,9 @@ from memrelay.ingest.spool import Spool
 NAMESPACE = "proj-a"
 RECALL_QUERY = "which graph database does memrelay use for memory"
 FACTS = [
-    "memrelay stores its persistent agent memory in an embedded Kuzu graph database.",
+    "memrelay stores its persistent agent memory in an embedded Ladybug graph database.",
     "memrelay runs a single-writer observation daemon.",
-    "the Kuzu database file lives under the memrelay home directory.",
+    "the Ladybug database file lives under the memrelay home directory.",
 ]
 
 
@@ -37,7 +37,7 @@ def _make_config(tmp_path: Path):
     cfg = load_config(
         environ={},
         home=str(tmp_path),
-        graph={"path": str(graph_path), "backend": "kuzu"},
+        graph={"path": str(graph_path), "backend": "ladybug"},
     )
     assert cfg.graph_path == graph_path.resolve()
     return cfg
@@ -63,7 +63,7 @@ def test_spool_drains_into_engine_and_recalls(tmp_path, gate_embedder, mock_llm_
         cfg = _make_config(tmp_path)
         engine = await MemoryEngine.from_config(
             cfg,
-            llm_client=mock_llm_factory(["memrelay", "Kuzu"]),
+            llm_client=mock_llm_factory(["memrelay", "Ladybug"]),
             embedder=gate_embedder,
         )
         try:
@@ -98,7 +98,9 @@ def test_spool_drains_into_engine_and_recalls(tmp_path, gate_embedder, mock_llm_
             blob += " " + " ".join(
                 f"{edge.get('name') or ''} {edge.get('fact') or ''}" for edge in results["edges"]
             )
-            assert "kuzu" in blob.lower(), f"expected the drained fact to be recalled: {results!r}"
+            assert "ladybug" in blob.lower(), (
+                f"expected the drained fact to be recalled: {results!r}"
+            )
 
             spool.close()
         finally:
