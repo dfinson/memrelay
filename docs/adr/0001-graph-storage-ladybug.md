@@ -64,10 +64,12 @@ Key implementation choices:
    with a couple of tightened behaviours:
    - **Delta 1 (carried from E4):** set `driver._database = None` if unset (graphiti's `add_episode`
      compares `group_id` to `driver._database`, which the Kuzu/Ladybug driver never sets → `AttributeError`).
-   - **Delta 2 (carried from E4):** create graphiti's full-text indices at open time (`INSTALL FTS;` /
-     `LOAD FTS;` then the `CREATE_FTS_INDEX` DDL from `get_fulltext_indices(GraphProvider.KUZU)`); graphiti
-     0.29.2 never wires these into the driver, so search fails without them. Idempotent on re-open
-     ("already exists" swallowed).
+   - **Delta 2 (carried from E4, hardened here):** create graphiti's full-text indices at open time (the
+     `CREATE_FTS_INDEX` DDL from `get_fulltext_indices(GraphProvider.KUZU)`), which graphiti 0.29.2 never
+     wires into the driver, so search fails without them. Idempotent on re-open ("already exists" swallowed).
+     This first requires Ladybug's **FTS extension** to be loaded, and the naive `INSTALL FTS; LOAD FTS;`
+     path **fails on Linux CI** — so memrelay provisions the extension itself via a prefetch loader and only
+     falls back to native `INSTALL FTS`. See "FTS extension provisioning (Delta 2 on Linux CI)" below.
    - **Delta 3 (new — a Ladybug/Kuzu parameter-strictness divergence found in this work):** graphiti's
      `KuzuDriver.execute_query` **strips `None`-valued parameters** and relies on Kuzu 0.11.3 treating a
      referenced-but-absent `$param` as NULL. **Ladybug 0.18.0 tightened this:** a query that references
@@ -126,6 +128,36 @@ Key implementation choices:
   so the Kuzu fallback is `@pytest.mark.kuzu` and runs in its **own** CI job (`pytest -m kuzu`) with the
   `kuzu` extra, while the main matrix runs Ladybug only.
 
+## FTS extension provisioning (Delta 2 on Linux CI)
+
+Delta 2 needs Ladybug's **FTS extension** loaded before `CREATE_FTS_INDEX` will bind. Ladybug ships FTS as a
+**downloadable** extension (never statically bundled): the native `INSTALL FTS;` fetches
+`libfts.lbug_extension` from `extension.ladybugdb.com` over TLS, then `LOAD FTS;` loads it. This works locally
+on Windows/macOS but **fails on the Linux CI runners** — the manylinux wheel's statically-linked OpenSSL
+cannot verify the CDN's certificate chain, so `INSTALL FTS;` raises an SSL error, `QUERY_FTS_INDEX` stays
+undefined, and graphiti's hybrid search breaks. This was caught by the backend-smoke job (all three Linux
+matrix jobs red, while the same code passed locally on Windows).
+
+**Fix — prefetch in Python, then `LOAD EXTENSION '<path>'`** (`engine/backends/_fts_extension.py`):
+
+1. **Download the extension ourselves** with Python's `urllib` + the **`certifi`** CA bundle (added as an
+   explicit dependency), into a cache dir (`MEMRELAY_EXTENSION_DIR`, else `~/.memrelay/extensions/ladybug-<ver>/<plat>/`),
+   with an atomic write and a cache-hit fast path (~14.5 MB, fetched once). Two gotchas handled: (a) the CDN
+   returns **HTTP 403** to the default `Python-urllib/x.y` User-Agent, so we send an ordinary UA; (b) the
+   manylinux ABI tag is ambiguous, so we try platform candidates **`linux_amd64` then `linux_old_amd64`**
+   (only the ABI-matching binary will load) — plus `win_amd64` / `osx_amd64` / `osx_arm64` for the other OSes.
+2. **Load it offline** with `LOAD EXTENSION '<local path>'` (the authoritative offline-load form; its binder
+   only checks that the file exists, so any local path loads — no network, no native TLS).
+3. **Belt & fallback:** we also set `SSL_CERT_FILE` (from `certifi`) when unset, and if every prefetch
+   candidate fails we fall back to the native `INSTALL FTS; LOAD FTS;`. The prefetch path is tried **first**
+   because it bypasses the broken native downloader entirely and is the most robust.
+
+The loader is **injected** — `apply_graphiti_deltas(driver, load_fts_extension=load_ladybug_fts_extension)` —
+so `LadybugBackend` gets the hardened loader while `KuzuBackend` keeps the plain native one. This keeps the
+OOTB promise real on Linux CI (and Alpine/musllinux): a clean install provisions FTS with no server and no
+manual CA setup. Covered by `tests/unit/test_fts_extension.py` (16 native-free, no-network tests) and
+exercised for real by the backend-smoke roundtrip in every CI matrix job.
+
 ## Consequences
 
 **Positive**
@@ -145,6 +177,9 @@ Key implementation choices:
 - The `LadybugDriver` mirrors graphiti's `KuzuDriver` by copy, so upstream `KuzuDriver` changes must be
   re-mirrored. Low risk: the Kuzu driver is deprecated/frozen upstream, and the copied surface is small.
 - `kuzu` and `ladybug` cannot coexist in one process — a permanent constraint on how the fallback is tested.
+- Ladybug's FTS extension is **fetched once over the network on first run** (then cached on disk and loaded
+  offline). Fully offline first-run installs must pre-seed the cache dir (`MEMRELAY_EXTENSION_DIR`). The
+  fetch is small (~14.5 MB), cached thereafter, and independent of Ladybug's own broken native downloader.
 
 ## Alternatives considered
 

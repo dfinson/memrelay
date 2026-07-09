@@ -28,6 +28,7 @@ dependencies = [
     "traceforge-toolkit>=0.1,<0.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent; capped <0.2 because the walking-skeleton test asserts exact 0.1.x mapping/enrich behavior
     "graphiti-core>=0.29,<0.30",  # knowledge graph engine (bitemporal facts, LLM extraction, dedup, RRF); capped <0.30 for CI determinism. We keep graphiti's brain but inject our own storage driver reporting provider=KUZU, so its Kuzu-dialect Cypher is reused verbatim (see docs/adr/0001-graph-storage-ladybug.md, #76)
     "ladybug>=0.18",              # embedded graph database — the original Kuzu devs' maintained, Kuzu-API/Cypher drop-in fork. Replaces the archived `kuzu` as the OOTB default storage backend (#76); un-upper-bounded
+    "certifi>=2023.7",            # CA bundle used to reliably prefetch Ladybug's FTS extension over TLS; its manylinux native downloader fails SSL verification on Linux (#76, see engine/backends/_fts_extension.py)
     "fastembed>=0.3",             # local ONNX embeddings
     "mcp>=1.0",                   # Model Context Protocol server
     "click>=8.0",                 # CLI

@@ -33,11 +33,12 @@ class LadybugBackend(Backend):
     async def open_driver(self, cfg: Config, *, max_concurrent_queries: int = 1) -> GraphDriver:
         # Imported lazily so merely resolving this backend never loads the native
         # Ladybug extension (it is mutually exclusive in-process with Kuzu's).
+        from memrelay.engine.backends._fts_extension import load_ladybug_fts_extension
         from memrelay.engine.backends.ladybug_driver import LadybugDriver
 
         path = Path(cfg.graph_path)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         driver = LadybugDriver(db=str(path), max_concurrent_queries=max_concurrent_queries)
-        await apply_graphiti_deltas(driver)
+        await apply_graphiti_deltas(driver, load_fts_extension=load_ladybug_fts_extension)
         return driver
