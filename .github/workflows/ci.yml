@@ -45,6 +45,39 @@ jobs:
       - name: Pytest
         run: pytest
 
+  build-windows:
+    # Windows regression coverage for issue #94: memory_recall routed through the
+    # MCP stdio server hung over loopback while POSIX (unix socket) stayed green,
+    # so the ubuntu matrix above could never have caught it. Dev extras only — the
+    # optional cloud backends (falkordb/neptune) are out of scope here and their
+    # two tests skip cleanly when absent, exactly as on a stock install.
+    name: lint + test (windows-latest, py3.12)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install (editable, with dev extras)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Pytest
+        run: pytest
+
   first-run-smoke:
     name: first-run smoke (zero-config, no keys)
     runs-on: ubuntu-latest

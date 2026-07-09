@@ -28,6 +28,12 @@ def current_repo(cwd: str | os.PathLike[str] | None = None) -> str | None:
             capture_output=True,
             text=True,
             timeout=5,
+            # Detach the child's stdin from ours (issue #94). The MCP server runs on
+            # stdio, so on Windows its own stdin is the read end of the long-lived
+            # agent->server pipe; a git child that inherits that handle makes this
+            # subprocess.run wedge (ignoring the timeout) until the agent connection
+            # closes, hanging every tool call. Harmless on POSIX (git reads no stdin).
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.SubprocessError):
         return None
