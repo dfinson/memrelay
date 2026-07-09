@@ -164,7 +164,9 @@ memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `
 
 ## Development
 
-Requires Python 3.11–3.13.
+Requires Python 3.11–3.13. For the full contributor guide — dev setup, the test suite,
+linting, and the CI matrix — see [CONTRIBUTING.md](CONTRIBUTING.md); for the system design
+and module map, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
