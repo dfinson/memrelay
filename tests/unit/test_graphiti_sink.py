@@ -240,18 +240,38 @@ def test_touched_files_mined_from_list_arguments() -> None:
 @pytest.mark.parametrize(
     "boundary_event",
     [
-        _event(kind="turn.ended", content=None, raw_id="te"),
-        _event(kind="session.idle", content=None, raw_id="si"),
+        _event(kind="turn.ended", content=None, raw_id="te", visibility="system"),
+        _event(kind="session.idle", content=None, raw_id="si", visibility="system"),
         _event(kind="session.ended", content=None, raw_id="se", visibility="system"),
     ],
 )
 def test_flush_on_each_structural_boundary(boundary_event: SessionEvent) -> None:
+    # Real boundary events (turn/session lifecycle) carry SYSTEM visibility. The visible-only
+    # filter must gate CONTENT RENDERING only — the structural flush signal fires on kind
+    # regardless of visibility, or the buffered work-unit would be silently dropped.
     spool = FakeSpool()
     sink = _sink(spool)
     _drive(sink, _event(content="a decision was made", raw_id="u1"), boundary_event)
     # The buffered user message is flushed by the boundary — before any end-of-stream drain.
     assert spool.records[0]["content"] == "a decision was made"
     assert spool.records[0]["idempotency_key"].startswith("K|sess-1|")
+
+
+def test_system_visibility_turn_ended_still_flushes() -> None:
+    """CRITICAL (visibility ⟂ flush): a SYSTEM-visibility ``turn.ended`` flushes the unit.
+
+    Guards against a regression where the visible-only filter early-returns on non-visible
+    events and swallows the boundary signal — which would strand the buffered work-unit.
+    """
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _event(content="buffered work", raw_id="u1"),
+        _event(kind="turn.ended", content=None, raw_id="te", visibility="system"),
+    )
+    assert sink.appended == 1
+    assert spool.records[0]["content"] == "buffered work"
 
 
 def test_tool_call_completed_is_itself_a_boundary() -> None:
@@ -378,6 +398,26 @@ def test_session_ended_emits_summary_episode() -> None:
     assert "Decisions:" in summary and "I will add a retry loop" in summary
     assert "Tools:" in summary and "edit succeeded" in summary
     assert "Files touched:" in summary and "app.py" in summary
+
+
+def test_system_visibility_session_ended_still_summarizes() -> None:
+    """CRITICAL (visibility ⟂ summary): the #27 summary keys off ``session.ended``, which
+
+    is SYSTEM-visibility in real sessions. The end-of-stream ``flush`` drains the last
+    buffer either way, but ONLY the ``session.ended`` signal emits the summary — so if the
+    visible-only filter swallowed it, #27 would silently never fire.
+    """
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _event(kind="message.assistant", content="decided to ship it", raw_id="a1"),
+        _event(kind="session.ended", content=None, raw_id="se", visibility="system"),
+    )
+    # The assistant work-unit flushes at session.ended, then the summary is emitted.
+    assert sink.appended == 2
+    assert spool.records[-1]["content"].startswith("Session summary")
+    assert "decided to ship it" in spool.records[-1]["content"]
 
 
 def test_summary_is_deterministic_across_runs() -> None:
