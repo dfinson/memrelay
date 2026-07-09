@@ -65,12 +65,10 @@ MCP_CONFIG_FILENAME = ".claude.json"
 MCP_SERVER_KEY = "memrelay"
 
 #: Claude's key-less default: borrow the host Claude Code model (its own subscription auth,
-#: no API key), advertised via :meth:`llm_strategy`. NOTE (known follow-up): this is
-#: *metadata only* per E12 — the engine has no ``ClaudeHostProcess`` yet, so a config that
-#: selects ``borrow-host``/``claude`` cannot actually drive the ``claude`` CLI at recall time
-#: (the only borrow-host client today, ``CopilotHostProcess``, speaks Copilot's protocol).
-#: Honoring it needs a ``ClaudeHostProcess`` (or a host-generalized process) — tracked
-#: separately; not in scope for #70.
+#: no API key), advertised via :meth:`llm_strategy`. This hint is now *honored* by the engine:
+#: the borrow-host host-process registry (``memrelay.engine.llm.borrow_host``) maps
+#: ``host="claude"`` to a ``ClaudeHostProcess`` that drives the ``claude`` CLI for graphiti's
+#: JSON extraction at recall time (or fails loud if ``claude`` is absent) — resolved in #87.
 LLM_STRATEGY = "borrow-host"
 LLM_HOST = "claude"
 
@@ -221,8 +219,9 @@ class ClaudeCodeProvider(AgentProvider):
     def llm_strategy(self) -> LLMStrategyHint:
         """Advertise Claude's default: borrow the host Claude Code model (zero API keys).
 
-        Metadata only. See the ``LLM_STRATEGY`` note: the engine cannot yet *honor*
-        ``borrow-host``/``claude`` (no ``ClaudeHostProcess``) — that's a tracked follow-up.
+        Now honored by the engine's borrow-host host-process registry (see the
+        ``LLM_STRATEGY`` note): ``borrow-host``/``claude`` resolves to a ``ClaudeHostProcess``
+        at recall time (#87). The returned hint itself is unchanged.
         """
         return LLMStrategyHint(strategy=LLM_STRATEGY, host=LLM_HOST)
 

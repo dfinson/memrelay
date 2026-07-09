@@ -7,8 +7,11 @@ asks a host process to complete it, then robustly parses JSON back out.
 
 The actual host inference call is isolated behind the small :class:`HostProcess`
 protocol (``async complete(prompt) -> str``) so it can be faked in tests. The
-real Copilot-subprocess implementation (:class:`CopilotHostProcess`) is
-best-effort and MUST NOT be required for the hermetic gate.
+real subprocess implementations (:class:`CopilotHostProcess`,
+:class:`ClaudeHostProcess`) are best-effort and MUST NOT be required for the
+hermetic gate; ``host=<agent-id>`` selects one via the :data:`HOST_PROCESSES`
+registry (see :func:`resolve_host_process`), and an unregistered host yields a
+fail-loud :class:`_UnknownHostProcess` rather than a silent Copilot fallback.
 """
 
 from __future__ import annotations
@@ -131,6 +134,34 @@ class BorrowHostLLMClient(LLMClient):
         )
 
 
+async def _complete_via_subprocess(command: str, extra_args: list[str], prompt: str) -> str:
+    """Run ``command`` non-interactively with ``prompt`` on stdin; return stdout text.
+
+    Shared by the best-effort host-process implementations (Copilot, Claude). It is kept
+    out of the hermetic gate on purpose: the exact CLI invocation is environment- and
+    version-dependent, so tests fake the :class:`HostProcess` seam instead of spawning a
+    real subprocess.
+    """
+    if shutil.which(command) is None:
+        raise HostProcessError(f"host command {command!r} not found on PATH")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command,
+            *extra_args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate(prompt.encode("utf-8"))
+    except OSError as exc:  # pragma: no cover - environment dependent
+        raise HostProcessError(f"failed to launch host process: {exc}") from exc
+    if process.returncode != 0:
+        raise HostProcessError(
+            f"host process exited {process.returncode}: {stderr.decode('utf-8', 'replace').strip()}"
+        )
+    return stdout.decode("utf-8", "replace")
+
+
 class CopilotHostProcess:
     """Best-effort Copilot CLI subprocess implementation of :class:`HostProcess`.
 
@@ -153,22 +184,80 @@ class CopilotHostProcess:
         return shutil.which(command) is not None
 
     async def complete(self, prompt: str) -> str:
-        if shutil.which(self._command) is None:
-            raise HostProcessError(f"host command {self._command!r} not found on PATH")
-        try:
-            process = await asyncio.create_subprocess_exec(
-                self._command,
-                *self._extra_args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await process.communicate(prompt.encode("utf-8"))
-        except OSError as exc:  # pragma: no cover - environment dependent
-            raise HostProcessError(f"failed to launch host process: {exc}") from exc
-        if process.returncode != 0:
-            raise HostProcessError(
-                f"host process exited {process.returncode}: "
-                f"{stderr.decode('utf-8', 'replace').strip()}"
-            )
-        return stdout.decode("utf-8", "replace")
+        return await _complete_via_subprocess(self._command, self._extra_args, prompt)
+
+
+class ClaudeHostProcess:
+    """Best-effort Claude Code CLI subprocess implementation of :class:`HostProcess`.
+
+    Mirrors :class:`CopilotHostProcess` for Anthropic's ``claude`` CLI: it runs the CLI
+    non-interactively in print mode (``claude -p --output-format text``) with the prompt
+    on stdin and returns the plain-text completion. Like the Copilot impl this is *best
+    effort* — the exact headless invocation may vary by CLI version, so the real
+    subprocess path is NOT exercised by the hermetic gate (which fakes ``HostProcess``).
+    Availability is discovered via ``shutil.which`` so the strategy layer can fall back
+    cleanly when Claude is not installed.
+    """
+
+    def __init__(self, command: str = "claude", extra_args: list[str] | None = None) -> None:
+        self._command = command
+        # ``-p/--print`` is Claude Code's non-interactive mode; ``--output-format text``
+        # yields a plain-text completion (its default, stated explicitly so a user/global
+        # config default cannot switch us to json/stream-json). Overridable because this
+        # is best-effort and unverified across versions.
+        self._extra_args = (
+            extra_args if extra_args is not None else ["-p", "--output-format", "text"]
+        )
+
+    @classmethod
+    def is_installed(cls, command: str = "claude") -> bool:
+        return shutil.which(command) is not None
+
+    async def complete(self, prompt: str) -> str:
+        return await _complete_via_subprocess(self._command, self._extra_args, prompt)
+
+
+class _UnknownHostProcess:
+    """Fail-loud :class:`HostProcess` placeholder for an unregistered ``host``.
+
+    The strategy layer contracts that constructing a client is cheap and never raises, so
+    engine construction (and ``search()``/``health()``) keep working even for a misconfigured
+    host. This placeholder honors that: construction is trivial, and the loud, actionable
+    error surfaces only when graphiti actually calls :meth:`complete` at extraction time —
+    never a silent fallback to a different host's protocol.
+    """
+
+    def __init__(self, host: str | None) -> None:
+        self._host = host
+
+    async def complete(self, prompt: str) -> str:
+        raise HostProcessError(
+            f"borrow-host: unknown host {self._host!r}; no HostProcess is registered "
+            f"(known hosts: {sorted(HOST_PROCESSES)})"
+        )
+
+
+#: Registry mapping a provider *agent-id* (``LLM_HOST``, e.g. ``copilot``/``claude``) to its
+#: :class:`HostProcess` implementation.
+#:
+#: NOTE on ``host`` semantics: although ``LLMStrategyHint.host`` is documented as "the host
+#: CLI command whose model is borrowed", ``cfg.llm.host`` is used here as an **agent-id
+#: registry key**, NOT a raw CLI command. Each :class:`HostProcess` subclass owns its own
+#: default command (``copilot``/``claude`` coincide with their agent-ids but need not), and an
+#: unregistered agent-id fails loud via :class:`_UnknownHostProcess` instead of being executed
+#: as a command through another host's protocol (the original #87 bug).
+HOST_PROCESSES: dict[str, type[HostProcess]] = {
+    "copilot": CopilotHostProcess,
+    "claude": ClaudeHostProcess,
+}
+
+
+def resolve_host_process(host: str | None) -> type[HostProcess] | None:
+    """Return the :class:`HostProcess` class for agent-id ``host``, or ``None`` if unknown.
+
+    A falsy ``host`` maps to the ``copilot`` default, preserving the historical
+    ``cfg.llm.host or "copilot"`` behavior; a genuine unregistered agent-id returns ``None``
+    so the strategy reports unavailability and builds a fail-loud client instead of silently
+    treating it as Copilot.
+    """
+    return HOST_PROCESSES.get(host or "copilot")
