@@ -161,3 +161,91 @@ def test_load_tries_next_tag_then_native_on_load_error(monkeypatch):
         "INSTALL FTS;",
         "LOAD FTS;",
     ]
+
+
+def test_prefetch_warms_all_candidates(monkeypatch, tmp_path):
+    """``prefetch_fts_extension`` warms *every* candidate tag (#93).
+
+    At prefetch time there is no driver to test which ABI will ``LOAD`` at runtime, so on
+    Linux both the new- and old-ABI builds are cached — guaranteeing the runtime loader never
+    has to reach the network for whichever tag it ends up using.
+    """
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "9.9.9")
+    monkeypatch.setattr(
+        fx, "_ladybug_platform_candidates", lambda: ("linux_amd64", "linux_old_amd64")
+    )
+    downloads: list[str] = []
+
+    def fake_download(url: str, dst: Path) -> None:
+        downloads.append(url)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(b"fake-extension")
+
+    monkeypatch.setattr(fx, "_download", fake_download)
+
+    fx.prefetch_fts_extension()
+
+    assert downloads == [
+        "https://extension.ladybugdb.com/v9.9.9/linux_amd64/fts/libfts.lbug_extension",
+        "https://extension.ladybugdb.com/v9.9.9/linux_old_amd64/fts/libfts.lbug_extension",
+    ]
+    for plat in ("linux_amd64", "linux_old_amd64"):
+        assert (tmp_path / "ladybug-9.9.9" / plat / fx._EXTENSION_FILENAME).is_file()
+
+
+def test_prefetch_is_idempotent_when_cached(monkeypatch, tmp_path):
+    """A cached extension is not re-downloaded (keeps a re-run fast and offline)."""
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "9.9.9")
+    monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ("linux_amd64",))
+
+    cached = tmp_path / "ladybug-9.9.9" / "linux_amd64" / fx._EXTENSION_FILENAME
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    cached.write_bytes(b"cached")
+
+    def must_not_download(url: str, dst: Path) -> None:
+        raise AssertionError("a cached extension must not be re-downloaded")
+
+    monkeypatch.setattr(fx, "_download", must_not_download)
+
+    fx.prefetch_fts_extension()
+
+    assert cached.read_bytes() == b"cached"
+
+
+def test_prefetch_swallows_download_failure(monkeypatch, tmp_path):
+    """A download failure never propagates (the runtime keeps its native fallback)."""
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "9.9.9")
+    monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ("linux_amd64",))
+
+    def boom(url: str, dst: Path) -> None:
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(fx, "_download", boom)
+
+    fx.prefetch_fts_extension()  # must not raise
+
+
+def test_prefetch_swallows_ensure_failure(monkeypatch):
+    """Even an error *inside* ``_ensure_extension_file`` (e.g. no ladybug) never breaks init."""
+    monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ("linux_amd64",))
+
+    def boom(plat: str) -> None:
+        raise RuntimeError("ladybug import failed")
+
+    monkeypatch.setattr(fx, "_ensure_extension_file", boom)
+
+    fx.prefetch_fts_extension()  # must swallow and not raise
+
+
+def test_prefetch_noop_when_no_published_build(monkeypatch):
+    """No candidate tags (e.g. Windows/arm64) → nothing to warm, no error."""
+    monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ())
+    calls: list[str] = []
+    monkeypatch.setattr(fx, "_ensure_extension_file", lambda plat: calls.append(plat))
+
+    fx.prefetch_fts_extension()
+
+    assert calls == []

@@ -23,6 +23,8 @@ from memrelay.daemon.transport import Endpoint
 #: Captured at import (before any autouse patch) so a test can exercise the real
 #: ``init`` model-prefetch seam even while other tests keep it stubbed offline.
 _REAL_PREFETCH = _cli._prefetch_embedding_model
+#: Same, for the FTS-extension prefetch seam (#93).
+_REAL_FTS_PREFETCH = _cli._prefetch_fts_extension
 
 
 class ThreadDaemon:
@@ -91,6 +93,28 @@ def stub_model_prefetch(monkeypatch: pytest.MonkeyPatch) -> list:
 def real_prefetch():
     """The unpatched ``_prefetch_embedding_model`` for tests that exercise it directly."""
     return _REAL_PREFETCH
+
+
+@pytest.fixture(autouse=True)
+def stub_fts_prefetch(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Keep every unit test offline: never trigger a real FTS-extension fetch in ``init``.
+
+    ``init`` now also prefetches Ladybug's FTS extension (#93), which would otherwise hit the
+    network on each invocation. Unit tests replace the seam with a recorder no-op; a test that
+    needs the real behavior requests the :func:`real_fts_prefetch` fixture instead.
+
+    Returns the list of ``Config`` objects the stub was called with, so a test can assert
+    ``init`` invoked the seam exactly once.
+    """
+    calls: list = []
+    monkeypatch.setattr(_cli, "_prefetch_fts_extension", lambda cfg: calls.append(cfg))
+    return calls
+
+
+@pytest.fixture
+def real_fts_prefetch():
+    """The unpatched ``_prefetch_fts_extension`` for tests that exercise it directly."""
+    return _REAL_FTS_PREFETCH
 
 
 @pytest.fixture
