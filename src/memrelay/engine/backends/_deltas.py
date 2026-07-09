@@ -1,16 +1,17 @@
-"""The two graphiti<->embedded-graph integration deltas, shared by every backend (#76).
+"""The two graphiti<->embedded-graph integration deltas for the Ladybug backend (#76).
 
 These were discovered against the installed ``graphiti-core==0.29.2`` (originally
 for Kuzu; documented in ``docs/e4-engine-notes.md``). They apply **identically** to
 LadybugDB because Ladybug *is* Kuzu's codebase and speaks the same Cypher/DDL/FTS —
 empirically confirmed in #76 (``INSTALL FTS;``/``LOAD FTS;`` + ``CREATE_FTS_INDEX``
-run unchanged). Keeping them here, driver-agnostic, means both ``LadybugBackend`` and
-``KuzuBackend`` open a fully-wired driver from a single source of truth.
+run unchanged). Keeping them here means the ``LadybugBackend`` opens a fully-wired
+driver from a single source of truth. They are **KUZU-provider-only**: the cloud
+backends (Neo4j / FalkorDB / Neptune) return graphiti's own native drivers, which
+self-build their indices/constraints, so those backends do **not** apply these deltas.
 
 This module is intentionally **free of any native graph import** (it touches only the
-``GraphProvider`` enum and the query-string helper), so importing it never loads
-``ladybug`` or ``kuzu`` — the two share a compiled extension and cannot coexist in one
-process.
+``GraphProvider`` enum and the query-string helper), so importing it never loads the
+native ``ladybug`` extension — that is deferred to the moment a driver is opened.
 
 Delta 1 — ``driver._database``:
     ``Graphiti.add_episode`` runs ``if group_id != self.driver._database:
@@ -58,11 +59,11 @@ async def apply_graphiti_deltas(
     *,
     load_fts_extension: FtsExtensionLoader | None = None,
 ) -> None:
-    """Apply Delta 1 + Delta 2 to a freshly opened Kuzu/Ladybug driver, in place.
+    """Apply Delta 1 + Delta 2 to a freshly opened Ladybug (KUZU-provider) driver, in place.
 
     ``load_fts_extension`` overrides how the FTS extension is made available before
     the indexes are built; when ``None`` the native ``INSTALL FTS; LOAD FTS;`` path
-    is used (correct for Kuzu and for any build that bundles FTS statically).
+    is used (correct for any build that bundles FTS statically).
     """
     # Delta 1: set ``_database`` only if unset, so a future graphiti that *does*
     # populate it is not clobbered.
@@ -81,8 +82,8 @@ async def load_fts_extension_native(driver: GraphDriver) -> None:
     """Load FTS via the engine's own ``INSTALL FTS; LOAD FTS;`` (best-effort).
 
     Each statement is a no-op when FTS is already loaded or statically bundled, so
-    failures are swallowed at debug level. This is the correct path for Kuzu and
-    the fallback for Ladybug (see ``_fts_extension.load_ladybug_fts_extension``).
+    failures are swallowed at debug level. This is the fallback for Ladybug when the
+    Python prefetch is unavailable (see ``_fts_extension.load_ladybug_fts_extension``).
     """
     for statement in _FTS_EXTENSION_STATEMENTS:
         try:

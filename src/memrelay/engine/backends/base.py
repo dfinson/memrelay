@@ -1,12 +1,12 @@
 """The memrelay graph **Backend** seam (#76).
 
 A ``Backend`` is the single thing the engine's construction seam resolves to open
-the embedded graph: it turns a :class:`~memrelay.config.Config` into a ready-to-use
-graphiti ``GraphDriver``. This is the formal boundary that lets memrelay swap its
-*storage* driver (LadybugDB by default, Kuzu as a back-compat fallback) **without**
-touching graphiti-core's brain (bitemporal fact model, extraction, dedup, RRF) or
-``MemoryEngine``'s frozen public async API / wire shapes — the swap lives strictly
-below the engine's construction seam.
+the graph: it turns a :class:`~memrelay.config.Config` into a ready-to-use graphiti
+``GraphDriver``. This is the formal boundary that lets memrelay pick its *storage*
+driver (embedded LadybugDB by default; Neo4j / FalkorDB / Neptune as opt-in cloud
+backends) **without** touching graphiti-core's brain (bitemporal fact model,
+extraction, dedup, RRF) or ``MemoryEngine``'s frozen public async API / wire shapes —
+the swap lives strictly below the engine's construction seam.
 
 The surface is deliberately minimal (fork D-4): everything the engine uses at
 runtime — ``provider``, ``execute_query``, ``close``, ``EntityNode.get_by_uuid`` —
@@ -42,9 +42,11 @@ class Backend(ABC):
     async def open_driver(self, cfg: Config) -> GraphDriver:
         """Open (creating files as needed) and return a ready-to-use ``GraphDriver``.
 
-        The driver must be fully wired for graphiti-core 0.29.2 — i.e. with the
-        two integration deltas applied (see
-        :func:`~memrelay.engine.backends._deltas.apply_graphiti_deltas`) — so the
-        engine can inject it straight into ``Graphiti(graph_driver=...)``.
+        The returned driver must be fully wired for graphiti-core 0.29.2. The embedded
+        Ladybug backend applies the two KUZU-provider integration deltas (see
+        :func:`~memrelay.engine.backends._deltas.apply_graphiti_deltas`); the cloud
+        backends return graphiti's own native driver, which self-builds its indices and
+        needs no deltas. Either way the engine injects the result straight into
+        ``Graphiti(graph_driver=...)``.
         """
         raise NotImplementedError

@@ -1,8 +1,9 @@
 """memrelay graph storage backends (#76).
 
 Importing this package pulls in only the seam (:class:`Backend`) and the lazy
-:mod:`registry` — never a concrete backend module, so no native graph library
-(``ladybug``/``kuzu``) is loaded until :func:`resolve_backend` selects one.
+:mod:`registry` — never a concrete backend module, so neither the embedded native
+graph library (``ladybug``) nor any cloud client stack is loaded until
+:func:`resolve_backend` selects one.
 """
 
 from __future__ import annotations

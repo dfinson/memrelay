@@ -31,10 +31,10 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
-      - name: Install (editable, with dev extras)
+      - name: Install (editable, with dev + cloud-backend extras)
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -e ".[dev,falkordb,neptune]"
 
       - name: Ruff lint
         run: ruff check .
@@ -44,28 +44,3 @@ jobs:
 
       - name: Pytest
         run: pytest
-
-  kuzu-fallback:
-    # Back-compat fallback (#76, fork D-1): exercise the archived Kuzu backend in its
-    # OWN job/process. Kuzu and Ladybug share one pybind11 extension and cannot co-load
-    # in a single process, so the fallback cannot run inside the main (Ladybug) matrix —
-    # it installs the optional `kuzu` extra and runs only the `kuzu`-marked tests here.
-    name: kuzu fallback (py3.12)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install (editable, with dev + kuzu extras)
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,kuzu]"
-
-      - name: Pytest (kuzu fallback only)
-        run: pytest -m kuzu

@@ -1,10 +1,10 @@
 """Backend registry with **lazy** resolution (#76).
 
 memrelay resolves a :class:`~memrelay.engine.backends.base.Backend` from
-``cfg.graph.backend`` — ``"ladybug"`` (the OOTB default) or ``"kuzu"`` (a
-back-compat fallback). A backend joins the registry by decorating its class with
-:func:`register`, mirroring the provider registry (#70) and host-process registry
-(#87)::
+``cfg.graph.backend``: ``"ladybug"`` (the embedded, zero-config OOTB default) or one of
+the cloud opt-ins ``"neo4j"`` / ``"falkordb"`` / ``"neptune"``. A backend joins the
+registry by decorating its class with :func:`register`, mirroring the provider registry
+(#70) and host-process registry (#87)::
 
     from memrelay.engine.backends.registry import register
 
@@ -15,12 +15,13 @@ back-compat fallback). A backend joins the registry by decorating its class with
 
 **Why this registry is lazy, unlike the provider registry.** Provider modules are
 cheap to import, so :mod:`memrelay.providers.registry` eagerly ``pkgutil``-discovers
-them. Backend modules are **not**: each pulls a compiled native graph extension, and
-Ladybug and Kuzu *share the same pybind11 extension* — importing both in one process
-raises ``generic_type: type "Database" is already registered`` (verified in #76). So
-resolution must import **only** the selected backend's module. The id→module map is
-kept static (not derived by import) so :func:`known_backends` can answer without
-loading any native library.
+them. Backend modules are **not**: the embedded default pulls a compiled native graph
+extension (``ladybug``), and each cloud backend module hard-imports its own heavy client
+stack at module top (``falkordb``; ``boto3``/``opensearch-py``/``langchain-aws`` for
+Neptune) that a default ``pip install memrelay`` never installs. So resolution must
+import **only** the selected backend's module, so an OOTB (Ladybug) install never needs
+any cloud client library. The id→module map is kept static (not derived by import) so
+:func:`known_backends` can answer without importing any backend.
 """
 
 from __future__ import annotations
@@ -37,7 +38,9 @@ DEFAULT_BACKEND_ID = "ladybug"
 #: libs (which are mutually exclusive within a process).
 _BACKEND_MODULES: dict[str, str] = {
     "ladybug": "ladybug_backend",
-    "kuzu": "kuzu_backend",
+    "neo4j": "neo4j_backend",
+    "falkordb": "falkordb_backend",
+    "neptune": "neptune_backend",
 }
 
 #: Populated by :func:`register` as backend modules are lazily imported.
@@ -79,9 +82,9 @@ def _load(backend_id: str) -> type[Backend]:
 def resolve_backend(backend_id: str | None = None) -> Backend:
     """Resolve and construct the backend for ``backend_id`` (default: Ladybug).
 
-    Imports **only** the selected backend's module, so the archived ``kuzu`` package
-    is never loaded unless ``backend="kuzu"`` is explicitly requested. Raises
-    :class:`KeyError` (listing :func:`known_backends`) for an unknown id.
+    Imports **only** the selected backend's module, so a default (Ladybug) install
+    never loads any cloud client library. Raises :class:`KeyError` (listing
+    :func:`known_backends`) for an unknown id.
     """
     resolved = backend_id or DEFAULT_BACKEND_ID
     backend_cls = _REGISTRY.get(resolved) or _load(resolved)
