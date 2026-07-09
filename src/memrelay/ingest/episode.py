@@ -28,6 +28,9 @@ from typing import Any
 
 #: The exact keys of the serialized episode dict, in declaration order. A & C build
 #: dicts against this; :func:`EpisodeRecord.from_dict` filters to it defensively.
+#: ``phase`` (E2-S6 #98) is appended last and defaults to ``None`` so that spool rows
+#: written before it existed still deserialize (the missing key falls back to the
+#: field default) — a backward-compatible wire-format extension.
 EPISODE_FIELDS: tuple[str, ...] = (
     "content",
     "namespace",
@@ -37,6 +40,7 @@ EPISODE_FIELDS: tuple[str, ...] = (
     "event_id",
     "ts",
     "idempotency_key",
+    "phase",
 )
 
 
@@ -63,8 +67,12 @@ class EpisodeRecord:
 
     Only ``content`` / ``namespace`` / ``repo`` are consumed by the ingester (they
     map straight onto ``engine.note``); the rest is provenance the spool carries
-    through unchanged. Instances are frozen — treat a record as an immutable value
-    and use :meth:`to_dict` to get the transport form.
+    through unchanged. ``phase`` (E2-S6 #98) is the derived traceforge
+    workflow-phase for the episode when ``enable_phase`` is on (else ``None``); the
+    ingester folds it into the noted content, so it is *not* an input to
+    :func:`make_idempotency_key` and never changes an episode's key. Instances are
+    frozen — treat a record as an immutable value and use :meth:`to_dict` to get the
+    transport form.
     """
 
     content: str
@@ -75,6 +83,7 @@ class EpisodeRecord:
     event_id: str | None = None
     ts: str = ""
     idempotency_key: str = ""
+    phase: str | None = None
 
     @classmethod
     def new(
@@ -88,12 +97,15 @@ class EpisodeRecord:
         event_id: str | None = None,
         ts: str | None = None,
         idempotency_key: str | None = None,
+        phase: str | None = None,
     ) -> EpisodeRecord:
         """Build a record, filling ``ts`` (now, UTC ISO-8601) and the idempotency key.
 
         Pass ``ts`` / ``idempotency_key`` explicitly to override the defaults; leave
         them ``None`` and the record stamps the current time and derives the key
         from ``(session_id, event_id, content)`` via :func:`make_idempotency_key`.
+        ``phase`` is optional derived provenance (E2-S6 #98) and, by design, is *not*
+        part of the idempotency key — enabling phase never changes an episode's key.
         """
         resolved_ts = ts if ts is not None else datetime.now(UTC).isoformat()
         resolved_key = (
@@ -110,6 +122,7 @@ class EpisodeRecord:
             event_id=event_id,
             ts=resolved_ts,
             idempotency_key=resolved_key,
+            phase=phase,
         )
 
     def to_dict(self) -> dict[str, Any]:

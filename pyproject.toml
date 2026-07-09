@@ -56,6 +56,20 @@ neptune = [
     "langchain-aws>=0.2.29",
     "opensearch-py>=3.0.0",
 ]
+# Phase enrichment opt-in (#98, E2-S6). `enable_phase = true` runs traceforge's trained
+# workflow-phase classifier, which embeds episode text with a vendored model2vec model.
+# model2vec / scikit-learn / scipy / joblib are already hard deps of traceforge-toolkit,
+# so a default install can run phase inference — EXCEPT that `requests` is only pulled
+# transitively (via huggingface_hub) and can be absent in trimmed environments, which
+# makes phase inference silently stamp nothing. This extra makes the full phase stack
+# explicit and guarantees `requests`. NOT part of the default install: the zero-config
+# default (enable_phase=false) needs none of it and stays deterministic/offline. No model
+# download either — the phase bundle and the embedder ship *inside* the traceforge package.
+phase = [
+    "model2vec>=0.8.2",
+    "scikit-learn>=1.5",
+    "requests>=2.31",
+]
 
 [project.urls]
 Homepage = "https://github.com/dfinson/memrelay"

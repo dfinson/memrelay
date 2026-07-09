@@ -181,6 +181,41 @@ def _prefetch_fts_extension(cfg: Config) -> None:
     click.echo("FTS extension: ready.")
 
 
+def _check_phase_bundle(cfg: Config) -> None:
+    """Report phase-enrichment readiness during ``init`` (opt-in #98, mirrors #13/#93).
+
+    Phase is off by default, so the common path just notes it is disabled. When an
+    operator has set ``enable_phase = true`` this runs the same preflight the observe
+    path uses (:func:`memrelay.ingest.phase_guard.resolve_phase` — load the traceforge
+    phase bundle + one trial embed) and echoes whether it is ready. No download: the
+    phase model and embedder ship inside traceforge. Non-fatal by contract — a not-ready
+    result only warns; the daemon will still run (degrading that observe pass to
+    phase-off) rather than crash.
+    """
+    if not cfg.ingest.enable_phase:
+        click.echo("phase enrichment: disabled (enable_phase = false; opt-in).")
+        return
+
+    click.echo("phase enrichment: verifying traceforge phase model...")
+    try:
+        # Lazy import: confines the traceforge ML path to the one command that needs it.
+        from memrelay.ingest.phase_guard import resolve_phase
+
+        ready, _ = resolve_phase(cfg)
+    except Exception as exc:  # noqa: BLE001 - readiness check must never abort init
+        ready = False
+        click.echo(f"phase enrichment: readiness check failed ({exc}).", err=True)
+    if ready:
+        click.echo("phase enrichment: ready (phase model + embedder loaded).")
+    else:
+        click.echo(
+            "phase enrichment: enabled but not ready — episodes will store WITHOUT a "
+            "phase. Install the optional stack (`pip install memrelay[phase]`) and ensure "
+            "the traceforge phase bundle is present (or set $TRACEFORGE_PHASE_MODEL).",
+            err=True,
+        )
+
+
 def _write_default_config(home, config_text: str) -> tuple[object, bool]:
     """Write the starter config into ``home`` if absent (idempotent).
 
@@ -244,6 +279,7 @@ def init(copilot_home: str | None) -> None:
     click.echo(f"registered MCP: {mcp_path}")
     _prefetch_embedding_model(cfg)
     _prefetch_fts_extension(cfg)
+    _check_phase_bundle(cfg)
     click.echo("Run `memrelay start` to launch the observation daemon.")
 
 
