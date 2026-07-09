@@ -105,3 +105,32 @@ jobs:
       - name: Run first-run smoke
         run: python scripts/first_run_smoke.py
 
+  retrieval-eval:
+    # E11-S4 (#21): deterministic, offline precision@k regression gate for recall quality.
+    # Additive and self-contained — it consumes the shipped `engine.search` and never touches
+    # the rest of the suite. A plain, NON-editable `pip install .` (DEFAULT extras only) proves
+    # the gate needs no dev/cloud extras, no API keys, and no embedding-model download: the
+    # harness injects a mock LLM + a deterministic offline embedder (see tests/eval/README.md).
+    name: retrieval eval (precision@k gate, no keys)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install memrelay (default extras only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+
+      - name: Enforce precision@k baseline
+        run: python tests/eval/generate_baseline.py --check
+
+
