@@ -91,16 +91,24 @@ def test_observe_resolves_namespace_from_git_remote(observed_session) -> None:
 
     assert result.namespace == "acme"
     assert result.repo == "acme/widgets"
-    assert result.appended == 1
+    # The single-turn fixture composes into two work-units + one session summary —
+    # NOT one episode per event (the assembler buffers a coherent run of events).
+    assert result.appended == 3
+    assert len(spool.records) == 3
 
-    (record,) = spool.records
-    assert record["namespace"] == "acme"
-    assert record["repo"] == "acme/widgets"
-    assert record["source"] == "copilot"
-    assert record["session_id"] == "obs-session"
-    assert record["content"]  # non-empty conversational text
-    assert record["event_id"]  # stable wire id present
-    assert record["ts"]  # ISO-8601 timestamp
+    for record in spool.records:
+        assert record["namespace"] == "acme"
+        assert record["repo"] == "acme/widgets"
+        assert record["source"] == "copilot"
+        assert record["session_id"] == "obs-session"
+        assert record["content"]  # non-empty composed text
+        assert record["event_id"]  # stable segment id present
+        assert record["ts"]  # ISO-8601 timestamp
+
+    # Composition surfaces the previously-dropped tool activity (#26)...
+    assert any("Tool:" in record["content"] for record in spool.records)
+    # ...and session end emits one deterministic summary episode (#27).
+    assert spool.records[-1]["content"].startswith("Session summary")
 
 
 def test_observe_is_idempotent_across_two_runs(observed_session) -> None:
@@ -113,8 +121,10 @@ def test_observe_is_idempotent_across_two_runs(observed_session) -> None:
     run_observe_sync(events, "obs-session", second, cwd=None)
 
     assert first.records == second.records
-    assert len(first.records) == 1
-    assert first.records[0]["idempotency_key"] == second.records[0]["idempotency_key"]
+    assert len(first.records) == 3
+    assert [r["idempotency_key"] for r in first.records] == [
+        r["idempotency_key"] for r in second.records
+    ]
 
 
 def test_observe_can_override_cwd(observed_session, tmp_path: Path) -> None:
@@ -128,7 +138,7 @@ def test_observe_can_override_cwd(observed_session, tmp_path: Path) -> None:
 
     assert result.namespace == "globex"
     assert result.repo == "globex/gadgets"
-    assert spool.records[0]["namespace"] == "globex"
+    assert all(record["namespace"] == "globex" for record in spool.records)
 
 
 def test_observe_writes_to_real_spool(observed_session, tmp_path: Path) -> None:
@@ -152,34 +162,39 @@ def test_observe_writes_to_real_spool(observed_session, tmp_path: Path) -> None:
 
         assert result.namespace == "acme"
         assert result.repo == "acme/widgets"
-        assert result.appended == 1
-        assert spool.pending() == 1
+        # Composed episodes (two work-units + a summary), not one-per-event.
+        assert result.appended == 3
+        assert spool.pending() == 3
 
         batch = spool.read_batch()
-        assert len(batch) == 1
-        _, record = batch[0]
-        assert record["namespace"] == "acme"
-        assert record["repo"] == "acme/widgets"
-        assert record["source"] == "copilot"
-        assert record["session_id"] == "obs-session"
-        assert record["content"]  # non-empty conversational text
-        assert record["event_id"]  # stable wire id
-        assert record["ts"]  # ISO-8601 timestamp
-        # The key is B's real sha256 over the SAME (session_id, stable event_id, content).
-        assert record["idempotency_key"] == make_idempotency_key(
-            "obs-session", record["event_id"], record["content"]
-        )
-        first_key = record["idempotency_key"]
+        assert len(batch) == 3
+        records = [record for _, record in batch]
+        for record in records:
+            assert record["namespace"] == "acme"
+            assert record["repo"] == "acme/widgets"
+            assert record["source"] == "copilot"
+            assert record["session_id"] == "obs-session"
+            assert record["content"]  # non-empty composed text
+            assert record["event_id"]  # stable segment id
+            assert record["ts"]  # ISO-8601 timestamp
+            # Each key is B's real sha256 over (session_id, stable segment id, content).
+            assert record["idempotency_key"] == make_idempotency_key(
+                "obs-session", record["event_id"], record["content"]
+            )
+        # The composition (#26) and deterministic summary (#27) reach the real spool.
+        assert any("Tool:" in record["content"] for record in records)
+        assert records[-1]["content"].startswith("Session summary")
+        first_keys = [record["idempotency_key"] for record in records]
 
     # Re-observe from a fresh connection (simulating a second run/process): the durable
-    # unique-key guard means the episode is NOT re-appended.
+    # unique-key guard means the composed episodes are NOT re-appended (ZERO new rows).
     with Spool(spool_db) as spool2:
-        assert spool2.pending() == 1
+        assert spool2.pending() == 3
         real_observe_sync(events, "obs-session", spool2, cwd=None)
-        assert spool2.pending() == 1
+        assert spool2.pending() == 3
         batch2 = spool2.read_batch()
-        assert len(batch2) == 1
-        assert batch2[0][1]["idempotency_key"] == first_key
+        assert len(batch2) == 3
+        assert [record["idempotency_key"] for _, record in batch2] == first_keys
 
 
 def run_observe_sync(events: Path, session_id: str, spool: FakeSpool, *, cwd: str | None):

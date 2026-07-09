@@ -113,32 +113,35 @@ def test_registry_observe_writes_to_real_spool(copilot_home_with_session, tmp_pa
 
         assert result.namespace == "acme"
         assert result.repo == "acme/widgets"
-        assert result.appended == 1
-        assert spool.pending() == 1
+        # Composed episodes (two work-units + a summary), not one-per-event.
+        assert result.appended == 3
+        assert spool.pending() == 3
 
         batch = spool.read_batch()
-        assert len(batch) == 1
-        _, record = batch[0]
-        assert record["namespace"] == "acme"
-        assert record["repo"] == "acme/widgets"
-        assert record["source"] == "copilot"
-        assert record["session_id"] == session_id
-        assert record["content"]
-        assert record["event_id"]
-        assert record["ts"]
-        assert record["idempotency_key"] == make_idempotency_key(
-            session_id, record["event_id"], record["content"]
-        )
-        first_key = record["idempotency_key"]
+        assert len(batch) == 3
+        records = [record for _, record in batch]
+        for record in records:
+            assert record["namespace"] == "acme"
+            assert record["repo"] == "acme/widgets"
+            assert record["source"] == "copilot"
+            assert record["session_id"] == session_id
+            assert record["content"]
+            assert record["event_id"]
+            assert record["ts"]
+            assert record["idempotency_key"] == make_idempotency_key(
+                session_id, record["event_id"], record["content"]
+            )
+        first_keys = [record["idempotency_key"] for record in records]
 
     # Re-resolve + re-observe from a fresh connection: the durable unique-key guard
-    # means the episode is NOT re-appended (proves the seam preserves idempotency).
+    # means the composed episodes are NOT re-appended (proves the seam preserves
+    # idempotency across re-observation of the same session).
     with Spool(spool_db) as spool2:
-        assert spool2.pending() == 1
+        assert spool2.pending() == 3
         provider2 = get_registry().resolve()
         asyncio.run(run_observe(ref.path, ref.session_id, spool=spool2, provider=provider2))
-        assert spool2.pending() == 1
-        assert spool2.read_batch()[0][1]["idempotency_key"] == first_key
+        assert spool2.pending() == 3
+        assert [record["idempotency_key"] for _, record in spool2.read_batch()] == first_keys
 
 
 def test_run_observe_fallback_constructs_provider_via_registry(
@@ -167,5 +170,5 @@ def test_run_observe_fallback_constructs_provider_via_registry(
 
     assert result.namespace == "acme"
     assert result.repo == "acme/widgets"
-    assert result.appended == 1
-    assert spool.records[0]["source"] == "copilot"
+    assert result.appended == 3
+    assert all(record["source"] == "copilot" for record in spool.records)
