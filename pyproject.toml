@@ -4,7 +4,9 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memrelay"
-version = "0.0.1"
+# Single-sourced from src/memrelay/__init__.py (__version__) via [tool.hatch.version]
+# below, so `memrelay --version` and the wheel/PyPI metadata can never drift.
+dynamic = ["version"]
 description = "Portable, graph-based persistent memory for AI coding agents."
 readme = "README.md"
 license = "MIT"
@@ -61,6 +63,9 @@ Repository = "https://github.com/dfinson/memrelay"
 
 [project.scripts]
 memrelay = "memrelay.__main__:main"
+
+[tool.hatch.version]
+path = "src/memrelay/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/memrelay"]
