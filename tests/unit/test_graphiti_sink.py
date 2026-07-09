@@ -24,6 +24,7 @@ import asyncio
 from datetime import UTC, datetime
 
 import pytest
+from traceforge.classify.workflow import Phase
 from traceforge.types import EventMetadata, SessionEvent, ToolMotivation
 
 from memrelay.ingest.graphiti_sink import (
@@ -54,7 +55,7 @@ def _fake_idem(session_id: str | None, event_id: str | None, content: str) -> st
 
 
 def _fake_factory(**fields: object) -> dict:
-    """Stand-in for session B's ``EpisodeRecord.new`` — returns the plain 8-field dict."""
+    """Stand-in for session B's ``EpisodeRecord.new`` — returns the plain field dict."""
     return dict(fields)
 
 
@@ -120,6 +121,17 @@ def _sink(spool: FakeSpool, **kwargs) -> GraphitiSink:
     kwargs.setdefault("idempotency_fn", _fake_idem)
     kwargs.setdefault("record_factory", _fake_factory)
     return GraphitiSink(spool, **kwargs)
+
+
+def _with_phase(event: SessionEvent, phase: Phase) -> SessionEvent:
+    """Stamp ``metadata.phase`` on a constructed event, mimicking the live pipeline.
+
+    traceforge's ``EventPipeline`` stamps ``metadata.phase`` on each event *before*
+    fan-out to the sink; these tests reproduce that stamp directly (no model) so the
+    sink's derivation (F1) is exercised hermetically.
+    """
+    meta = event.metadata.model_copy(update={"phase": phase})
+    return event.model_copy(update={"metadata": meta})
 
 
 def _drive(sink: GraphitiSink, *events: SessionEvent, flush: bool = False) -> None:
@@ -492,6 +504,7 @@ def test_build_episode_record_shape() -> None:
         "event_id": "wire-3",
         "ts": TS.isoformat(),
         "idempotency_key": "K|sess-1|wire-3|note this",
+        "phase": None,
     }
 
 
@@ -528,3 +541,117 @@ def test_run_observe_over_fixture_composes_episodes(copilot_fixture) -> None:
         assert record["session_id"] == "fixture-session"
         assert record["content"]
         assert record["repo"] is None
+
+
+# ---------------------------------------------------------- phase derivation (E2-S6 #98)
+
+
+def test_single_phase_span_derives_that_phase() -> None:
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _with_phase(_event(kind="message.user", content="plan the work"), Phase.PLANNING),
+        _with_phase(_event(kind="message.assistant", content="here is the plan"), Phase.PLANNING),
+        flush=True,
+    )
+    assert sink.appended == 1
+    assert spool.records[0]["phase"] == "planning"
+
+
+def test_multi_phase_span_derives_majority() -> None:
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _with_phase(_event(kind="message.user", content="a"), Phase.PLANNING),
+        _with_phase(_event(kind="message.assistant", content="b"), Phase.IMPLEMENTATION),
+        _with_phase(_event(kind="message.assistant", content="c"), Phase.IMPLEMENTATION),
+        flush=True,
+    )
+    # 2 implementation vs 1 planning -> dominant phase wins.
+    assert spool.records[0]["phase"] == "implementation"
+
+
+def test_tie_breaks_to_most_recent_phase() -> None:
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _with_phase(_event(kind="message.user", content="a"), Phase.PLANNING),
+        _with_phase(_event(kind="message.assistant", content="b"), Phase.IMPLEMENTATION),
+        flush=True,
+    )
+    # 1 vs 1 -> tie broken in favour of the most-recent phase (implementation).
+    assert spool.records[0]["phase"] == "implementation"
+
+
+def test_phase_off_leaves_phase_none() -> None:
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _event(kind="message.user", content="plan the work"),
+        _event(kind="message.assistant", content="here is the plan"),
+        flush=True,
+    )
+    assert spool.records[0]["phase"] is None
+
+
+def test_phase_is_a_pure_sidecar_content_and_key_unchanged() -> None:
+    """Toggling phase must not change composed content or the idempotency key (F2).
+
+    Same events, once phase-off and once phase-on: the sole difference is the sidecar
+    ``phase`` field. ``content`` and ``idempotency_key`` are byte-identical, so enabling
+    phase can never double-ingest or drift an episode's key.
+    """
+    events = (
+        ("message.user", "plan it", "wire-1"),
+        ("message.assistant", "do it", "wire-2"),
+    )
+
+    off_spool = FakeSpool()
+    _drive(
+        _sink(off_spool),
+        *(_event(kind=k, content=c, raw_id=r) for k, c, r in events),
+        flush=True,
+    )
+    on_spool = FakeSpool()
+    _drive(
+        _sink(on_spool),
+        _with_phase(
+            _event(kind="message.user", content="plan it", raw_id="wire-1"), Phase.PLANNING
+        ),
+        _with_phase(
+            _event(kind="message.assistant", content="do it", raw_id="wire-2"),
+            Phase.IMPLEMENTATION,
+        ),
+        flush=True,
+    )
+
+    off, on = off_spool.records[0], on_spool.records[0]
+    assert off["phase"] is None and on["phase"] == "implementation"
+    assert on["content"] == off["content"], "phase must not alter composed content"
+    assert on["idempotency_key"] == off["idempotency_key"], "phase must not alter the key"
+
+
+def test_summary_uses_session_dominant_phase() -> None:
+    """The #27 summary episode gets the session-wide dominant phase, not the last segment's."""
+    spool = FakeSpool()
+    sink = _sink(spool)
+    _drive(
+        sink,
+        _with_phase(_event(kind="message.assistant", content="d1"), Phase.IMPLEMENTATION),
+        _with_phase(_tool(result="ok", raw_id="wire-tool"), Phase.IMPLEMENTATION),  # flush seg 1
+        _with_phase(_event(kind="message.assistant", content="d2"), Phase.PLANNING),
+        _with_phase(_event(kind="session.ended", content=None), Phase.PLANNING),  # flush + summary
+    )
+
+    assert len(spool.records) == 3
+    assert spool.records[0]["phase"] == "implementation", "seg 1: two implementation events"
+    assert spool.records[1]["phase"] == "planning", "seg 2: the trailing planning message"
+    summary = spool.records[2]
+    assert summary["content"].startswith("Session summary")
+    # Session content phases = [impl, impl, planning] -> dominant is implementation, even
+    # though the *last* composed segment was planning. Proves session-wide derivation.
+    assert summary["phase"] == "implementation"

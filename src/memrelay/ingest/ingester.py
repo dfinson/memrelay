@@ -27,6 +27,26 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
+#: Prefix that carries an episode's derived phase into the noted content. Kept short
+#: and deterministic so it embeds/FTS-indexes as ordinary episode text and shows up in
+#: ``memory_recall`` output. See :func:`_content_with_phase`.
+_PHASE_PREFIX = "Phase: "
+
+
+def _content_with_phase(content: str, phase: str | None) -> str:
+    """Fold an episode's derived phase into its noted content (E2-S6 #98).
+
+    The graph seam (``engine.note`` → ``add_episode(episode_body=content)``) only
+    surfaces free-text ``content`` in recall, and both ``engine.note`` and the MCP
+    tool signatures are frozen — so phase reaches the graph as *queryable context* by
+    prepending a compact ``Phase: <phase>`` header to the content. When ``phase`` is
+    ``None`` (the default, phase-off) the content is returned **unchanged**, byte for
+    byte identical to the pre-#98 behaviour, so nothing shifts on the default path.
+    """
+    if not phase:
+        return content
+    return f"{_PHASE_PREFIX}{phase}\n\n{content}"
+
 
 class _Engine(Protocol):
     async def note(self, content: str, namespace: str, repo: str | None = None) -> str: ...
@@ -85,7 +105,8 @@ class Ingester:
     async def _ingest_one(self, seq: int, record: dict[str, Any]) -> None:
         """Note one record, then checkpoint it — even if noting failed (skip poison)."""
         try:
-            await self._engine.note(record["content"], record["namespace"], record.get("repo"))
+            content = _content_with_phase(record["content"], record.get("phase"))
+            await self._engine.note(content, record["namespace"], record.get("repo"))
             self._episodes_ingested += 1
         except Exception:
             logger.exception(

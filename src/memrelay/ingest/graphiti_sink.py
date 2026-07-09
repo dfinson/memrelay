@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -149,6 +150,40 @@ def _stable_event_id(event: SessionEvent) -> str | None:
     return None
 
 
+def _event_phase(event: SessionEvent) -> str | None:
+    """Read traceforge's stamped workflow phase off an event, as a plain string.
+
+    ``metadata.phase`` is a :class:`traceforge.classify.workflow.Phase` (a ``StrEnum``)
+    when ``enable_phase`` is on, else ``None``. Returns ``None`` when phase is off or
+    unset, so the phase-off path stays exactly as it was (E2-S6 #98).
+    """
+    meta = getattr(event, "metadata", None)
+    phase = getattr(meta, "phase", None)
+    return None if phase is None else str(phase)
+
+
+def _derive_phase(phases: Iterable[str | None]) -> str | None:
+    """Reduce a span's per-event phases to one episode phase: dominant, ties→last.
+
+    The composed episode spans many events that can carry different phases, so the
+    episode's phase is *derived* (F1): the majority phase over the span's
+    content-bearing events, breaking ties in favour of the most recent. This is a
+    pure read-only reduction over the already-composed span — it never re-segments
+    the buffer, so idempotency keys (derived from the span's ids, not its phases)
+    are untouched. Returns ``None`` when no event carried a phase (phase-off).
+    """
+    present = [p for p in phases if p]
+    if not present:
+        return None
+    counts = Counter(present)
+    top = max(counts.values())
+    tied = {p for p, c in counts.items() if c == top}
+    for phase in reversed(present):
+        if phase in tied:
+            return phase
+    return None  # unreachable: ``tied`` is non-empty and drawn from ``present``
+
+
 def _default_idempotency_fn(session_id: str | None, event_id: str | None, content: str) -> str:
     # Lazy: session B owns ``ingest/episode.py`` and may not be merged yet.
     from memrelay.ingest.episode import make_idempotency_key
@@ -157,10 +192,10 @@ def _default_idempotency_fn(session_id: str | None, event_id: str | None, conten
 
 
 def _default_record_factory(**fields: Any) -> dict[str, Any]:
-    # Lazy: session B owns ``ingest/episode.py``'s ``EpisodeRecord`` and may not be merged
-    # yet. ``EpisodeRecord.new`` returns an ``EpisodeRecord``; the spool's ``append`` wants
-    # the plain 8-field dict, so serialise via ``.to_dict()``. Delegating construction to B
-    # keeps C's records schema-locked to B's 8 fields.
+    # Lazy: session B owns ``ingest/episode.py``'s ``EpisodeRecord``. ``EpisodeRecord.new``
+    # returns an ``EpisodeRecord``; the spool's ``append`` wants the plain dict, so
+    # serialise via ``.to_dict()``. Delegating construction to B keeps C's records
+    # schema-locked to B's frozen ``EPISODE_FIELDS`` (which now includes ``phase``, #98).
     from memrelay.ingest.episode import EpisodeRecord
 
     return EpisodeRecord.new(**fields).to_dict()
@@ -177,12 +212,18 @@ def _assemble_record(
     ts_iso: str,
     idempotency_fn: IdempotencyFn | None,
     record_factory: RecordFactory | None,
+    phase: str | None = None,
 ) -> Any:
     """Build one episode record from explicit fields via the injected seams.
 
     Shared by the single-event :func:`build_episode_record` and the composed/summary
     paths in :class:`GraphitiSink`, so every record — regardless of how many events it
-    spans — is schema-locked to session B's 8 frozen fields and keyed the same way.
+    spans — is schema-locked to session B's frozen fields and keyed the same way.
+
+    ``phase`` (E2-S6 #98) is the derived episode phase (or ``None`` when phase is off).
+    It rides along as a sidecar field and is deliberately **not** an input to the
+    idempotency key: the key is still computed from the phase-free ``content``, so a
+    record's key is byte-identical whether or not phase enrichment is enabled.
     """
     make_key = idempotency_fn or _default_idempotency_fn
     factory = record_factory or _default_record_factory
@@ -195,6 +236,7 @@ def _assemble_record(
         event_id=event_id,
         ts=ts_iso,
         idempotency_key=make_key(session_id, event_id, content),
+        phase=phase,
     )
 
 
@@ -211,8 +253,10 @@ def build_episode_record(
     """Assemble one episode record (session B's frozen schema) for *event*.
 
     Construction is delegated to session B's ``EpisodeRecord.new`` (lazy-imported, or an
-    injected fake in tests) so C's records stay schema-locked to B's 8 frozen fields:
-    ``content, namespace, repo, source, session_id, event_id, ts, idempotency_key``.
+    injected fake in tests) so C's records stay schema-locked to B's frozen fields:
+    ``content, namespace, repo, source, session_id, event_id, ts, idempotency_key`` and
+    the opt-in ``phase`` (#98, left ``None`` on this single-event path — phase is
+    *derived* per composed episode by :class:`GraphitiSink`, not per raw event).
     ``content`` is passed in already-extracted/validated by the caller; ``event_id`` is
     the *stable* wire id and ``idempotency_key`` is computed via session B's
     ``make_idempotency_key`` (or an injected fake).
@@ -423,11 +467,13 @@ class GraphitiSink(StorageSink):
         # --- current work-unit buffer ---
         self._buffer_pieces: list[str] = []
         self._buffer_ids: list[str | None] = []
+        self._buffer_phases: list[str | None] = []
         self._buffer_ts: str | None = None
         self._buffer_session_id: str | None = None
         self._activity_id: str | None = None
         # --- session-level accumulators for the summary episode (#27) ---
         self._all_ids: list[str | None] = []
+        self._all_phases: list[str | None] = []
         self._decisions: list[str] = []
         self._tool_outcomes: list[str] = []
         self._touched_files: list[str] = []
@@ -481,9 +527,12 @@ class GraphitiSink(StorageSink):
             self._buffer_ts = ts.isoformat() if ts is not None else ""
             self._buffer_session_id = getattr(event, "session_id", None)
         stable_id = _stable_event_id(event)
+        phase = _event_phase(event)
         self._buffer_pieces.append(piece)
         self._buffer_ids.append(stable_id)
+        self._buffer_phases.append(phase)
         self._all_ids.append(stable_id)
+        self._all_phases.append(phase)
         self._seen_content = True
         self._accumulate_summary(event, kind, piece)
 
@@ -528,11 +577,13 @@ class GraphitiSink(StorageSink):
             ts_iso=self._buffer_ts or "",
             idempotency_fn=self._idempotency_fn,
             record_factory=self._record_factory,
+            phase=_derive_phase(self._buffer_phases),
         )
         self._spool.append(record)
         self.appended += 1
         self._buffer_pieces = []
         self._buffer_ids = []
+        self._buffer_phases = []
         self._buffer_ts = None
         self._buffer_session_id = None
 
@@ -555,6 +606,7 @@ class GraphitiSink(StorageSink):
             ts_iso=ts.isoformat() if ts is not None else "",
             idempotency_fn=self._idempotency_fn,
             record_factory=self._record_factory,
+            phase=_derive_phase(self._all_phases),
         )
         self._spool.append(record)
         self.appended += 1
@@ -645,18 +697,24 @@ async def run_observe(
     idempotency_fn: IdempotencyFn | None = None,
     record_factory: RecordFactory | None = None,
     provider: Any | None = None,
+    phase_resolver: Callable[[Any], tuple[bool, Any]] | None = None,
 ) -> ObserveResult:
     """Observe one session: adapter → ``EventPipeline`` → :class:`GraphitiSink` → spool.
 
     The namespace/repo are resolved **once** from the session's own cwd (``cwd``
     override, else read from ``session.start``) via ``mcp.namespace.resolve_context`` —
-    the exact function ``memory_recall`` uses, so ingested memory is findable. The ML
-    inferencer flags come from :class:`~memrelay.config.IngestConfig` (default off);
-    ``governance=None`` keeps observation opt-out (SPEC §3.3).
+    the exact function ``memory_recall`` uses, so ingested memory is findable.
+    ``enable_phase``/``enable_boundary`` come from :class:`~memrelay.config.IngestConfig`
+    (default off). Phase is opt-in and routed through :func:`phase_guard.resolve_phase`
+    (injectable via ``phase_resolver`` for tests): on success the warm inferencer is
+    handed to the pipeline; if the model bundle or ML deps are missing it logs and runs
+    this pass phase-off rather than crashing. ``governance=None`` keeps observation
+    opt-out (SPEC §3.3).
     """
     from traceforge import Enricher, EventPipeline
 
     from memrelay.config import load_config
+    from memrelay.ingest.phase_guard import resolve_phase
     from memrelay.mcp.namespace import resolve_context
     from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
 
@@ -665,6 +723,9 @@ async def run_observe(
 
     resolved_cwd = cwd if cwd is not None else resolve_session_cwd(events_path)
     namespace, repo = resolve_context(resolved_cwd, namespace_map)
+
+    resolve = phase_resolver or resolve_phase
+    phase_enabled, phase_inferencer = resolve(cfg)
 
     sink = GraphitiSink(
         spool,
@@ -680,7 +741,8 @@ async def run_observe(
         sinks=[sink],
         enricher=Enricher(),
         governance=None,
-        enable_phase=cfg.ingest.enable_phase,
+        phase_inferencer=phase_inferencer,
+        enable_phase=phase_enabled,
         enable_boundary=cfg.ingest.enable_boundary,
     )
     adapter = provider.make_adapter(session_id)

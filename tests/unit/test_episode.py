@@ -71,3 +71,45 @@ def test_to_row_is_order_stable() -> None:
     record = EpisodeRecord.new("hello", "proj-a").to_dict()
     shuffled = dict(reversed(list(record.items())))
     assert to_row(record) == to_row(shuffled)
+
+
+# --------------------------------------------------------------------- phase (E2-S6 #98)
+
+
+def test_phase_is_the_appended_field_defaulting_none() -> None:
+    assert EPISODE_FIELDS[-1] == "phase"
+    record = EpisodeRecord.new("c", "ns")
+    assert record.phase is None
+    assert record.to_dict()["phase"] is None
+
+
+def test_new_carries_explicit_phase() -> None:
+    record = EpisodeRecord.new("c", "ns", phase="implementation")
+    assert record.phase == "implementation"
+    assert record.to_dict()["phase"] == "implementation"
+
+
+def test_phase_roundtrips_through_row() -> None:
+    record = EpisodeRecord.new("hello", "proj-a", phase="planning").to_dict()
+    restored = from_row(to_row(record))
+    assert restored == record
+    assert restored["phase"] == "planning"
+
+
+def test_from_dict_missing_phase_defaults_to_none() -> None:
+    # A spool row written before #98 has no ``phase`` key; it must still deserialize
+    # (the missing key falls back to the field default) — backward-compatible wire form.
+    legacy = EpisodeRecord.new("c", "ns").to_dict()
+    del legacy["phase"]
+    assert "phase" not in legacy
+    record = EpisodeRecord.from_dict(legacy)
+    assert record.phase is None
+    assert record.content == "c"
+
+
+def test_idempotency_key_is_phase_independent() -> None:
+    # Enabling phase must NEVER change an episode's key: the key is derived from the
+    # phase-free (session_id, event_id, content) and ``phase`` rides as a sidecar.
+    off = EpisodeRecord.new("c", "ns", session_id="s", event_id="e")
+    on = EpisodeRecord.new("c", "ns", session_id="s", event_id="e", phase="implementation")
+    assert on.idempotency_key == off.idempotency_key == make_idempotency_key("s", "e", "c")

@@ -101,21 +101,34 @@ def test_walking_skeleton_pipeline_delivers(copilot_fixture: Path) -> None:
 
 
 def test_runner_forwards_ingest_flags(copilot_fixture: Path, monkeypatch) -> None:
-    """replay() forwards IngestConfig.enable_phase/boundary into EventPipeline (Point 5).
+    """replay() forwards the *resolved* phase decision + boundary flag into EventPipeline.
 
-    Later epics flip these on via config; E0 must prove the wiring reaches the
-    pipeline constructor rather than being hardcoded.
+    enable_phase is opt-in and routed through the phase preflight guard (#98), so the
+    resolved ``(enabled, inferencer)`` pair reaches the pipeline rather than the raw
+    config flag; enable_boundary still flows straight from config. The guard is stubbed
+    here so no real ML model is loaded — this asserts the *wiring*, not inference.
     """
     import traceforge
 
     from memrelay.config import Config, IngestConfig
+    from memrelay.ingest import phase_guard
 
-    captured: dict[str, bool] = {}
+    captured: dict = {}
+    sentinel_inferencer = object()
+
+    def fake_resolve(cfg, *, enabled=None, factory=None, trial=None):
+        captured["requested"] = cfg.ingest.enable_phase if enabled is None else enabled
+        return (True, sentinel_inferencer)
+
+    monkeypatch.setattr(phase_guard, "resolve_phase", fake_resolve)
 
     class SpyPipeline:
-        def __init__(self, *, sinks, enricher, governance, enable_phase, enable_boundary):
+        def __init__(
+            self, *, sinks, enricher, governance, phase_inferencer, enable_phase, enable_boundary
+        ):
             captured["enable_phase"] = enable_phase
             captured["enable_boundary"] = enable_boundary
+            captured["phase_inferencer"] = phase_inferencer
 
         async def push(self, event) -> None:  # noqa: ANN001 - test spy
             pass
@@ -130,7 +143,10 @@ def test_runner_forwards_ingest_flags(copilot_fixture: Path, monkeypatch) -> Non
 
     cfg = Config(ingest=IngestConfig(enable_phase=True, enable_boundary=True))
     replay(copilot_fixture, "fixture-session", echo=False, config=cfg)
-    assert captured == {"enable_phase": True, "enable_boundary": True}
+    assert captured["requested"] is True
+    assert captured["enable_phase"] is True
+    assert captured["enable_boundary"] is True
+    assert captured["phase_inferencer"] is sentinel_inferencer
 
 
 def test_adapter_never_raises_on_bad_input() -> None:

@@ -118,3 +118,42 @@ def test_stop_already_set_returns_immediately(tmp_path: Path) -> None:
     asyncio.run(scenario())
     assert engine.notes == [], "a pre-set stop must short-circuit before any note"
     spool.close()
+
+
+# ---------------------------------------------------------------- phase fold (E2-S6 #98)
+
+
+def test_phase_is_folded_into_noted_content(tmp_path: Path) -> None:
+    spool = Spool(tmp_path / "spool" / "spool.db")
+    record = EpisodeRecord.new(
+        "the body", "proj-a", repo="memrelay", idempotency_key="k", phase="implementation"
+    ).to_dict()
+    spool.append(record)
+    engine = FakeEngine()
+    asyncio.run(_drain(engine, spool))
+
+    content, namespace, repo = engine.notes[0]
+    assert content == "Phase: implementation\n\nthe body", "derived phase prepended to content"
+    assert (namespace, repo) == ("proj-a", "memrelay"), "namespace/repo untouched"
+    spool.close()
+
+
+def test_phase_none_leaves_content_byte_identical(tmp_path: Path) -> None:
+    # The default (phase-off) path must hand the engine exactly today's content.
+    spool = _seed(tmp_path, ["plain body"])  # _record sets no phase -> to_dict phase=None
+    engine = FakeEngine()
+    asyncio.run(_drain(engine, spool))
+    assert engine.notes[0][0] == "plain body"
+    spool.close()
+
+
+def test_legacy_record_without_phase_key_ingests(tmp_path: Path) -> None:
+    # A spool row written before #98 has no ``phase`` key; ``record.get("phase")`` -> None.
+    spool = Spool(tmp_path / "spool" / "spool.db")
+    legacy = EpisodeRecord.new("old fact", "proj-a", idempotency_key="k").to_dict()
+    del legacy["phase"]
+    spool.append(legacy)
+    engine = FakeEngine()
+    asyncio.run(_drain(engine, spool))
+    assert engine.notes[0][0] == "old fact", "missing phase key must not break ingest"
+    spool.close()

@@ -56,11 +56,17 @@ async def replay_async(
     from traceforge import Enricher, EventPipeline
 
     from memrelay.config import load_config
+    from memrelay.ingest.phase_guard import resolve_phase
     from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
 
     cfg = config if config is not None else load_config()
-    phase = cfg.ingest.enable_phase if enable_phase is None else enable_phase
+    requested_phase = cfg.ingest.enable_phase if enable_phase is None else enable_phase
     boundary = cfg.ingest.enable_boundary if enable_boundary is None else enable_boundary
+    # Route the opt-in phase flag through the preflight guard: a missing bundle / missing
+    # ML deps degrades this run to phase-off (logged) instead of crashing or silently
+    # stamping nothing. ConsoleSink discards phase, but the guard keeps both observe
+    # seams consistent and crash-safe (E2-S6 #98).
+    phase_enabled, phase_inferencer = resolve_phase(cfg, enabled=requested_phase)
 
     provider = get_registry().create(DEFAULT_PROVIDER_ID)
     adapter = provider.make_adapter(session_id)
@@ -69,7 +75,8 @@ async def replay_async(
         sinks=[sink],
         enricher=Enricher(),
         governance=None,
-        enable_phase=phase,
+        phase_inferencer=phase_inferencer,
+        enable_phase=phase_enabled,
         enable_boundary=boundary,
     )
 
