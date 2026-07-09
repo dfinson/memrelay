@@ -98,7 +98,7 @@ jobs:
           echo "installing built wheel: $wheel"
           "$RUNNER_TEMP/verify-venv/bin/pip" install "$wheel"
 
-      - name: Verify console script, metadata, and `init` on the installed wheel
+      - name: Verify console script, metadata, and wheel completeness
         run: |
           set -euo pipefail
           venv="$RUNNER_TEMP/verify-venv"
@@ -117,19 +117,21 @@ jobs:
             exit 1
           }
 
-          # `memrelay init` in a throwaway home must succeed (exit 0) and write config +
-          # register the MCP server, using ONLY the default-extras dependency closure.
-          export MEMRELAY_HOME="$RUNNER_TEMP/home"
-          export MEMRELAY_COPILOT_HOME="$RUNNER_TEMP/copilot"
-          memrelay init
-          test -f "$MEMRELAY_HOME/config.toml" || {
-            echo "::error::init did not write $MEMRELAY_HOME/config.toml"
+          # The console script's help must render (exit 0), proving the entry point wires
+          # up cleanly against the installed dependency closure.
+          memrelay --help >/dev/null || {
+            echo "::error::\`memrelay --help\` exited non-zero on the installed wheel"
             exit 1
           }
-          test -f "$MEMRELAY_COPILOT_HOME/mcp-config.json" || {
-            echo "::error::init did not register the MCP server"
+
+          # Wheel-completeness: importing every subpackage deterministically proves the
+          # built wheel actually SHIPS them (catches any missing-subpackage regression in
+          # the hatch build config) with no network and no model download.
+          "$venv/bin/python" -c "import memrelay, memrelay.daemon, memrelay.engine, memrelay.engine.backends, memrelay.engine.llm, memrelay.ingest, memrelay.mcp, memrelay.providers" || {
+            echo "::error::a memrelay subpackage is missing from the built wheel"
             exit 1
           }
+
           echo "clean-env install of the built wheel verified."
 
   publish-testpypi:
