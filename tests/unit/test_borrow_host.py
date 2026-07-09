@@ -15,9 +15,11 @@ from pydantic import BaseModel
 
 from memrelay.engine.llm.borrow_host import (
     BorrowHostLLMClient,
+    ClaudeHostProcess,
     CopilotHostProcess,
     HostProcessError,
     _loads_json_object,
+    resolve_host_process,
 )
 
 
@@ -93,3 +95,30 @@ def test_copilot_host_process_reports_missing_binary():
     host = CopilotHostProcess(command="definitely-not-a-real-binary-xyz")
     with pytest.raises(HostProcessError):
         asyncio.run(host.complete("hello"))
+
+
+def test_claude_host_process_availability_is_bool():
+    assert isinstance(ClaudeHostProcess.is_installed("definitely-not-a-real-binary-xyz"), bool)
+
+
+def test_claude_host_process_reports_missing_binary():
+    host = ClaudeHostProcess(command="definitely-not-a-real-binary-xyz")
+    with pytest.raises(HostProcessError):
+        asyncio.run(host.complete("hello"))
+
+
+def test_claude_host_process_uses_print_mode_by_default():
+    # Grounds the borrow-host invocation on the real ``claude`` CLI: non-interactive
+    # print mode (``-p``) with a plain-text output format (``claude --help`` confirms
+    # ``-p/--print`` and ``--output-format text``).
+    assert ClaudeHostProcess()._extra_args == ["-p", "--output-format", "text"]
+
+
+def test_resolve_host_process_maps_agent_ids_and_default():
+    assert resolve_host_process("copilot") is CopilotHostProcess
+    assert resolve_host_process("claude") is ClaudeHostProcess
+    # A falsy host preserves the historical ``cfg.llm.host or "copilot"`` default.
+    assert resolve_host_process(None) is CopilotHostProcess
+    assert resolve_host_process("") is CopilotHostProcess
+    # A genuine unregistered agent-id is unknown (no silent Copilot fallback).
+    assert resolve_host_process("gemini") is None

@@ -8,10 +8,18 @@ import pytest
 from graphiti_core.llm_client.client import LLMClient
 
 from memrelay.config import load_config
+from memrelay.engine.llm.borrow_host import (
+    BorrowHostLLMClient,
+    ClaudeHostProcess,
+    CopilotHostProcess,
+    HostProcessError,
+)
 from memrelay.engine.llm.byo_key import ByoKeyConfigError, ByoKeyLLMClient
 from memrelay.engine.llm.local import LocalLLMClient
 from memrelay.engine.llm.strategy import (
+    STRATEGY_BORROW_HOST,
     STRATEGY_BYO_KEY,
+    BorrowHostStrategy,
     ByoKeyStrategy,
     LLMStrategy,
     select_llm_client,
@@ -100,3 +108,35 @@ def test_local_stub_raises_not_implemented():
     client = LocalLLMClient(config=None)
     with pytest.raises(NotImplementedError):
         asyncio.run(client._generate_response([]))
+
+
+# ── BorrowHostStrategy host→process registry (E4 / #87) ──────────────────────────
+
+
+def test_borrow_host_builds_claude_process_for_claude_host():
+    cfg = load_config(environ={}, llm={"strategy": STRATEGY_BORROW_HOST, "host": "claude"})
+    client = BorrowHostStrategy().build_client(cfg)
+    assert isinstance(client, BorrowHostLLMClient)
+    assert isinstance(client._host, ClaudeHostProcess)
+
+
+def test_borrow_host_builds_copilot_process_for_copilot_and_default():
+    cfg_copilot = load_config(environ={}, llm={"strategy": STRATEGY_BORROW_HOST, "host": "copilot"})
+    assert isinstance(BorrowHostStrategy().build_client(cfg_copilot)._host, CopilotHostProcess)
+    # Default (host omitted → config default "copilot") must not regress.
+    cfg_default = load_config(environ={}, llm={"strategy": STRATEGY_BORROW_HOST})
+    assert isinstance(BorrowHostStrategy().build_client(cfg_default)._host, CopilotHostProcess)
+
+
+def test_borrow_host_unknown_host_is_unavailable_but_builds_and_fails_loud():
+    cfg = load_config(environ={}, llm={"strategy": STRATEGY_BORROW_HOST, "host": "gemini"})
+    strategy = BorrowHostStrategy()
+    # Unknown agent-id → unavailable, so the fallback chain moves on.
+    assert strategy.is_available(cfg) is False
+    # Construction must NOT raise — engine construction never crashes on a bad host...
+    client = strategy.build_client(cfg)
+    assert isinstance(client, BorrowHostLLMClient)
+    # ...the loud, clear failure surfaces only at extraction/call time.
+    with pytest.raises(HostProcessError) as excinfo:
+        asyncio.run(client._host.complete("anything"))
+    assert "gemini" in str(excinfo.value)

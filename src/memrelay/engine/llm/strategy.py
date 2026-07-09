@@ -53,14 +53,24 @@ class BorrowHostStrategy(LLMStrategy):
     name = STRATEGY_BORROW_HOST
 
     def is_available(self, cfg: Config) -> bool:
-        from .borrow_host import CopilotHostProcess
+        from .borrow_host import resolve_host_process
 
-        return CopilotHostProcess.is_installed(cfg.llm.host or "copilot")
+        host_cls = resolve_host_process(cfg.llm.host)
+        return host_cls is not None and host_cls.is_installed()
 
     def build_client(self, cfg: Config) -> LLMClient:
-        from .borrow_host import BorrowHostLLMClient, CopilotHostProcess
+        from .borrow_host import (
+            BorrowHostLLMClient,
+            _UnknownHostProcess,
+            resolve_host_process,
+        )
 
-        return BorrowHostLLMClient(CopilotHostProcess(command=cfg.llm.host or "copilot"))
+        host_cls = resolve_host_process(cfg.llm.host)
+        if host_cls is None:
+            # Unknown agent-id: never raise at construction (engine must still build);
+            # the fail-loud placeholder surfaces a clear error at extraction time.
+            return BorrowHostLLMClient(_UnknownHostProcess(cfg.llm.host))
+        return BorrowHostLLMClient(host_cls())
 
 
 class ByoKeyStrategy(LLMStrategy):
