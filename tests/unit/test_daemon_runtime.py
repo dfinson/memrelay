@@ -206,3 +206,32 @@ def test_default_ingester_factory_wires_real_seams_or_degrades(tmp_path: Path) -
     assert callable(ingester.run) and callable(ingester.stats)
     assert (cfg.home_path / "spool" / "spool.db").exists()
     assert ingester.stats() == {"episodes_ingested": 0, "spool_pending": 0}
+
+
+def test_default_ingester_factory_threads_disk_budget(tmp_path: Path) -> None:
+    """The factory forwards the ingest disk-budget config into the hosted Ingester
+    (E3-S4 #33); the zero-config default leaves compaction dormant (``max_bytes == 0``),
+    so the default daemon path stays byte-identical to pre-#33."""
+    try:
+        import memrelay.ingest.ingester  # noqa: F401
+        import memrelay.ingest.spool  # noqa: F401
+    except ImportError:
+        return  # ingest seams absent → factory degrades to None; nothing to thread
+
+    budgeted = default_ingester_factory(
+        object(),
+        load_config(
+            environ={},
+            home=str(tmp_path / "budgeted"),
+            ingest={"spool_max_bytes": 4096, "spool_compaction_pct": 0.5},
+        ),
+    )
+    assert budgeted is not None
+    assert budgeted._max_bytes == 4096
+    assert budgeted._compaction_pct == 0.5
+
+    default = default_ingester_factory(
+        object(), load_config(environ={}, home=str(tmp_path / "default"))
+    )
+    assert default is not None
+    assert default._max_bytes == 0  # dormant: zero-config daemon path unchanged
