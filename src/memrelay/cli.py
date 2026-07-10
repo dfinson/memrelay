@@ -1,10 +1,9 @@
 """memrelay command-line interface (SPEC §7).
 
-E0 wired the command surface and a working ``config`` command. This wave (E6/E7
-walking skeleton) implements ``init``/``start``/``stop``/``status``/``mcp`` plus a
-hidden ``_serve`` foreground runner; ``forget``/``seed`` remain stubs for later
-epics. Daemon/MCP wiring is imported lazily inside each command so lightweight
-commands (``config``, ``--help``) stay fast.
+E0 wired the command surface and a working ``config`` command. Later waves implement
+``init``/``start``/``stop``/``status``/``mcp``/``observe``/``seed`` plus a hidden
+``_serve`` foreground runner. Daemon/MCP wiring is imported lazily inside each command
+so lightweight commands (``config``, ``--help``) stay fast.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from memrelay.config import (
     load_config,
     resolve_config_path,
 )
+from memrelay.ingest.git_seed import DEFAULT_MAX_COUNT as _SEED_MAX_COUNT
 from memrelay.logging_config import (
     _REDACTED,
     _redact_uri_credentials,
@@ -31,8 +31,6 @@ from memrelay.logging_config import (
 )
 from memrelay.providers.base import AgentProvider, LLMStrategyHint
 from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
-
-_NOT_YET = "not implemented yet in this E0 foundations build"
 
 #: Starter config written by ``init`` (mirrors the built-in defaults; SPEC §6). The
 #: ``[llm]`` block is rendered from the resolved provider's advertised default strategy
@@ -76,11 +74,6 @@ def _resolve_provider(copilot_home: str | None) -> AgentProvider:
     if copilot_home:
         return registry.create(DEFAULT_PROVIDER_ID, home=copilot_home)
     return registry.resolve()
-
-
-def _todo(command: str, epic: str) -> None:
-    """Emit a uniform placeholder message for a not-yet-built subcommand."""
-    click.echo(f"memrelay {command}: {_NOT_YET} (planned for {epic}).")
 
 
 def _model_cache_populated(cfg: Config) -> bool:
@@ -617,9 +610,93 @@ def forget(repo: str | None, namespace: str | None, yes: bool, dry_run: bool) ->
 
 
 @main.command()
-def seed() -> None:
-    """Ingest git history as episodes (bootstrap memory for existing repos)."""
-    _todo("seed", "the retrieval epic")
+@click.option(
+    "--path",
+    "repo_path",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Repo to read git history from (default: the current directory).",
+)
+@click.option(
+    "--repo",
+    metavar="OWNER/NAME",
+    help="Override the repo provenance and namespace derivation (default: this repo's origin).",
+)
+@click.option(
+    "--namespace",
+    metavar="NAME",
+    help="Override the target namespace (default: resolved from the repo, like a live session).",
+)
+@click.option(
+    "--max-count",
+    type=click.IntRange(min=1),
+    default=_SEED_MAX_COUNT,
+    show_default=True,
+    help="Ingest at most this many of the most-recent commits.",
+)
+@click.option(
+    "--spool",
+    "spool_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Spool database path (default: <home>/spool/spool.db).",
+)
+@click.option(
+    "--dry-run", is_flag=True, help="Report what would be seeded and exit; append nothing."
+)
+def seed(
+    repo_path: str | None,
+    repo: str | None,
+    namespace: str | None,
+    max_count: int,
+    spool_path: str | None,
+    dry_run: bool,
+) -> None:
+    """Ingest git history as episodes (bootstrap memory for existing repos).
+
+    Reads the repo's ``git log`` and writes one episode per commit — subject, body,
+    author, ISO date, and the touched file paths (no diffs, no GitHub data) — to the same
+    durable spool ``observe`` uses, so the running daemon (or the next ``memrelay start``)
+    drains them into memory. The seed is **idempotent**: each commit gets a stable key, so
+    re-seeding never double-ingests. Bounded by ``--max-count`` (most-recent commits).
+
+    Namespace resolution mirrors a live session in that repo (``[namespaces.*]`` map + the
+    repo owner); ``--repo``/``--namespace`` override it. Use ``--path`` to seed a repo
+    other than the current directory and ``--dry-run`` to preview without writing.
+    """
+    from memrelay.ingest import git_seed
+    from memrelay.mcp.namespace import current_repo, resolve_namespace
+
+    cfg = _load_config()
+
+    source_dir = Path(repo_path) if repo_path else Path.cwd()
+    repo_id = repo if repo else current_repo(source_dir)
+    target_ns = namespace if namespace else resolve_namespace(repo_id, cfg.namespaces.repo_map)
+
+    home = ensure_home(cfg)
+    # Same durable file the daemon ingester drains (note the "spool/" subdir); sqlite
+    # won't create the parent dir, so ensure it here exactly like ``observe``.
+    db_path = Path(spool_path) if spool_path else home / "spool" / "spool.db"
+
+    spool = None if dry_run else _open_spool(db_path)
+    seeded = 0
+    try:
+        for commit in git_seed.stream_git_log(source_dir, max_count):
+            if spool is not None:
+                spool.append(git_seed.build_record(commit, namespace=target_ns, repo=repo_id))
+            seeded += 1
+    except git_seed.GitSeedError as exc:
+        raise click.ClickException(str(exc)) from exc
+    finally:
+        if spool is not None:
+            spool.close()
+
+    prefix = "dry run: would seed" if dry_run else "seeded"
+    click.echo(f"{prefix} git history from {source_dir}")
+    click.echo(f"  namespace: {target_ns}")
+    click.echo(f"  repo:      {repo_id}")
+    click.echo(f"  commits:   {seeded}")
+    click.echo(f"  spool:     {db_path}")
 
 
 @main.command(name="config")

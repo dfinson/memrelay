@@ -105,16 +105,18 @@ memrelay start                       # Start daemon (background)
 memrelay stop                        # Stop daemon
 memrelay status                      # Health: sessions, episodes, spool depth
 memrelay observe                     # Replay a discovered session through the pipeline into the spool
+memrelay seed                        # Bootstrap memory from a repo's git history (one episode per commit)
 memrelay guidance                    # Append opt-in recall guidance to an agent's instructions file
 memrelay config                      # Show current config
 
 # Planned — not yet implemented (currently stubs):
 memrelay forget --repo owner/name    # Delete memories for a repo
 memrelay forget --namespace name     # Delete entire namespace
-memrelay seed                        # Bootstrap memory from git history
 ```
 
 `memrelay observe` accepts `--session ID` (default: the most recently updated session), `--spool PATH` (default `<home>/spool/spool.db`), and `--copilot-home PATH`.
+
+`memrelay seed` bootstraps memory from a repo's git history so you get useful recall on day one, before live sessions accrue. It reads `git log` and writes one episode per commit — subject, body, author, ISO date, and the touched file paths (no diffs, no GitHub API data) — to the same durable spool `observe` uses, which the daemon then drains into the graph. It is **idempotent**: each commit gets a stable key, so re-running never double-ingests. Flags: `--path DIR` (repo to read, default: current directory), `--max-count N` (most-recent commits, default 500), `--repo OWNER/NAME` / `--namespace NAME` (override the target, mirroring `forget`; by default the namespace resolves exactly as a live session in that repo would), `--spool PATH`, and `--dry-run` to preview without writing.
 
 ## Configuration
 
@@ -217,7 +219,7 @@ and module map, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
 
-memrelay --help                # CLI (all subcommands work except `forget`/`seed`, still stubs)
+memrelay --help                # CLI (all subcommands work except `forget`, still a stub)
 memrelay config                # print the resolved configuration
 
 ruff check . && ruff format --check .             # lint
@@ -236,8 +238,8 @@ traceforge 0.1.0 API used and the deltas from `SPEC.md`.
 🚧 **Pre-1.0 and under active development** — the core is functional but still being
 assembled epic by epic, and the package is unpublished (v0.0.1). What works today:
 
-- **CLI** — `init`, `start`, `stop`, `status`, `observe`, `guidance`, `mcp`, and `config`
-  are all implemented (`forget` and `seed` remain stubs).
+- **CLI** — `init`, `start`, `stop`, `status`, `observe`, `seed`, `guidance`, `mcp`, and `config`
+  are all implemented (`forget` remains a stub).
 - **Engine (E4)** — a config-driven Graphiti wrapper over an embedded Kuzu database,
   with local fastembed embeddings and the `borrow-host` / `byo-key` LLM strategies.
 - **Daemon (E6/E7)** — a background process that owns the Kuzu engine, hosts the
