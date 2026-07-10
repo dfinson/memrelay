@@ -76,6 +76,7 @@ def default_ingester_factory(engine: Any, config: Config) -> SupportsIngest | No
         spool,
         max_bytes=config.ingest.spool_max_bytes,
         compaction_pct=config.ingest.spool_compaction_pct,
+        retention_bytes=config.ingest.spool_retention_bytes,
     )
 
 

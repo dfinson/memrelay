@@ -132,6 +132,15 @@ class IngestConfig:
     spool_max_bytes: int = 0
     spool_compaction_pct: float = 0.9
 
+    # E3 #112 — below-cursor history retention. Backpressure (#33) bounds only the
+    # *unprocessed* backlog (``seq > cursor``); already-ingested rows (``seq <= cursor``)
+    # are otherwise kept forever, so ``spool.db`` grows unbounded in steady state. This is a
+    # byte cap on that retained history: when it is exceeded the ingester prunes the oldest
+    # below-cursor rows (see Spool.reclaim) down to the budget, keeping the newest history.
+    # ``0`` disables reclamation, so the zero-config default keeps every ingested row exactly
+    # as before (byte-identical steady-state behaviour).
+    spool_retention_bytes: int = 0
+
 
 @dataclass(frozen=True)
 class Namespace:

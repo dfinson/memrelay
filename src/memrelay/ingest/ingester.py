@@ -118,7 +118,11 @@ class _Spool(Protocol):
 
     def pending_bytes(self) -> int: ...
 
+    def retained_bytes(self) -> int: ...
+
     def replace(self, delete_seqs: list[int], insert_records: list[dict[str, Any]]) -> None: ...
+
+    def reclaim(self, max_retained_bytes: int) -> int: ...
 
 
 #: An injectable interruptible wait: sleep ``delay`` seconds unless ``stop`` fires first.
@@ -154,6 +158,11 @@ class IngestMetrics:
     compactions: int = 0
     #: Original episodes folded away by compaction (the rows the summaries replaced).
     episodes_compacted: int = 0
+    #: Below-cursor history reclamation passes run (E3 #112): each prunes the oldest
+    #: already-ingested rows to keep retained history under its byte budget.
+    reclamations: int = 0
+    #: Already-ingested rows pruned by reclamation (below-cursor history dropped).
+    episodes_reclaimed: int = 0
 
 
 class Ingester:
@@ -181,6 +190,12 @@ class Ingester:
         summarizer: injectable seam folding the oldest episodes into fewer/smaller ones;
             the default (:func:`~memrelay.ingest.summarizer.default_summarizer`) is pure
             and offline so tests never touch a real LLM.
+        retention_bytes: below-cursor history budget in bytes (E3 #112). ``0`` (default)
+            disables reclamation, so already-ingested rows are kept forever exactly as
+            before; a positive value caps retained history, pruning the oldest below-cursor
+            rows in place (via the spool's atomic ``reclaim``) so ``spool.db`` stays bounded
+            in steady state. Independent of ``max_bytes`` (which bounds only the unprocessed
+            backlog).
     """
 
     def __init__(
@@ -199,6 +214,7 @@ class Ingester:
         max_bytes: int = 0,
         compaction_pct: float = 0.9,
         summarizer: Summarizer = default_summarizer,
+        retention_bytes: int = 0,
     ) -> None:
         self._engine = engine
         self._spool = spool
@@ -213,6 +229,7 @@ class Ingester:
         self._max_bytes = max_bytes
         self._compaction_pct = compaction_pct
         self._summarizer = summarizer
+        self._retention_bytes = retention_bytes
         self._metrics = IngestMetrics()
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -232,6 +249,10 @@ class Ingester:
                 # active-session detector below (it infers "new arrivals" from a rising
                 # pending). Re-baseline so a compaction is never misread as a new burst.
                 last_pending = self._spool.pending()
+            # Retention watchdog: prune below-cursor history back under its byte budget
+            # (E3 #112). It touches only already-ingested rows, so it never changes pending()
+            # and cannot disturb the active-session detector — no re-baseline needed.
+            self._maybe_reclaim()
             pending = self._spool.pending()
             if pending == 0:
                 # Nothing buffered: reset the idle window and wait for the next arrival.
@@ -321,6 +342,30 @@ class Ingester:
                 # bail rather than loop uselessly toward the pass cap.
                 break
         return compacted
+
+    def _maybe_reclaim(self) -> bool:
+        """Prune below-cursor history back under the retention byte budget (E3 #112).
+
+        Returns ``True`` if it pruned at least one already-ingested row. Disabled (an immediate
+        no-op) when ``retention_bytes <= 0``, which is the default — so retention is dormant and
+        the full ingested history is kept, byte-identical to pre-#112, unless a budget is set.
+
+        Delegates to the spool's atomic :meth:`~memrelay.ingest.spool.Spool.reclaim`, which
+        prunes the oldest ``seq <= cursor`` rows (keeping the newest history within budget) in one
+        transaction. It never writes the cursor and only ever touches already-checkpointed rows,
+        so exactly-once drain and the durable-monotonic cursor invariant hold across a crash
+        mid-reclaim. Because it changes only below-cursor rows,
+        :meth:`~memrelay.ingest.spool.Spool.pending` is unaffected — so, unlike compaction, this
+        needs no re-baseline of the active-session detector.
+        """
+        if self._retention_bytes <= 0:
+            return False
+        pruned = self._spool.reclaim(self._retention_bytes)
+        if pruned <= 0:
+            return False
+        self._metrics.reclamations += 1
+        self._metrics.episodes_reclaimed += pruned
+        return True
 
     async def _ingest_one(self, seq: int, record: dict[str, Any], stop: asyncio.Event) -> None:
         """Note one record with backoff; checkpoint only once it is truly handled.
