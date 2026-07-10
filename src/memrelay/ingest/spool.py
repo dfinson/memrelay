@@ -155,6 +155,27 @@ class Spool:
             ).fetchone()
         return int(total)
 
+    def retained_bytes(self) -> int:
+        """Return the on-disk byte footprint of *already-ingested* history (E3 #112).
+
+        The below-cursor mirror of :meth:`pending_bytes`: it sums the stored byte length of
+        every row at or before the durable cursor (``seq <= cursor``) — the append-only history
+        that :meth:`checkpoint` only ever accumulates and that nothing else reclaims. That is
+        precisely the quantity a retention policy must bound. Backpressure compaction (#33) caps
+        the *unprocessed backlog* (``seq > cursor`` via :meth:`pending_bytes`); retention caps
+        *this*, so the two together bound the whole file. :meth:`reclaim` drives this number down
+        to a configured budget.
+        """
+        with self._lock:
+            (total,) = self._conn.execute(
+                "SELECT COALESCE(SUM("
+                " LENGTH(CAST(record AS BLOB))"
+                " + LENGTH(CAST(idempotency_key AS BLOB))), 0)"
+                " FROM episodes WHERE seq <= (SELECT seq FROM cursor WHERE id = ?)",
+                (_CURSOR_ID,),
+            ).fetchone()
+        return int(total)
+
     def replace(self, delete_seqs: list[int], insert_records: list[dict[str, Any]]) -> None:
         """Atomically drop ``delete_seqs`` and append ``insert_records`` (E3-S4 #33).
 
@@ -194,6 +215,73 @@ class Spool:
             except Exception:
                 self._conn.rollback()
                 raise
+
+    def reclaim(self, max_retained_bytes: int) -> int:
+        """Atomically prune the oldest below-cursor history down to a byte budget (E3 #112).
+
+        The retention counterpart to :meth:`replace`. Already-ingested rows (``seq <= cursor``)
+        are the spool's append-only history — :meth:`checkpoint` only accumulates them, so in a
+        long-lived daemon they grow the file without bound. This reclaims the **oldest** of them,
+        keeping the newest history whose running total fits ``max_retained_bytes`` and deleting the
+        rest, so :meth:`retained_bytes` ends ``<= max_retained_bytes``. Returns the number of rows
+        pruned.
+
+        Two no-ops issue no ``DELETE`` at all: ``max_retained_bytes <= 0`` (retention disabled →
+        keep all history, the byte-identical pre-#112 behaviour) and an already-under-budget spool.
+
+        Crash-safety is preserved exactly as in :meth:`replace`:
+
+        * **Below-cursor only.** The ``DELETE`` carries an explicit ``seq <= cursor`` guard — the
+          inverse of :meth:`replace`'s ``seq > cursor`` guard — so an un-ingested (``seq > cursor``)
+          row can never be removed, even by a buggy caller and even if the ranking sub-select were
+          refactored. The un-ingested backlog and its ordering are untouched.
+        * **Never writes the cursor.** The durable cursor is an integer high-water mark, not a
+          foreign key into ``episodes``; :meth:`read_batch` / :meth:`pending` / :meth:`checkpoint`
+          filter on its *value*, so deleting history (including the row at ``seq == cursor``) leaves
+          every drain semantic intact — exactly-once delivery and cursor monotonicity both hold.
+        * **Atomic.** The prune runs in one implicit transaction finalized by a single
+          :meth:`commit`, with :meth:`rollback` on any error, so a crash leaves the spool either
+          fully pre-prune or fully post-prune, never half-way.
+        * **Cannot race the drain.** ``reclaim`` and :meth:`checkpoint` both hold ``self._lock`` and
+          commit independently, so they serialize; the cursor is read *inside* this transaction, so
+          a concurrent drain can only turn *more* rows into below-cursor history — never make a
+          pruned row un-ingested.
+        """
+        if max_retained_bytes <= 0:
+            return 0
+        with self._lock:
+            (retained,) = self._conn.execute(
+                "SELECT COALESCE(SUM("
+                " LENGTH(CAST(record AS BLOB))"
+                " + LENGTH(CAST(idempotency_key AS BLOB))), 0)"
+                " FROM episodes WHERE seq <= (SELECT seq FROM cursor WHERE id = ?)",
+                (_CURSOR_ID,),
+            ).fetchone()
+            if int(retained) <= max_retained_bytes:
+                return 0
+            try:
+                # Keep the newest below-cursor rows whose running byte total (newest→oldest)
+                # stays within budget; delete the older remainder. The redundant outer
+                # ``seq <= cursor`` conjunct is the load-bearing safety guard (see docstring):
+                # it makes deleting an un-ingested row impossible independent of the CTE.
+                deleted = self._conn.execute(
+                    "DELETE FROM episodes WHERE seq IN ("
+                    " SELECT seq FROM ("
+                    "  SELECT seq, SUM("
+                    "   LENGTH(CAST(record AS BLOB))"
+                    "   + LENGTH(CAST(idempotency_key AS BLOB)))"
+                    "   OVER (ORDER BY seq DESC) AS cum_bytes"
+                    "  FROM episodes"
+                    "  WHERE seq <= (SELECT seq FROM cursor WHERE id = ?)"
+                    " ) WHERE cum_bytes > ?"
+                    ") AND seq <= (SELECT seq FROM cursor WHERE id = ?)",
+                    (_CURSOR_ID, max_retained_bytes, _CURSOR_ID),
+                ).rowcount
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return int(deleted)
 
     def close(self) -> None:
         """Release the SQLite connection (and its WAL lock)."""
