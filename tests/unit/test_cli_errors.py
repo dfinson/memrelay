@@ -8,10 +8,11 @@ operate without internals knowledge. Two behaviors are covered here:
   the file and how to recover, *not* a raw Python traceback. This is exercised through
   ``config`` and also through ``status`` / ``start`` to prove the shared ``_load_config``
   wrapper applies across the command surface.
-* **Secret redaction** — ``memrelay config`` must never print a secret. The only real
-  secret that can live in config is ``[graph.connection] password`` (the ``[llm]`` /
-  ``[embeddings]`` blocks store an ``api_key_env`` *name*, not the key), so it is masked
-  while every non-secret field stays visible.
+* **Secret redaction** — ``memrelay config`` must never print a secret. The secrets that
+  can live in config are ``[graph.connection] password`` and a password embedded inline in
+  ``[graph.connection] uri`` (``scheme://user:pass@host``); both are masked. The ``[llm]`` /
+  ``[embeddings]`` blocks store an ``api_key_env`` *name*, not the key, so — like ``host`` /
+  ``user`` / a credential-free ``uri`` — they stay visible.
 
 Env is isolated per test (``cli_env`` pins the homes under ``tmp_path`` and clears
 inherited ``MEMRELAY_*`` / ``XDG_*``) so a developer's real config can never leak in.
@@ -79,32 +80,66 @@ def test_config_malformed_namespaces_reports_clean_error(
     assert "foo" in result.output  # the offending namespace is named
 
 
-def test_status_malformed_config_reports_clean_error(
-    cli_env: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+# The shared ``_load_config`` wrapper must behave identically across *every* user-facing
+# command that loads config — a clean ``ClickException`` (surfacing as ``SystemExit``),
+# never a raw traceback. These commands reach config-loading with no required arguments, so
+# a malformed ``MEMRELAY_CONFIG`` drives each straight through the wrapper.
+WRAPPED_COMMANDS = ["status", "start", "stop", "observe"]
+
+
+@pytest.mark.parametrize("command", WRAPPED_COMMANDS)
+def test_wrapped_command_reports_clean_error_on_malformed_config(
+    command: str, cli_env: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The shared wrapper hardens more than ``config`` — ``status`` must not traceback."""
+    """Consistency lock: no wrapped command leaks a raw traceback on a broken config."""
     bad = _write(tmp_path / "bad.toml", MALFORMED_TOML)
     monkeypatch.setenv("MEMRELAY_CONFIG", str(bad))
 
-    result = CliRunner().invoke(main, ["status"])
+    result = CliRunner().invoke(main, [command])
+
+    assert result.exit_code != 0
+    # A clean ClickException exits via SystemExit — never the raw parse error.
+    assert isinstance(result.exception, SystemExit)
+    assert not isinstance(result.exception, tomllib.TOMLDecodeError)
+    assert "could not parse config file" in result.output
+    assert str(bad) in result.output
+
+
+def test_init_malformed_config_error_is_non_circular(
+    cli_env: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``init`` must not tell a user already running ``init`` to run ``memrelay init``."""
+    bad = _write(tmp_path / "bad.toml", MALFORMED_TOML)
+    monkeypatch.setenv("MEMRELAY_CONFIG", str(bad))
+
+    result = CliRunner().invoke(main, ["init"])
 
     assert result.exit_code != 0
     assert isinstance(result.exception, SystemExit)
     assert "could not parse config file" in result.output
+    # Command-appropriate, non-circular recovery: fix/delete and re-run, not "memrelay init".
+    assert "memrelay init" not in result.output
+    assert "re-run" in result.output
 
 
-def test_start_malformed_config_reports_clean_error(
-    cli_env: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_load_config_success_path_returns_unchanged_config(
+    cli_env: tuple[Path, Path], tmp_path: Path
 ) -> None:
-    """``start`` fails at config-load with a clean error and never spawns a daemon."""
-    bad = _write(tmp_path / "bad.toml", MALFORMED_TOML)
-    monkeypatch.setenv("MEMRELAY_CONFIG", str(bad))
+    """Backward-compat: on a valid config the wrapper is a transparent pass-through."""
+    from memrelay.cli import _load_config
+    from memrelay.config import Config, load_config
 
-    result = CliRunner().invoke(main, ["start"])
+    # No-arg seam (init/start/stop/status/observe/forget all use this).
+    wrapped = _load_config()
+    direct = load_config()
+    assert isinstance(wrapped, Config)
+    assert wrapped == direct
+    assert wrapped.to_dict() == direct.to_dict()
 
-    assert result.exit_code != 0
-    assert isinstance(result.exception, SystemExit)
-    assert "could not parse config file" in result.output
+    # Explicit --path seam (used by ``config --path``).
+    ok = _write(tmp_path / "ok.toml", '[graph]\nbackend = "ladybug"\n')
+    assert _load_config(path=str(ok)) == load_config(path=str(ok))
+    assert _load_config(path=str(ok)).to_dict() == load_config(path=str(ok)).to_dict()
 
 
 # ─── Secret redaction (AC3) ──────────────────────────────────────────────────
@@ -131,6 +166,74 @@ def test_config_redacts_connection_password(cli_env: tuple[Path, Path], tmp_path
     # Non-secret connection fields remain visible/useful.
     assert connection["uri"] == "bolt://example:7687"
     assert connection["user"] == "neo4j"
+
+
+CLOUD_CONFIG_WITH_URI_CREDS = (
+    '[graph]\nbackend = "neo4j"\n'
+    "[graph.connection]\n"
+    'uri = "neo4j+s://neo4j:URI_SECRET_PW@db.example.com:7687"\n'
+    'user = "neo4j"\n'
+    'password = "FIELD_SECRET_PW"\n'
+    'database = "neo4j"\n'
+)
+
+
+def test_config_redacts_every_secret_value(cli_env: tuple[Path, Path], tmp_path: Path) -> None:
+    """Redaction is complete: no secret value survives, in either the field or the URI."""
+    cfg = _write(tmp_path / "creds.toml", CLOUD_CONFIG_WITH_URI_CREDS)
+    result = CliRunner().invoke(main, ["config", "--path", str(cfg)])
+
+    assert result.exit_code == 0, result.output
+    # Neither secret value appears anywhere in the rendered output.
+    assert "FIELD_SECRET_PW" not in result.output
+    assert "URI_SECRET_PW" not in result.output
+
+    data = json.loads(result.output)  # output stays valid JSON
+    connection = data["graph"]["connection"]
+    assert connection["password"] == "***redacted***"
+    # URI: only the embedded password is masked; scheme/user/host/port stay intact.
+    assert connection["uri"] == "neo4j+s://neo4j:***redacted***@db.example.com:7687"
+    # Non-secret references are preserved.
+    assert connection["user"] == "neo4j"
+    assert connection["database"] == "neo4j"
+
+
+#: Sentinel password token used in URI edge-case fixtures; kept out of a literal
+#: ``user:pass@host`` sequence (via f-string interpolation) so it reads clearly.
+_URI_PW = "URI_PW_SENTINEL"
+
+
+@pytest.mark.parametrize(
+    ("uri", "expect_redacted"),
+    [
+        # scheme://user:pass@host — normal case: mask password, keep user + endpoint.
+        (f"bolt://neo4j:{_URI_PW}@db.example.com:7687", True),
+        # userinfo but NO password (bolt://user@host) — nothing to redact, untouched.
+        ("bolt://neo4j@db.example.com:7687", False),
+        # password but NO user — masked without crashing or mangling the endpoint.
+        (f"bolt://:{_URI_PW}@db.example.com:7687", True),
+        # '@' inside the password — last '@' delimits host; password still fully masked.
+        (f"bolt://neo4j:{_URI_PW}x@yz@db.example.com:7687", True),
+        # no userinfo at all — untouched.
+        ("bolt://db.example.com:7687", False),
+        # non-URL junk / empty — returned unchanged, never raises.
+        ("not a uri", False),
+        ("", False),
+    ],
+)
+def test_redact_uri_credentials_edge_cases(uri: str, expect_redacted: bool) -> None:
+    """The URI mask must handle every userinfo shape without leaking or mangling."""
+    from memrelay.cli import _redact_uri_credentials
+
+    out = _redact_uri_credentials(uri)
+
+    assert _URI_PW not in out  # the embedded password never survives, in any shape
+    if expect_redacted:
+        assert "***redacted***" in out
+        # The endpoint (host:port after the userinfo) is preserved byte-for-byte.
+        assert out.endswith("@db.example.com:7687")
+    else:
+        assert out == uri  # nothing to redact -> transparent pass-through
 
 
 def test_config_keeps_api_key_env_name_visible(cli_env: tuple[Path, Path], tmp_path: Path) -> None:
