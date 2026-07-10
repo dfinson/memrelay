@@ -165,6 +165,19 @@ This declares a repo→namespace map that memrelay consults when grouping an obs
 - **`repos` must be a list of `"owner/name"` strings** — each with exactly one `/` and a non-empty owner and name.
 - **Namespace names are used verbatim** (only surrounding whitespace is trimmed) and must be non-empty.
 
+**Adjust logging** *(optional)* — memrelay emits structured JSON logs to stderr. The
+default level is `INFO`; raise it for field diagnosis, via config or the
+`MEMRELAY_LOGGING__LEVEL` environment variable:
+
+```toml
+[logging]
+level = "DEBUG"   # DEBUG | INFO | WARNING | ERROR | CRITICAL
+```
+
+Secrets (passwords, tokens, API keys, credentials embedded in connection URIs) are never
+logged. See [docs/troubleshooting.md](docs/troubleshooting.md) for where logs go and how to
+read them.
+
 ## Dependencies
 
 memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `traceforge-toolkit`) for multi-agent session capture and normalization. TraceForge already normalizes ~18 agents to a common event model; memrelay handles memory.
