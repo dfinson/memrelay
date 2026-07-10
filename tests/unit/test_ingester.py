@@ -47,9 +47,14 @@ def _seed(tmp_path: Path, contents: list[str]) -> Spool:
     return spool
 
 
+async def _no_wait(delay: float, stop: asyncio.Event) -> None:
+    """A backoff wait that never actually sleeps, so retry paths stay fast in tests."""
+    return None
+
+
 async def _drain(engine: FakeEngine, spool: Spool, *, timeout: float = 2.0) -> Ingester:
     """Run the ingester until the spool is fully consumed, then stop it."""
-    ingester = Ingester(engine, spool, idle_sleep=0.01)
+    ingester = Ingester(engine, spool, idle_sleep=0.01, backoff_wait=_no_wait)
     stop = asyncio.Event()
     task = asyncio.create_task(ingester.run(stop))
     deadline = asyncio.get_running_loop().time() + timeout
