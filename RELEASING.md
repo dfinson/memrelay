@@ -62,6 +62,23 @@ changes may land in a minor bump.
 
 ---
 
+## Pre-release trust gate
+
+Before cutting a release, run the **release gate** — a single hermetic, keyless end-to-end test
+that proves a captured session is ingested and then surfaced through the agent's `memory_recall`
+MCP tool against the real embedded Ladybug graph:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest tests/integration/test_release_gate_roundtrip.py -q
+```
+
+It must be green (`1 passed`) before you proceed. See
+[`docs/release-gate.md`](docs/release-gate.md) for what it proves, how to triage a failure, and
+its hermetic/keyless guarantees.
+
+---
+
 ## Cutting a release
 
 1. **Bump the version** in `src/memrelay/__init__.py`.
