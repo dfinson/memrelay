@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from pathlib import Path
 
 import click
 
 from memrelay import __version__, guidance
-from memrelay.config import Config, ensure_home, load_config
+from memrelay.config import (
+    Config,
+    NamespaceConfigError,
+    ensure_home,
+    load_config,
+    resolve_config_path,
+)
 from memrelay.providers.base import AgentProvider, LLMStrategyHint
 from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
 
@@ -250,6 +257,56 @@ def _open_spool(db_path: Path):
     return Spool(str(db_path))
 
 
+def _load_config(path: str | None = None) -> Config:
+    """Load config, turning a broken config into a clean CLI error (SPEC §7 helpful errors).
+
+    ``load_config`` raises low-level exceptions when the config is unusable — a TOML
+    syntax error (:class:`tomllib.TOMLDecodeError`), a missing explicit ``--path`` file
+    (:class:`FileNotFoundError`), or a malformed ``[namespaces.*]`` section
+    (:class:`~memrelay.config.NamespaceConfigError`). Unhandled, each surfaces as a raw
+    traceback; here every command that loads config instead gets a
+    :class:`click.ClickException` that names the offending file and how to recover.
+
+    The success path returns the identical :class:`Config` ``load_config`` would, so
+    this is a drop-in wrapper with no behavior change when the config is valid. When no
+    ``path`` is given it calls ``load_config()`` with no arguments (preserving the exact
+    seam other call sites and tests patch), reserving ``path=`` for the ``config --path``
+    case.
+    """
+    try:
+        return load_config(path=path) if path is not None else load_config()
+    except FileNotFoundError as exc:
+        # Explicit --path pointing at a missing file; the message already names it.
+        raise click.ClickException(str(exc)) from exc
+    except tomllib.TOMLDecodeError as exc:
+        location = path or resolve_config_path()
+        raise click.ClickException(
+            f"could not parse config file {location}: {exc}. "
+            "Fix the TOML syntax, or run `memrelay init` to regenerate a default config."
+        ) from exc
+    except NamespaceConfigError as exc:
+        location = path or resolve_config_path()
+        raise click.ClickException(f"invalid configuration in {location}: {exc}") from exc
+
+
+#: Placeholder shown in place of a redacted secret in ``memrelay config`` output.
+_REDACTED = "***redacted***"
+
+
+def _redact_secrets(resolved: dict) -> dict:
+    """Mask secret values in a resolved-config dict before display (never leak secrets).
+
+    Only ``graph.connection.password`` is an actual secret that can live in config: the
+    ``[llm]``/``[embeddings]`` blocks store an ``api_key_env`` *name*, never the key
+    itself (SPEC §6.4), so those stay visible as useful information. ``resolved`` is a
+    fresh :meth:`Config.to_dict` copy, so mutating it never touches the live config.
+    """
+    connection = resolved.get("graph", {}).get("connection")
+    if isinstance(connection, dict) and connection.get("password") is not None:
+        connection["password"] = _REDACTED
+    return resolved
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 @click.version_option(__version__, prog_name="memrelay")
 def main() -> None:
@@ -267,7 +324,7 @@ def main() -> None:
 )
 def init(copilot_home: str | None) -> None:
     """First-time setup: create dirs, generate config, register MCP server."""
-    cfg = load_config()
+    cfg = _load_config()
     home = ensure_home(cfg)
 
     provider = _resolve_provider(copilot_home)
@@ -288,7 +345,7 @@ def start() -> None:
     """Start the observation daemon (background process)."""
     from memrelay.daemon import lifecycle
 
-    cfg = load_config()
+    cfg = _load_config()
     if lifecycle.is_running(cfg.home_path):
         pid = lifecycle.read_pid(cfg.home_path)
         suffix = f" (pid {pid})" if pid is not None else ""
@@ -306,7 +363,7 @@ def stop() -> None:
     """Stop the daemon gracefully."""
     from memrelay.daemon import lifecycle
 
-    cfg = load_config()
+    cfg = _load_config()
     if lifecycle.stop_daemon(cfg):
         click.echo("memrelay daemon stopped.")
     else:
@@ -318,7 +375,7 @@ def status() -> None:
     """Show daemon health: sessions observed, episodes ingested, spool depth."""
     from memrelay.daemon import lifecycle
 
-    cfg = load_config()
+    cfg = _load_config()
     st = lifecycle.status(cfg)
     if not st.running:
         click.echo("memrelay daemon: not running")
@@ -367,7 +424,7 @@ def observe(session_id: str | None, spool_path: str | None, copilot_home: str | 
 
     from memrelay.ingest.graphiti_sink import run_observe
 
-    cfg = load_config()
+    cfg = _load_config()
     provider = _resolve_provider(copilot_home)
 
     ref = _select_session(provider, session_id)
@@ -492,7 +549,7 @@ def forget(repo: str | None, namespace: str | None, yes: bool, dry_run: bool) ->
 
     from memrelay.engine.graphiti import MemoryEngine
 
-    cfg = load_config()
+    cfg = _load_config()
     target = f"repo {repo!r}" if repo else f"namespace {namespace!r}"
 
     async def _run() -> tuple[int, bool]:
@@ -549,8 +606,8 @@ def seed() -> None:
 )
 def config_cmd(config_path: str | None) -> None:
     """Show the current (resolved) configuration as JSON."""
-    cfg: Config = load_config(path=config_path)
-    resolved = cfg.to_dict()
+    cfg: Config = _load_config(path=config_path)
+    resolved = _redact_secrets(cfg.to_dict())
     # Surface fully-expanded paths alongside the raw template values.
     resolved["home_path"] = str(cfg.home_path)
     resolved["graph"]["resolved_path"] = str(cfg.graph_path)
