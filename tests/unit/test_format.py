@@ -250,3 +250,36 @@ def test_detail_minimal_node_is_node_only_graph() -> None:
     rendered = format_detail({"node": {"uuid": "solo", "name": "Solo"}})
 
     assert _assert_valid_mermaid(rendered) == ["graph LR", '  n0["Solo"]']
+
+
+def test_unnamed_edge_renders_unlabeled_arrow() -> None:
+    """An edge with no ``name`` renders a bare ``-->`` (no ``|"..."|`` label), still valid."""
+    rendered = format_as_map(
+        {
+            "nodes": [{"uuid": "a", "name": "A"}, {"uuid": "b", "name": "B"}],
+            "edges": [{"source_node_uuid": "a", "target_node_uuid": "b"}],  # no "name"
+        }
+    )
+
+    body = _assert_valid_mermaid(rendered)
+    assert "  n0 --> n1" in body  # bare arrow...
+    assert not any('-->|"' in line for line in body)  # ...never a labeled one
+
+
+def test_detail_dedupes_repeated_neighbor_but_draws_every_edge() -> None:
+    """Two connections to the *same* neighbor declare it once but draw both edges."""
+    rendered = format_detail(
+        {
+            "node": {"uuid": "c0", "name": "Center"},
+            "connected_edges": [
+                {"name": "L1", "source_node_uuid": "c0", "target_node_uuid": "c1"},
+                {"name": "L2", "source_node_uuid": "c0", "target_node_uuid": "c1"},  # same c1
+            ],
+        }
+    )
+
+    body = _assert_valid_mermaid(rendered)  # dedup keeps every edge id declared -> still valid
+    # The shared neighbor c1 is declared exactly once (the dedup branch)...
+    assert len([line for line in body if line.endswith('["c1"]')]) == 1
+    # ...yet both distinct relationships are drawn.
+    assert len([line for line in body if "-->" in line]) == 2

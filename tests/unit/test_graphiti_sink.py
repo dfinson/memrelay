@@ -21,7 +21,9 @@ Coverage map:
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import pytest
 from traceforge.classify.workflow import Phase
@@ -32,7 +34,11 @@ from memrelay.ingest.graphiti_sink import (
     MAX_RESULT_CHARS,
     TRUNCATION_MARKER,
     GraphitiSink,
+    _extract_content,
+    _render_file,
+    _render_tool,
     build_episode_record,
+    resolve_session_cwd,
     run_observe,
 )
 
@@ -655,3 +661,167 @@ def test_summary_uses_session_dominant_phase() -> None:
     # Session content phases = [impl, impl, planning] -> dominant is implementation, even
     # though the *last* composed segment was planning. Proves session-wide derivation.
     assert summary["phase"] == "implementation"
+
+
+# ------------------------------------------------------- renderer/guard branch coverage
+
+
+def test_extract_content_returns_empty_for_non_mapping_payload() -> None:
+    # Defensive boundary: a malformed event whose payload isn't a Mapping yields no content
+    # rather than raising (the guard at the top of _extract_content).
+    assert _extract_content(SimpleNamespace(payload=["not", "a", "mapping"])) == ""
+    assert _extract_content(SimpleNamespace()) == ""  # payload attribute entirely absent
+
+
+def test_render_tool_omits_outcome_when_success_is_not_boolean() -> None:
+    # A non-bool ``success`` is ambiguous, so the Outcome line is dropped rather than guessed;
+    # the rest of the tool block is still rendered.
+    rendered = _render_tool(
+        _event(
+            kind="tool.call.completed",
+            payload={"tool_name": "grep", "success": None, "result": "3 hits"},
+        )
+    )
+
+    assert rendered.startswith("Tool: grep")
+    assert "Outcome:" not in rendered
+    assert "Result: 3 hits" in rendered
+
+
+def test_render_tool_omits_result_when_blank_or_missing() -> None:
+    blank = _render_tool(
+        _event(kind="tool.call.completed", payload={"tool_name": "ls", "result": "   "})
+    )
+    missing = _render_tool(_event(kind="tool.call.completed", payload={"tool_name": "ls"}))
+
+    assert "Result:" not in blank
+    assert "Result:" not in missing
+    assert blank == "Tool: ls"  # only the name survives when nothing else is carried
+
+
+def test_render_file_returns_none_for_blank_or_missing_path() -> None:
+    assert _render_file(_event(kind="file.edited", payload={"path": "   "})) is None
+    assert _render_file(_event(kind="file.edited", payload={"operation": "created"})) is None
+
+
+def test_denied_kind_content_is_dropped() -> None:
+    # deny_kinds is applied before allow_kinds: a denied kind contributes no content and is
+    # counted as skipped, so no episode is composed for it.
+    spool = FakeSpool()
+    sink = _sink(spool, deny_kinds={"message.user"})
+
+    _drive(sink, _event(kind="message.user", content="secret note"), flush=True)
+
+    assert sink.appended == 0
+    assert sink.skipped == 1
+    assert spool.records == []
+
+
+# ------------------------------------------------------- summary emission guards (#27)
+
+
+def test_session_ended_without_prior_content_emits_no_summary() -> None:
+    # The summary guard short-circuits when no content was ever seen.
+    spool = FakeSpool()
+    sink = _sink(spool)
+
+    _drive(sink, _event(kind="session.ended", content=None))
+
+    assert sink.appended == 0
+    assert spool.records == []
+
+
+def test_user_only_session_emits_episode_but_no_summary() -> None:
+    # Content WAS seen (guard passes) but a lone user message yields no decisions/tools/files,
+    # so the composed summary body is empty and no summary episode is emitted.
+    spool = FakeSpool()
+    sink = _sink(spool)
+
+    _drive(
+        sink,
+        _event(content="just a note", raw_id="u1"),
+        _event(kind="session.ended", content=None, raw_id="e1"),
+    )
+
+    assert [r["content"] for r in spool.records] == ["just a note"]
+
+
+def test_summary_emitted_at_most_once() -> None:
+    # A second session.ended must not emit a duplicate summary (the _summary_emitted latch).
+    spool = FakeSpool()
+    sink = _sink(spool)
+
+    _drive(
+        sink,
+        *_session_with_summary(),
+        _event(kind="session.ended", content=None, raw_id="se2"),
+    )
+
+    summaries = [r for r in spool.records if r["content"].startswith("Session summary")]
+    assert len(summaries) == 1
+
+
+def test_summary_dedupes_repeated_touched_file() -> None:
+    # The same file touched by a tool and then a file.edited is listed once (dedup early-out
+    # in _add_touched_file), not duplicated in the Files touched section.
+    spool = FakeSpool()
+    sink = _sink(spool)
+
+    _drive(
+        sink,
+        _event(kind="message.assistant", content="patch it", raw_id="a1"),
+        _tool(tool_name="edit", arguments={"path": "app.py"}, result="ok", raw_id="t1"),
+        _event(
+            kind="file.edited",
+            payload={"path": "app.py", "operation": "modified"},
+            raw_id="f1",
+        ),
+        _event(kind="session.ended", content=None, raw_id="e1"),
+    )
+
+    summary = next(
+        r["content"] for r in spool.records if r["content"].startswith("Session summary")
+    )
+    assert summary.count("app.py") == 1
+
+
+# ------------------------------------------------------- resolve_session_cwd robustness (#10)
+
+
+def test_resolve_session_cwd_skips_noise_and_returns_first_start_cwd(tmp_path) -> None:
+    # Blank, malformed, and non-session.start lines are all skipped before the real
+    # session.start record supplies data.context.cwd.
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        "\n"
+        "{not valid json\n"
+        + json.dumps({"type": "session.idle"})
+        + "\n"
+        + json.dumps({"type": "session.start", "data": {"context": {"cwd": "/work/repo"}}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert resolve_session_cwd(path) == "/work/repo"
+
+
+def test_resolve_session_cwd_none_when_no_session_start(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(json.dumps({"type": "message.user"}) + "\n", encoding="utf-8")
+
+    assert resolve_session_cwd(path) is None
+
+
+def test_resolve_session_cwd_none_when_cwd_not_a_string(tmp_path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps({"type": "session.start", "data": {"context": {"cwd": 123}}}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert resolve_session_cwd(path) is None
+
+
+def test_resolve_session_cwd_none_for_unreadable_file(tmp_path) -> None:
+    # A missing file raises OSError internally, which is swallowed to None.
+    assert resolve_session_cwd(tmp_path / "does-not-exist.jsonl") is None
