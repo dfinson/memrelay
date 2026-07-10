@@ -174,6 +174,8 @@ class MemoryEngine:
         query: str,
         namespace: str,
         prefer_repo: str | None = None,
+        *,
+        prefer_agent: str | None = None,
     ) -> dict[str, Any]:
         """Semantic recall across the namespace.
 
@@ -183,6 +185,23 @@ class MemoryEngine:
         ``scores[i]`` with ``nodes[i]`` and renders nothing unless ``nodes`` is
         non-empty). Every value is a plain, serializable dict/float so the result
         can cross the daemon socket unchanged.
+
+        Cross-agent unification (E5-S4 #65): memories from every agent in the
+        namespace already coexist here — recall is scoped by ``group_ids=[namespace]``
+        and never partitioned by agent, so a decision made while driving agent A is
+        recalled while driving agent B. The optional, **default-off** ``prefer_agent``
+        knob lets a caller lean on agent provenance (parsed from each source episode's
+        ``source_description``):
+
+        * ``prefer_agent`` — a soft, sort-stable tiebreaker floating a given agent's
+          memories up (mirrors ``prefer_repo``; no score mutation, SPEC §4.4).
+
+        The agent tag is a **soft retrieval signal only — never a hard filter**
+        (SPEC §5.3): there is deliberately no agent-exclusive filter, so every agent's
+        memories always remain recallable in the namespace. ``prefer_agent`` is
+        keyword-only and defaults to ``None``; when it is not supplied the result is
+        **byte-identical** to the no-argument path (and no extra graph query runs), so
+        existing callers — including the retrieval-eval harness — are unaffected.
         """
         results = await self._graphiti.search_(
             query=query,
@@ -214,11 +233,73 @@ class MemoryEngine:
             # Keep nodes and their scores aligned by sorting the pairs jointly.
             node_pairs = _boost_repo_pairs(node_pairs, prefer_repo)
             edges = _boost_repo_edges(edges, prefer_repo)
+        if prefer_agent:
+            # Agent provenance lives on the source episodes, not the derived entity/edge
+            # rows, so resolve it once — only when prefer_agent is set. The default recall
+            # path never reaches here and stays byte-identical (no extra graph query).
+            edge_episode_uuids = {
+                edge.uuid: list(getattr(edge, "episodes", None) or []) for edge in results.edges
+            }
+            node_uuids = [node["uuid"] for node, _ in node_pairs]
+            node_agents, edge_agents = await self._agent_provenance(node_uuids, edge_episode_uuids)
+            needle = prefer_agent.strip().lower()
+            node_pairs = _boost_agent_pairs(node_pairs, node_agents, needle)
+            edges = _boost_agent_edges(edges, edge_agents, needle)
         return {
             "nodes": [node for node, _ in node_pairs],
             "edges": edges,
             "scores": [score for _, score in node_pairs],
         }
+
+    async def _agent_provenance(
+        self,
+        node_uuids: list[str],
+        edge_episode_uuids: dict[str, list[str]],
+    ) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+        """Map each result node/edge uuid to the set of agents that produced it.
+
+        Agent provenance is a property of the ``Episodic`` node (its
+        ``source_description``), not of the derived ``Entity`` / ``EntityEdge`` rows a
+        recall returns, so this walks back to the source episodes: a node via the
+        ``MENTIONS`` edge that links its episode to it, an edge via
+        ``EntityEdge.episodes``. Agents are lower-cased for case-insensitive matching
+        (mirroring :meth:`_forget_repo`). Only called when ``search`` was given an
+        ``agent`` / ``prefer_agent`` knob — the default recall path issues no query here.
+        """
+        node_agents: dict[str, set[str]] = {}
+        edge_agents: dict[str, set[str]] = {}
+
+        if node_uuids:
+            records, _, _ = await self._driver.execute_query(
+                "MATCH (ep:Episodic)-[:MENTIONS]->(n:Entity) WHERE n.uuid IN $uuids "
+                "RETURN n.uuid AS uuid, ep.source_description AS sd",
+                uuids=node_uuids,
+                routing_="r",
+            )
+            for record in records:
+                agent = _episode_agent(record.get("sd"))
+                if agent:
+                    node_agents.setdefault(record["uuid"], set()).add(agent.lower())
+
+        episode_uuids = sorted({ep for eps in edge_episode_uuids.values() for ep in eps})
+        episode_agent: dict[str, str] = {}
+        if episode_uuids:
+            records, _, _ = await self._driver.execute_query(
+                "MATCH (ep:Episodic) WHERE ep.uuid IN $uuids "
+                "RETURN ep.uuid AS uuid, ep.source_description AS sd",
+                uuids=episode_uuids,
+                routing_="r",
+            )
+            for record in records:
+                agent = _episode_agent(record.get("sd"))
+                if agent:
+                    episode_agent[record["uuid"]] = agent.lower()
+        for edge_uuid, eps in edge_episode_uuids.items():
+            agents = {episode_agent[ep] for ep in eps if ep in episode_agent}
+            if agents:
+                edge_agents[edge_uuid] = agents
+
+        return node_agents, edge_agents
 
     async def detail(self, node_uuid: str, namespace: str) -> dict[str, Any]:
         """Fetch a single node plus its connected facts and episodes.
@@ -403,6 +484,27 @@ def _episode_repo(source_description: str | None) -> str | None:
     return text
 
 
+def _episode_agent(source_description: str | None) -> str | None:
+    """Recover the agent (provider id) an episode was tagged with, or ``None``.
+
+    Sibling of :func:`_episode_repo`, inverting the same ``source_description`` encoding
+    :meth:`MemoryEngine.note` writes: ``repo=<repo> agent=<agent>``, ``agent=<agent>``, a
+    bare ``<repo>``, or the ``memrelay-note`` sentinel. Only the ``agent=`` token yields a
+    value — the repo-only, bare-repo, and sentinel forms (and empty/absent/whitespace) all
+    yield ``None`` so an un-attributed episode is never mistaken for one agent's memory. The
+    scan is token-order-independent (``note`` writes repo first, but the parser must not rely
+    on that).
+    """
+    text = (source_description or "").strip()
+    if "=" not in text:
+        return None
+    for token in text.split(" "):
+        key, sep, value = token.partition("=")
+        if sep and key == "agent":
+            return value.strip() or None
+    return None
+
+
 def _zip_scores(items: list[Any], scores: list[float] | None) -> list[tuple[Any, float | None]]:
     scores = scores or []
     paired: list[tuple[Any, float | None]] = []
@@ -435,3 +537,39 @@ def _boost_repo_edges(edges: list[dict[str, Any]], prefer_repo: str) -> list[dic
     """Same soft prefer-repo signal applied to the (score-less) edge list."""
     needle = prefer_repo.lower()
     return sorted(edges, key=lambda edge: _repo_rank(edge, needle))
+
+
+def _agent_match(uuid: str, provenance: dict[str, set[str]], needle: str) -> bool:
+    """True if the item's resolved source-episode agent set contains ``needle``.
+
+    ``provenance`` maps a result node/edge uuid to the (lower-cased) agents that produced
+    its source episodes, as resolved by :meth:`MemoryEngine._agent_provenance`; ``needle`` is
+    the already-normalized (``strip().lower()``) agent id to match. An unmapped uuid — an
+    entity/edge with no parseable agent provenance — never matches.
+    """
+    return needle in provenance.get(uuid, frozenset())
+
+
+def _agent_rank(uuid: str, provenance: dict[str, set[str]], needle: str) -> int:
+    """0 if the item's source-episode agent set contains ``needle`` (floats up), 1 otherwise."""
+    return 0 if _agent_match(uuid, provenance, needle) else 1
+
+
+def _boost_agent_pairs(
+    pairs: list[tuple[dict[str, Any], float | None]], provenance: dict[str, set[str]], needle: str
+) -> list[tuple[dict[str, Any], float | None]]:
+    """Stable prefer-agent re-rank of (node, score) pairs; keeps them aligned.
+
+    A pure tiebreaker mirroring :func:`_boost_repo_pairs`: pairs whose source-episode agent
+    set contains ``needle`` sort to rank ``0`` (float up), the rest to ``1``. ``sorted`` is
+    stable, so ties preserve the reranker order and ``scores[i]`` stays paired with
+    ``nodes[i]`` — no score is mutated.
+    """
+    return sorted(pairs, key=lambda pair: _agent_rank(pair[0]["uuid"], provenance, needle))
+
+
+def _boost_agent_edges(
+    edges: list[dict[str, Any]], provenance: dict[str, set[str]], needle: str
+) -> list[dict[str, Any]]:
+    """Same stable prefer-agent signal applied to the (score-less) edge list."""
+    return sorted(edges, key=lambda edge: _agent_rank(edge["uuid"], provenance, needle))
