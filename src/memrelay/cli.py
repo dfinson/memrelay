@@ -13,6 +13,7 @@ import json
 import os
 import tomllib
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import click
 
@@ -257,7 +258,15 @@ def _open_spool(db_path: Path):
     return Spool(str(db_path))
 
 
-def _load_config(path: str | None = None) -> Config:
+#: Actionable recovery hint appended to config-load errors (SPEC §7 helpful errors). The
+#: default points the user at ``memrelay init``; ``init`` itself passes
+#: ``_INIT_CONFIG_RECOVERY`` instead, since telling someone already running ``init`` to
+#: "run ``memrelay init``" would be circular.
+_CONFIG_RECOVERY = "Fix the file, or run `memrelay init` to regenerate a default config."
+_INIT_CONFIG_RECOVERY = "Fix it or delete it, then re-run."
+
+
+def _load_config(path: str | None = None, *, recovery: str = _CONFIG_RECOVERY) -> Config:
     """Load config, turning a broken config into a clean CLI error (SPEC §7 helpful errors).
 
     ``load_config`` raises low-level exceptions when the config is unusable — a TOML
@@ -281,29 +290,61 @@ def _load_config(path: str | None = None) -> Config:
     except tomllib.TOMLDecodeError as exc:
         location = path or resolve_config_path()
         raise click.ClickException(
-            f"could not parse config file {location}: {exc}. "
-            "Fix the TOML syntax, or run `memrelay init` to regenerate a default config."
+            f"could not parse config file {location}: {exc}. {recovery}"
         ) from exc
     except NamespaceConfigError as exc:
         location = path or resolve_config_path()
-        raise click.ClickException(f"invalid configuration in {location}: {exc}") from exc
+        raise click.ClickException(
+            f"invalid configuration in {location}: {exc}. {recovery}"
+        ) from exc
 
 
 #: Placeholder shown in place of a redacted secret in ``memrelay config`` output.
 _REDACTED = "***redacted***"
 
 
+def _redact_uri_credentials(uri: str) -> str:
+    """Mask a password embedded inline in a connection URI (``scheme://user:pass@host``).
+
+    neo4j accepts credentials inside ``graph.connection.uri``. Only the password token is
+    replaced; scheme, user, host, and port are not secrets and stay visible. A URI without
+    an inline password (the common case) is returned unchanged.
+    """
+    try:
+        parts = urlsplit(uri)
+    except ValueError:
+        return uri
+    if not parts.password:
+        return uri
+    userinfo, _, hostport = parts.netloc.rpartition("@")
+    user = userinfo.partition(":")[0]
+    netloc = f"{user}:{_REDACTED}@{hostport}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
 def _redact_secrets(resolved: dict) -> dict:
     """Mask secret values in a resolved-config dict before display (never leak secrets).
 
-    Only ``graph.connection.password`` is an actual secret that can live in config: the
-    ``[llm]``/``[embeddings]`` blocks store an ``api_key_env`` *name*, never the key
-    itself (SPEC §6.4), so those stay visible as useful information. ``resolved`` is a
-    fresh :meth:`Config.to_dict` copy, so mutating it never touches the live config.
+    Secrets are enumerated from the resolved-config schema; ``GraphConnectionConfig`` is
+    the only block that can hold a literal secret value:
+
+    - ``graph.connection.password`` — the stored neo4j/falkordb password.
+    - ``graph.connection.uri`` — masked *only* if it embeds a password inline
+      (``scheme://user:pass@host``); a credential-free URI is left as-is.
+
+    Everything else is safe to show and deliberately kept visible: ``uri`` without inline
+    creds, ``host``, ``user``, ``username``, ``database``, ports, and the
+    ``[llm]``/``[embeddings]`` ``api_key_env`` — an environment-variable *name*, never the
+    key itself (SPEC §6.4). ``resolved`` is a fresh :meth:`Config.to_dict` copy, so mutating
+    it never touches the live config.
     """
     connection = resolved.get("graph", {}).get("connection")
-    if isinstance(connection, dict) and connection.get("password") is not None:
-        connection["password"] = _REDACTED
+    if isinstance(connection, dict):
+        if connection.get("password") is not None:
+            connection["password"] = _REDACTED
+        uri = connection.get("uri")
+        if isinstance(uri, str):
+            connection["uri"] = _redact_uri_credentials(uri)
     return resolved
 
 
@@ -324,7 +365,7 @@ def main() -> None:
 )
 def init(copilot_home: str | None) -> None:
     """First-time setup: create dirs, generate config, register MCP server."""
-    cfg = _load_config()
+    cfg = _load_config(recovery=_INIT_CONFIG_RECOVERY)
     home = ensure_home(cfg)
 
     provider = _resolve_provider(copilot_home)
