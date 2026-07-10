@@ -24,7 +24,13 @@ from pathlib import Path
 from memrelay.config import Config, ensure_home
 from memrelay.daemon import transport
 from memrelay.daemon.protocol import SHUTDOWN, Backend
-from memrelay.daemon.runtime import DaemonRuntime, IngesterFactory, default_ingester_factory
+from memrelay.daemon.runtime import (
+    DaemonRuntime,
+    IngesterFactory,
+    PollerFactory,
+    default_ingester_factory,
+    default_poller_factory,
+)
 from memrelay.daemon.transport import resolve_endpoint
 
 PID_FILENAME = "daemon.pid"
@@ -239,6 +245,7 @@ def run_foreground(
     backend: Backend | None = None,
     *,
     ingester_factory: IngesterFactory = default_ingester_factory,
+    poller_factory: PollerFactory | None = default_poller_factory,
 ) -> None:
     """Run the daemon in the foreground until shutdown (used by ``memrelay _serve``).
 
@@ -248,13 +255,25 @@ def run_foreground(
     it built on the way out. An injected ``backend`` is used as-is (never rebuilt or
     closed); the ``ingester_factory`` seam lets tests host a fake ingester.
 
+    Also hosts the session-discovery poller (E1-S4 #8), which captures every active
+    session into the shared spool. Unlike the in-process :class:`DaemonRuntime` default
+    (poller off), this live ``_serve`` path defaults ``poller_factory`` to the real
+    :func:`~memrelay.daemon.runtime.default_poller_factory`; tests that drive this
+    function directly can pass ``poller_factory=None`` to keep it off.
+
     Installs best-effort SIGTERM/SIGINT handlers for graceful stop where the
     platform supports them (POSIX); on Windows, ``memrelay stop`` drives shutdown
     over the socket instead.
     """
     ensure_home(config)
     endpoint = resolve_endpoint(config.home_path)
-    runtime = DaemonRuntime(config, endpoint, backend=backend, ingester_factory=ingester_factory)
+    runtime = DaemonRuntime(
+        config,
+        endpoint,
+        backend=backend,
+        ingester_factory=ingester_factory,
+        poller_factory=poller_factory,
+    )
 
     async def _main() -> None:
         await runtime.start()

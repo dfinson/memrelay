@@ -141,6 +141,19 @@ class IngestConfig:
     # as before (byte-identical steady-state behaviour).
     spool_retention_bytes: int = 0
 
+    # E1-S4 #8 — session discovery & multi-session management. The daemon's session
+    # poller checks the provider for active sessions every ``session_poll_interval``
+    # seconds (SPEC §3.1) and treats a session whose trace was touched within
+    # ``session_freshness_s`` as active. ``max_sessions`` bounds the number of sessions
+    # captured concurrently — sourced from (and defaulting to) TraceForge's own
+    # per-session LRU cap so memrelay leans on that bound rather than inventing one; the
+    # least-recently-active capture is evicted past the cap. These are inert unless a
+    # poller is hosted (only the live ``_serve`` path wires one), so the zero-config
+    # in-process behaviour is unchanged.
+    session_poll_interval: float = 2.0
+    session_freshness_s: float = 30.0
+    max_sessions: int = 4096
+
 
 @dataclass
 class LoggingConfig:

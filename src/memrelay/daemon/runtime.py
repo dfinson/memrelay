@@ -11,12 +11,18 @@ same orchestration is drivable in-process by tests. Responsibilities:
   and run it as a background task that shares the daemon's single engine instance
   (the daemon is the sole writer). If the ingest seams are unavailable the daemon
   still starts and serves queries without one.
-* **Live health** — merge ``sessions_observed`` and the ingester's
+* **Session discovery** — optionally host a
+  :class:`~memrelay.daemon.session_discovery.SessionDiscoveryPoller` (E1-S4 #8) via an
+  injectable factory, so a live daemon captures every active session into the shared
+  spool. Off unless a factory is supplied (``run_foreground`` wires the real one), so
+  in-process tests never scan a real agent home.
+* **Live health** — merge ``sessions_observed`` / ``active_sessions`` and the ingester's
   ``episodes_ingested`` / ``spool_pending`` counters into the backend's health so
   ``memrelay status`` reflects a live system, while keeping the stub health keys.
 
-Shutdown order is listener → ingester → engine: the server stops accepting work,
-the ingester drains and exits, and only then is the Kuzu write lock released.
+Shutdown order is listener → poller → ingester → engine: the server stops accepting
+work, session capture stops, the ingester drains and exits, and only then is the Kuzu
+write lock released.
 """
 
 from __future__ import annotations
@@ -24,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -39,6 +46,9 @@ logger = logging.getLogger(__name__)
 
 #: Grace period (seconds) for the ingester to drain and exit before it is cancelled.
 INGEST_STOP_TIMEOUT = 5.0
+
+#: Grace period (seconds) for the session poller to stop its captures before cancel.
+POLLER_STOP_TIMEOUT = 5.0
 
 
 @runtime_checkable
@@ -80,6 +90,76 @@ def default_ingester_factory(engine: Any, config: Config) -> SupportsIngest | No
     )
 
 
+@runtime_checkable
+class SupportsPoller(Protocol):
+    """The slice of :class:`SessionDiscoveryPoller` the daemon depends on."""
+
+    async def run(self, stop: asyncio.Event) -> None: ...
+
+    def stats(self) -> JsonDict: ...
+
+    async def aclose(self) -> None: ...
+
+
+#: Builds the session poller for a resolved engine, or ``None`` to run without one.
+PollerFactory = Callable[[Any, "Config"], "SupportsPoller | None"]
+
+
+def default_poller_factory(engine: Any, config: Config) -> SupportsPoller | None:
+    """Build the real session-discovery poller, or ``None`` if the seams aren't present.
+
+    Lazy imports keep this module free of the ingest/provider packages until a live
+    daemon actually asks for a poller (mirrors :func:`default_ingester_factory`). The
+    poller writes discovered sessions into the *same* ``<home>/spool/spool.db`` the
+    hosted ingester drains, so capture and ingest compose with no extra wiring. Degrades
+    to ``None`` (the daemon still serves queries) if the seams or a provider are absent.
+    """
+    try:
+        from memrelay.daemon.session_discovery import (
+            RunObserveCapture,
+            SessionDiscoveryPoller,
+            active_sessions,
+        )
+        from memrelay.ingest.spool import Spool
+        from memrelay.providers.base import SessionRef
+        from memrelay.providers.registry import get_registry
+    except ImportError:
+        logger.debug("session-discovery seams unavailable; daemon will run without a poller")
+        return None
+    try:
+        provider = get_registry().resolve()
+    except Exception:  # noqa: BLE001 - provider resolution must never crash daemon startup
+        logger.debug("no provider resolved; daemon will run without a poller", exc_info=True)
+        return None
+
+    spool_dir = config.home_path / "spool"
+    spool_dir.mkdir(parents=True, exist_ok=True)
+    spool = Spool(spool_dir / "spool.db")
+    interval = config.ingest.session_poll_interval
+    freshness = config.ingest.session_freshness_s
+    namespace_map = config.namespaces.repo_map
+
+    def discover() -> list[SessionRef]:
+        return active_sessions(provider, now=time.time(), freshness_s=freshness)
+
+    def capture_factory(ref: SessionRef) -> RunObserveCapture:
+        return RunObserveCapture(
+            ref,
+            spool=spool,
+            provider=provider,
+            config=config,
+            namespace_map=namespace_map,
+            interval=interval,
+        )
+
+    return SessionDiscoveryPoller(
+        discover=discover,
+        capture_factory=capture_factory,
+        poll_interval=interval,
+        max_sessions=config.ingest.max_sessions,
+    )
+
+
 @dataclass
 class _Counters:
     """Daemon-owned observation counters surfaced through health."""
@@ -91,18 +171,24 @@ class LiveHealthBackend:
     """Wrap a :class:`Backend`, augmenting ``health`` with live daemon counters.
 
     ``search`` / ``detail`` / ``note`` pass straight through to the wrapped backend
-    (the query answerer). ``health`` overlays the daemon-owned ``sessions_observed``
-    counter and the hosted ingester's ``episodes_ingested`` / ``spool_pending`` so
-    ``memrelay status`` shows a live system, while preserving every other key the
-    wrapped backend reports and guaranteeing the stub health keys are present.
+    (the query answerer). ``health`` overlays the hosted poller's ``sessions_observed`` /
+    ``active_sessions`` (falling back to the daemon-owned counter when no poller runs) and
+    the ingester's ``episodes_ingested`` / ``spool_pending`` so ``memrelay status`` shows a
+    live system, while preserving every other key the wrapped backend reports and
+    guaranteeing the stub health keys are present.
     """
 
     def __init__(
-        self, backend: Backend, counters: _Counters, ingester: SupportsIngest | None
+        self,
+        backend: Backend,
+        counters: _Counters,
+        ingester: SupportsIngest | None,
+        poller: SupportsPoller | None = None,
     ) -> None:
         self._backend = backend
         self._counters = counters
         self._ingester = ingester
+        self._poller = poller
 
     async def search(self, query: str, namespace: str, prefer_repo: str | None = None) -> JsonDict:
         return await self._backend.search(query, namespace, prefer_repo)
@@ -116,7 +202,13 @@ class LiveHealthBackend:
     async def health(self) -> JsonDict:
         report = dict(await self._backend.health())
         report.setdefault("status", "running")
-        report["sessions_observed"] = self._counters.sessions_observed
+        poll_stats = self._poller.stats() if self._poller is not None else {}
+        report["sessions_observed"] = int(
+            poll_stats.get("sessions_observed", self._counters.sessions_observed)
+        )
+        report["active_sessions"] = int(
+            poll_stats.get("active_sessions", report.get("active_sessions", 0))
+        )
         stats = self._ingester.stats() if self._ingester is not None else {}
         report["episodes_ingested"] = int(
             stats.get("episodes_ingested", report.get("episodes_ingested", 0))
@@ -143,6 +235,7 @@ class DaemonRuntime:
         *,
         backend: Backend | None = None,
         ingester_factory: IngesterFactory = default_ingester_factory,
+        poller_factory: PollerFactory | None = None,
     ) -> None:
         self._config = config
         self._endpoint = endpoint
@@ -151,12 +244,18 @@ class DaemonRuntime:
         #: injector's responsibility (the E4 "used as-is, not rebuilt" seam).
         self._owns_backend = backend is None
         self._ingester_factory = ingester_factory
+        #: Session discovery is opt-in: the default (None) keeps the in-process/test
+        #: runtime from scanning a real agent home. ``run_foreground`` supplies the real
+        #: factory, so only a live daemon captures sessions.
+        self._poller_factory = poller_factory
         self._counters = _Counters()
         self._backend: Backend | None = None
         self._ingester: SupportsIngest | None = None
+        self._poller: SupportsPoller | None = None
         self._server: DaemonServer | None = None
         self._stop = asyncio.Event()
         self._ingest_task: asyncio.Task[None] | None = None
+        self._poll_task: asyncio.Task[None] | None = None
 
     @property
     def counters(self) -> _Counters:
@@ -165,6 +264,10 @@ class DaemonRuntime:
     @property
     def ingester(self) -> SupportsIngest | None:
         return self._ingester
+
+    @property
+    def poller(self) -> SupportsPoller | None:
+        return self._poller
 
     @property
     def server(self) -> DaemonServer:
@@ -182,11 +285,19 @@ class DaemonRuntime:
             self._backend = await self._build_engine()
         # The ingester writes through the daemon's single engine instance.
         self._ingester = self._ingester_factory(self._backend, self._config)
-        wrapper = LiveHealthBackend(self._backend, self._counters, self._ingester)
+        # Session discovery (opt-in) captures active sessions into the shared spool.
+        self._poller = (
+            self._poller_factory(self._backend, self._config)
+            if self._poller_factory is not None
+            else None
+        )
+        wrapper = LiveHealthBackend(self._backend, self._counters, self._ingester, self._poller)
         self._server = DaemonServer(wrapper, self._endpoint)
         await self._server.start()
         if self._ingester is not None:
             self._ingest_task = asyncio.create_task(self._ingester.run(self._stop))
+        if self._poller is not None:
+            self._poll_task = asyncio.create_task(self._poller.run(self._stop))
 
     async def _build_engine(self) -> Backend:
         # Imported lazily so importing this module never pulls in graphiti_core/kuzu.
@@ -210,14 +321,40 @@ class DaemonRuntime:
             await self.aclose()
 
     async def aclose(self) -> None:
-        """Stop the ingester (bounded) then close the engine we built. Idempotent."""
+        """Stop the poller then the ingester (both bounded), then close the engine. Idempotent."""
         self._stop.set()
+        poll_task, self._poll_task = self._poll_task, None
+        if poll_task is not None or self._poller is not None:
+            await self._stop_poller(poll_task)
         task, self._ingest_task = self._ingest_task, None
         if task is not None:
             await self._stop_ingester(task)
         if self._owns_backend and self._backend is not None:
             await self._close_backend(self._backend)
         self._backend = None
+
+    async def _stop_poller(self, task: asyncio.Task[None] | None) -> None:
+        """Await the poller's graceful exit (cancelling if it overruns), then close it.
+
+        The poller's ``run`` loop stops every capture in its ``finally`` once ``stop`` is
+        set; the explicit ``aclose`` is a belt-and-suspenders guarantee that captures are
+        torn down even if the loop task never started or was cancelled mid-flight.
+        """
+        if task is not None:
+            try:
+                await asyncio.wait_for(task, timeout=POLLER_STOP_TIMEOUT)
+            except (TimeoutError, asyncio.CancelledError):
+                logger.debug(
+                    "session poller did not stop within %.1fs; cancelled", POLLER_STOP_TIMEOUT
+                )
+            except Exception:  # noqa: BLE001 - a failing poller must not break shutdown
+                logger.debug("session poller task errored during shutdown", exc_info=True)
+        poller, self._poller = self._poller, None
+        if poller is not None:
+            try:
+                await poller.aclose()
+            except Exception:  # noqa: BLE001 - teardown must not break shutdown
+                logger.debug("session poller aclose errored during shutdown", exc_info=True)
 
     @staticmethod
     async def _stop_ingester(task: asyncio.Task[None]) -> None:
