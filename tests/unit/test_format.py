@@ -74,7 +74,7 @@ def _sample() -> dict:
                 "fact": "auth uses jwt",
             }
         ],
-        "scores": [0.9, 0.8],
+        "scores": [0.9, 0.9],
     }
 
 
@@ -178,6 +178,8 @@ def test_node_without_uuid_still_declared() -> None:
 
 
 def test_scores_shorter_than_nodes_do_not_crash() -> None:
+    # A short scores list must not raise (missing entries pad to None); the unscored,
+    # unconnected tail node carries no relevance signal, so the filter simply drops it.
     rendered = format_as_map(
         {
             "nodes": [{"uuid": "a", "name": "A"}, {"uuid": "b", "name": "B"}],
@@ -187,8 +189,8 @@ def test_scores_shorter_than_nodes_do_not_crash() -> None:
     )
 
     _assert_valid_mermaid(rendered)
-    assert "_(score 0.50)_" in rendered  # first node scored
-    assert "**B**" in rendered  # second node still rendered, no score
+    assert "_(score 0.50)_" in rendered  # first node scored and kept
+    assert "**B**" not in rendered  # unscored dead-end filtered out (no relevance signal)
 
 
 def test_label_falls_back_summary_then_placeholder() -> None:
@@ -205,6 +207,124 @@ def test_label_falls_back_summary_then_placeholder() -> None:
     body = _assert_valid_mermaid(rendered)
     assert '  n0["only a summary"]' in body
     assert '  n1["?"]' in body
+
+
+# ------------------------------------------------------- E8-S2 score thresholds (AC1-AC4)
+
+
+def _scored(scores: list[float], edges: list[dict] | None = None) -> dict:
+    """A recall payload of ``len(scores)`` uniformly-named nodes with the given scores.
+
+    Node ``i`` is ``{"uuid": "u<i>", "name": "N<i>"}`` and ``scores[i]`` is its aligned
+    reranker score, so a fixture reads as a bare score distribution.
+    """
+    nodes = [{"uuid": f"u{i}", "name": f"N{i}"} for i in range(len(scores))]
+    return {"nodes": nodes, "edges": edges or [], "scores": list(scores)}
+
+
+def _kept_uuids(rendered: str) -> list[str]:
+    """The entity uuids listed under ``### Entities`` (the surviving nodes), in order."""
+    section = rendered.split("### Entities", 1)[-1].split("### Relationships", 1)[0]
+    return re.findall(r"`(u\d+)`", section)
+
+
+def test_above_median_kept_across_score_scales() -> None:
+    # (AC1) keep nodes at/above the median. RRF fusion values are tiny (~0.01-0.05)...
+    rrf = format_as_map(_scored([0.05, 0.045, 0.04, 0.01, 0.008]))
+    assert _kept_uuids(rrf) == ["u0", "u1", "u2"]
+    _assert_valid_mermaid(rrf)
+    # ...and the stub daemon's very different numeric scale cuts the same way (scale-free).
+    stub = format_as_map(_scored([1.0, 0.5]))
+    assert _kept_uuids(stub) == ["u0"]
+
+
+def test_natural_gap_cut_tightens_beyond_median() -> None:
+    # (AC2) the median alone keeps the top 3, but a gap that dominates the other drops
+    # (0.045 -> 0.02) is the natural cliff, tightening the kept set to the top 2.
+    rendered = format_as_map(_scored([0.05, 0.045, 0.02, 0.015, 0.01]))
+    assert _kept_uuids(rendered) == ["u0", "u1"]
+
+
+def test_uniform_scores_fall_back_to_median_only() -> None:
+    # (AC2) no single gap dominates an even run, so nothing is cut beyond the median.
+    rendered = format_as_map(_scored([5, 4, 3, 2, 1]))
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]
+
+
+def test_gap_below_the_median_is_ignored() -> None:
+    # (AC2) the only real cliff (7 -> 1) sits below the median, so it never re-expands or
+    # over-cuts: the median result stands.
+    rendered = format_as_map(_scored([10, 9, 8, 7, 1]))
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]
+
+
+def test_weakly_connected_below_median_node_dropped() -> None:
+    # (AC3) u2 is below the median AND a dead-end (0 edges) -> dropped as noise.
+    rendered = format_as_map(_scored([0.9, 0.8, 0.1]))
+    assert _kept_uuids(rendered) == ["u0", "u1"]
+
+
+def test_well_connected_below_median_node_rescued() -> None:
+    # (AC3) u2 scores below the median but has two incident edges (>= _RELEVANCE_MIN_DEGREE)
+    # -> kept as a structural hub even though its score would drop it.
+    edges = [
+        {"name": "E1", "source_node_uuid": "u0", "target_node_uuid": "u2"},
+        {"name": "E2", "source_node_uuid": "u1", "target_node_uuid": "u2"},
+    ]
+    rendered = format_as_map(_scored([0.9, 0.8, 0.1], edges))
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]
+    _assert_valid_mermaid(rendered)
+
+
+def test_single_edge_does_not_rescue_below_median_node() -> None:
+    # (AC3) one incident edge is still 'weakly connected' (< _RELEVANCE_MIN_DEGREE), so a
+    # below-median node with a single edge is dropped, not rescued.
+    edges = [{"name": "E", "source_node_uuid": "u0", "target_node_uuid": "u2"}]
+    rendered = format_as_map(_scored([0.9, 0.8, 0.1], edges))
+    assert _kept_uuids(rendered) == ["u0", "u1"]
+
+
+def test_without_scores_every_node_is_kept() -> None:
+    # No numeric score anywhere means no relevance signal, so nothing is filtered.
+    payload = {"nodes": [{"uuid": f"u{i}", "name": f"N{i}"} for i in range(3)], "edges": []}
+    rendered = format_as_map(payload)
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]
+
+
+def test_reduction_never_empties_a_real_result() -> None:
+    # The always-keep floor: a non-empty recall never renders the not-found text, even for
+    # a lone tiny score — the top node always survives.
+    for payload in (_scored([0.001]), _scored([0.9, 0.8, 0.1, 0.05]), _scored([3, 1])):
+        rendered = format_as_map(payload)
+        assert rendered != "No relevant memories found."
+        assert rendered.startswith("## Memory Map")
+        assert _kept_uuids(rendered)  # at least one entity survives
+
+
+def test_edge_to_dropped_node_survives_in_relationships() -> None:
+    # (AC3/D7) u1 is filtered out, but the u0 -> u1 fact still surfaces because u0 survives
+    # (>= 1 kept endpoint). The mermaid diagram omits the arrow (u1 undeclared) yet is valid.
+    edges = [
+        {"name": "REL", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": "kept fact"}
+    ]
+    rendered = format_as_map(_scored([0.9, 0.1], edges))
+    assert _kept_uuids(rendered) == ["u0"]
+    assert "### Relationships" in rendered
+    assert "kept fact" in rendered  # boundary fact preserved
+    assert _assert_valid_mermaid(rendered) == ["graph LR", '  n0["N0"]']  # no arrow to u1
+
+
+def test_edge_between_two_dropped_nodes_is_removed() -> None:
+    # (D7) an edge solely between two filtered-out nodes disappears entirely; a link within
+    # the kept core stays.
+    edges = [
+        {"name": "KEEP", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": "core link"},
+        {"name": "GONE", "source_node_uuid": "u2", "target_node_uuid": "u3", "fact": "orphan link"},
+    ]
+    rendered = format_as_map(_scored([0.9, 0.85, 0.02, 0.01], edges))
+    assert _kept_uuids(rendered) == ["u0", "u1"]
+    assert "core link" in rendered
+    assert "orphan link" not in rendered and "GONE" not in rendered
 
 
 # --------------------------------------------------------------------------- detail
