@@ -64,8 +64,22 @@ def test_forget_requires_a_target() -> None:
     assert "repo" in result.output.lower() or "namespace" in result.output.lower()
 
 
-def test_stub_command_exits_cleanly() -> None:
-    # `seed` is still a stub in this wave (retrieval epic); it must exit cleanly.
-    result = CliRunner().invoke(main, ["seed"])
-    assert result.exit_code == 0
-    assert "not implemented yet" in result.output
+def test_seed_reports_git_error_on_non_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # `seed` is implemented (E9-S4): pointed at a non-git directory it must fail with a
+    # clean git error, not a stub message or a traceback. Env is isolated so the command
+    # never reads or writes a developer's real ~/.memrelay.
+    for key in list(os.environ):
+        if key.startswith("MEMRELAY_"):
+            monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+
+    result = CliRunner().invoke(main, ["seed", "--path", str(tmp_path), "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "not implemented" not in result.output
+    assert "git" in result.output.lower()
