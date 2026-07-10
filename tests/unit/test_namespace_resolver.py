@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pytest
 
+from memrelay.config import _namespaces_from_dict
 from memrelay.mcp import namespace
 
 OS_USER = "local-user"
@@ -118,3 +119,31 @@ def test_resolve_context_no_remote_falls_back_to_username(
 
     assert ns == OS_USER
     assert repo is None
+
+
+# --- normalization symmetry through the REAL config parser (issue #39) ---------
+
+
+def test_config_map_normalization_is_symmetric_through_the_real_parser(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guard the 3-way normalization contract end-to-end, not just a hand-built dict.
+
+    ``NamespacesConfig.repo_map`` surfaces ``entry.repos`` **verbatim**; key
+    normalization happens earlier in the section parser (``_namespaces_from_dict`` ->
+    ``_validate_repo_entry`` -> ``config._normalize_repo``). The resolver normalizes the
+    *lookup* key via ``namespace._normalize_repo``. Correctness therefore depends on
+    ``parser-normalizes-keys`` <=> ``resolver-normalizes-lookup``. The other map tests
+    hand-build a pre-lowercased dict, so they'd all still pass if one side later drifted
+    (e.g. the parser starts stripping a ``.git`` suffix and the resolver forgets to). This
+    routes a MIXED-CASE + WHITESPACE raw declaration through the real parser so the two
+    sides can't silently diverge.
+    """
+    repo_map = _namespaces_from_dict({"acme": {"repos": ["  Dfinson/MemRelay  "]}}).repo_map
+
+    # A differently-cased remote still resolves to the parser-produced namespace.
+    assert namespace.resolve_namespace("Dfinson/MemRelay", repo_map) == "acme"
+
+    # Same guarantee through the full observe-path resolution (repo returned verbatim).
+    monkeypatch.setattr(namespace, "current_repo", lambda cwd=None: "Dfinson/MemRelay")
+    assert namespace.resolve_context("/some/cwd", repo_map) == ("acme", "Dfinson/MemRelay")
