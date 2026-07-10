@@ -15,7 +15,10 @@ from mcp.server.fastmcp import FastMCP
 from memrelay.mcp.client import DaemonClient
 from memrelay.mcp.format import format_as_map, format_detail
 
-#: A zero-arg resolver returning ``(namespace, repo)`` for the current session.
+#: A zero-arg resolver returning ``(namespace, repo)`` for the current session. It is
+#: built by :func:`memrelay.mcp.server.build_mcp_server` with the config
+#: ``[namespaces.*]`` map already bound in, so the tools stay map-agnostic yet resolve
+#: the same namespace the capture/observe path writes (#106).
 ContextResolver = Callable[[], tuple[str, str | None]]
 
 
