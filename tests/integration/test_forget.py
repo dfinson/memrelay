@@ -119,6 +119,63 @@ def test_forget_repo_removes_that_repo_and_preserves_shared_entities(
     asyncio.run(scenario())
 
 
+def test_forget_repo_ignores_untagged_and_agent_only_episodes(
+    tmp_path, gate_embedder, mock_llm_factory
+):
+    """forget --repo must never delete an agent-only or plain (untagged) note.
+
+    End-to-end guard for the parser's provenance-less branches: a repo-tagged
+    episode sits beside an agent-only episode (``agent=copilot``) and a plain note
+    (``memrelay-note``) in the same namespace; forgetting the repo removes only the
+    tagged episode and leaves the other two untouched.
+    """
+
+    namespace = "proj"
+
+    async def scenario() -> None:
+        cfg = _make_config(tmp_path)
+        engine = await MemoryEngine.from_config(
+            cfg,
+            llm_client=mock_llm_factory(["Alpha", "Ghost", "Plain"]),
+            embedder=gate_embedder,
+        )
+        try:
+            # A repo-tagged episode (the forget target) ...
+            await engine.note(
+                "Alpha service runs here.",
+                namespace=namespace,
+                repo="owner/repo-a",
+                source="copilot",
+            )
+            # ... an agent-only episode (source but NO repo -> "agent=copilot") ...
+            await engine.note(
+                "Ghost service runs here.", namespace=namespace, repo=None, source="copilot"
+            )
+            # ... and a plain note (no repo, no source -> the "memrelay-note" sentinel).
+            await engine.note(
+                "Plain service runs here.", namespace=namespace, repo=None, source=None
+            )
+
+            assert await _episode_descriptions(engine, namespace) == [
+                "agent=copilot",
+                "memrelay-note",
+                "repo=owner/repo-a agent=copilot",
+            ]
+
+            deleted = await engine.forget(repo="owner/repo-a")
+            assert deleted == 1
+
+            # Only the repo-a episode is gone; the agent-only and plain notes survive.
+            assert await _episode_descriptions(engine, namespace) == [
+                "agent=copilot",
+                "memrelay-note",
+            ]
+        finally:
+            await engine.close()
+
+    asyncio.run(scenario())
+
+
 def test_forget_namespace_clears_only_that_namespace(tmp_path, gate_embedder, mock_llm_factory):
     """forget --namespace X: X is emptied entirely; a sibling namespace Y is untouched."""
 
