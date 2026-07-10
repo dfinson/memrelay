@@ -55,6 +55,8 @@ before B lands.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -640,6 +642,18 @@ class GraphitiSink(StorageSink):
     async def close(self) -> None:
         await self.flush()
 
+    @property
+    def has_pending(self) -> bool:
+        """True while an unflushed work-unit is buffered (i.e. no durable checkpoint yet).
+
+        The live tail (#11) consults this after each pushed line: when it is ``False`` the
+        buffer is empty — every event consumed so far has been composed and durably
+        ``spool.append``-ed at a boundary — so the tail's durable line-cursor may safely
+        advance to that line. While it is ``True`` an episode is still open (not yet in the
+        spool), so the cursor must hold.
+        """
+        return bool(self._buffer_pieces)
+
 
 def resolve_session_cwd(events_path: str | Path) -> str | None:
     """Read a session's working directory from its first ``session.start`` record.
@@ -729,6 +743,64 @@ async def run_observe(
     re-reads the whole file and appends zero duplicate episodes), so no durable source
     read-offset is needed for correctness; one is deferred as a pure re-parse optimization.
     """
+    provider, pipeline, adapter, sink, result = _prepare_observe(
+        events_path,
+        session_id,
+        spool=spool,
+        source=source,
+        namespace_map=namespace_map,
+        config=config,
+        cwd=cwd,
+        allow_kinds=allow_kinds,
+        deny_kinds=deny_kinds,
+        idempotency_fn=idempotency_fn,
+        record_factory=record_factory,
+        provider=provider,
+        phase_resolver=phase_resolver,
+    )
+    try:
+        try:
+            for line in provider.make_source(session_id, path=str(events_path)):
+                await _push_line(pipeline, adapter, session_id, line, result)
+        except (OSError, UnicodeDecodeError) as exc:
+            # P2: source truncated/replaced/unreadable mid-read — flush partial, don't crash.
+            result.source_errors += 1
+            logger.warning(
+                "observe %s: source read error, recovered by ending pass: %s", session_id, exc
+            )
+        await pipeline.flush()
+    finally:
+        # Mirror the fixture_runner lifecycle: always close, even if push/flush raised.
+        await pipeline.close()
+    result.appended = sink.appended
+    result.skipped = sink.skipped
+    return result
+
+
+def _prepare_observe(
+    events_path: str | Path,
+    session_id: str,
+    *,
+    spool: SpoolLike,
+    source: str | None,
+    namespace_map: Mapping[str, str] | None,
+    config: Config | None,
+    cwd: str | None,
+    allow_kinds: Iterable[str] | None,
+    deny_kinds: Iterable[str],
+    idempotency_fn: IdempotencyFn | None,
+    record_factory: RecordFactory | None,
+    provider: Any | None,
+    phase_resolver: Callable[[Any], tuple[bool, Any]] | None,
+) -> tuple[Any, Any, Any, GraphitiSink, ObserveResult]:
+    """Build the ``(provider, pipeline, adapter, sink, result)`` shared by both intakes.
+
+    Extracted **verbatim** from :func:`run_observe`'s setup so the periodic replay and the
+    live tail (:func:`run_tail`) construct an *identical* ``GraphitiSink`` + ``EventPipeline``
+    + adapter. That shared construction is the single composition backbone that makes their
+    episodes — and therefore their ``idempotency_key``s — byte-identical, so the two paths
+    dedupe against the one spool (exactly-once) and pass the parity bar.
+    """
     from traceforge import Enricher, EventPipeline
 
     from memrelay.config import load_config
@@ -770,43 +842,246 @@ async def run_observe(
     )
     adapter = provider.make_adapter(session_id)
     result = ObserveResult(session_id=session_id, namespace=namespace, repo=repo)
+    return provider, pipeline, adapter, sink, result
+
+
+async def _push_line(
+    pipeline: Any,
+    adapter: Any,
+    session_id: str,
+    line: str,
+    result: ObserveResult,
+) -> None:
+    """Parse one raw source line and push its events through the pipeline.
+
+    The single per-line intake body shared by the replay (:func:`run_observe`) and the live
+    tail (:func:`run_tail`), so both compute identical episodes/idempotency keys from
+    identical input — the one backbone behind parity **and** dedupe.
+
+    Robustness (E1-S7 #12): a blank line is ignored; a malformed record, or an adapter that
+    raises, is tallied in ``result.malformed`` and skipped — one bad line never crashes
+    ingest. The traceforge adapter *silently* drops unparseable input (its ``parse`` contract
+    is "never raise"), so malformed records are detected here to keep a visible tally. A
+    well-formed object that maps to zero events is valid-but-contentless, NOT malformed, and
+    is left uncounted.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return
     try:
+        obj = json.loads(stripped)
+    except (json.JSONDecodeError, ValueError):
+        obj = None
+    if not isinstance(obj, dict):
+        result.malformed += 1
+        logger.warning("observe %s: skipped malformed source record", session_id)
+        return
+    try:
+        events = list(adapter.parse(stripped))
+    except Exception as exc:  # noqa: BLE001 - one bad record must never crash ingest
+        result.malformed += 1
+        logger.warning("observe %s: adapter raised on record: %s", session_id, exc)
+        return
+    for event in events:
+        result.parsed += 1
+        await pipeline.push(event)
+
+
+class OffsetStoreLike(Protocol):
+    """Duck type for :class:`OffsetStore` (or a test fake): read/advance a line-cursor."""
+
+    def read(self, session_id: str) -> int:  # pragma: no cover - protocol
+        ...
+
+    def write(self, session_id: str, line_no: int) -> None:  # pragma: no cover - protocol
+        ...
+
+
+class OffsetStore:
+    """Durable per-session line-cursor for the live tail (#11) — a re-read-efficiency layer.
+
+    Records, per session, the number of source **lines** whose episodes are already durably
+    in the spool, so a restarted tail skips re-pushing them. It is deliberately **not** a
+    correctness mechanism: losslessness is owned by ``start_at="beginning"`` + the spool's
+    idempotency dedupe (and the periodic replay backstop). :func:`run_tail` advances the
+    cursor to a line **only after** that line's episode is durably ``spool.append``-ed, so a
+    crash between the spool write and the cursor advance re-reads + re-ingests (deduped, safe)
+    and never skips an un-ingested line.
+
+    The cursor is a plain **line count** — never an inode or byte offset — so resume is
+    insulated from Windows' ``st_ino==0`` file identity (traceforge's rotation fallback) and
+    needs no traceforge coupling; ``events.jsonl`` is append-only, so a line count is stable
+    across restarts. The default is a tiny atomic file-per-session under ``<home>/offsets``;
+    tests inject a fake.
+    """
+
+    def __init__(self, directory: str | Path) -> None:
+        self._dir = Path(directory)
+
+    def _path(self, session_id: str) -> Path:
+        safe = session_id.replace("/", "_").replace("\\", "_")
+        return self._dir / f"{safe}.offset"
+
+    def read(self, session_id: str) -> int:
         try:
-            for line in provider.make_source(session_id, path=str(events_path)):
-                # P1: a corrupt/partial source record is skipped + counted, never crashes
-                # ingest. The traceforge adapter *silently* drops unparseable input (its
-                # ``parse`` contract is "never raise"), so we detect malformed records here
-                # to keep a visible tally. A well-formed object that maps to zero events is
-                # valid-but-contentless, NOT malformed, and is left uncounted.
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                try:
-                    obj = json.loads(stripped)
-                except (json.JSONDecodeError, ValueError):
-                    obj = None
-                if not isinstance(obj, dict):
-                    result.malformed += 1
-                    logger.warning("observe %s: skipped malformed source record", session_id)
-                    continue
-                try:
-                    events = list(adapter.parse(stripped))
-                except Exception as exc:  # noqa: BLE001 - one bad record must never crash ingest
-                    result.malformed += 1
-                    logger.warning("observe %s: adapter raised on record: %s", session_id, exc)
-                    continue
-                for event in events:
-                    result.parsed += 1
-                    await pipeline.push(event)
-        except (OSError, UnicodeDecodeError) as exc:
-            # P2: source truncated/replaced/unreadable mid-read — flush partial, don't crash.
-            result.source_errors += 1
-            logger.warning(
-                "observe %s: source read error, recovered by ending pass: %s", session_id, exc
-            )
-        await pipeline.flush()
+            text = self._path(session_id).read_text(encoding="utf-8")
+        except OSError:
+            return 0
+        try:
+            return max(0, int(text.strip()))
+        except ValueError:
+            return 0
+
+    def write(self, session_id: str, line_no: int) -> None:
+        self._dir.mkdir(parents=True, exist_ok=True)
+        path = self._path(session_id)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(str(line_no), encoding="utf-8")
+        tmp.replace(path)  # atomic on the same filesystem
+
+
+#: Sentinel returned by :func:`_next_record` when the tail should stop (stop set or source
+#: exhausted). Both cases break the read loop identically, so one sentinel suffices.
+_TAIL_DONE = object()
+
+
+async def _next_record(iterator: Any, stop: asyncio.Event | None) -> Any:
+    """Return the next source record, or :data:`_TAIL_DONE` when stopped or exhausted.
+
+    Selects on {next-record, stop} with :func:`asyncio.wait` so a stopped tail leaves the
+    read loop in a *normal* (un-cancelled) context — the caller's ``finally`` drain and the
+    source ``__aexit__`` then run cleanly, and a stop can only land at this ``await``, never
+    mid ``spool.append``, so it cannot tear a half-written episode. A record already delivered
+    is preferred over the stop signal, so no in-flight append is dropped (final-drain).
+    """
+    next_task = asyncio.ensure_future(iterator.__anext__())
+    if stop is None:
+        try:
+            return await next_task
+        except StopAsyncIteration:
+            return _TAIL_DONE
+    stop_task = asyncio.ensure_future(stop.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {next_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+    except asyncio.CancelledError:
+        # The tail task itself was cancelled — tear down both children, never leak them.
+        next_task.cancel()
+        stop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+            await next_task
+        raise
+    if next_task in done:
+        stop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await stop_task
+        try:
+            return next_task.result()
+        except StopAsyncIteration:
+            return _TAIL_DONE
+    # stop fired first — cancel the parked record read cleanly, then signal done.
+    next_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+        await next_task
+    return _TAIL_DONE
+
+
+async def run_tail(
+    events_path: str | Path,
+    session_id: str,
+    *,
+    spool: SpoolLike,
+    stop: asyncio.Event | None = None,
+    tail_source: Any | None = None,
+    offset_store: OffsetStoreLike | None = None,
+    source: str | None = None,
+    namespace_map: Mapping[str, str] | None = None,
+    config: Config | None = None,
+    cwd: str | None = None,
+    allow_kinds: Iterable[str] | None = DEFAULT_ALLOW_KINDS,
+    deny_kinds: Iterable[str] = (),
+    idempotency_fn: IdempotencyFn | None = None,
+    record_factory: RecordFactory | None = None,
+    provider: Any | None = None,
+    phase_resolver: Callable[[Any], tuple[bool, Any]] | None = None,
+) -> ObserveResult:
+    """Real-time live-tail intake for one session (#11): FileWatch → pipeline → spool.
+
+    The daemon's *latency* path — the counterpart to :func:`run_observe`'s bounded replay.
+    Consumes a long-lived traceforge ``FileWatchSource`` (``start_at="beginning"``: drain
+    history 0→EOF once, then tail appended lines) and pushes each line through the **same**
+    :func:`_push_line` backbone, so tail-produced episodes are byte-identical to replay's and
+    dedupe against the one spool.
+
+    **Best-effort, not independently lossless.** Correctness is owned by the periodic
+    ``run_observe`` replay backstop + the spool's unique ``idempotency_key``; this tail only
+    cuts latency. The optional ``offset_store`` is a *re-read-efficiency* layer: its durable
+    per-session line-cursor advances to a line **only after** that line's episode is durably
+    ``spool.append``-ed (detected via ``sink.has_pending``), never before — so a crash between
+    the spool write and the cursor advance re-reads + re-ingests (deduped, safe) and never
+    skips an un-ingested line (at-least-once + spool dedupe = exactly-once). When no
+    ``offset_store`` is given the tail simply re-reads from the top on restart (still deduped).
+
+    **Thread boundary (the crux).** ``FileWatchSource`` runs a watchdog *observer thread*,
+    but that thread's only cross-thread act is ``loop.call_soon_threadsafe(changed.set)``;
+    every file read and record is produced on the asyncio loop thread. This coroutine
+    therefore consumes records and writes the spool entirely on the loop thread — never from
+    the watchdog thread (the boundary the rejected offload approach violated).
+
+    **Cancellation-free stop.** When ``stop`` is set the read loop leaves via a normal select
+    on {next-record, stop} (see :func:`_next_record`), so the ``finally`` drain + source
+    ``__aexit__`` (observer stop/join, file close) run in a normal context.
+    """
+    provider, pipeline, adapter, sink, result = _prepare_observe(
+        events_path,
+        session_id,
+        spool=spool,
+        source=source,
+        namespace_map=namespace_map,
+        config=config,
+        cwd=cwd,
+        allow_kinds=allow_kinds,
+        deny_kinds=deny_kinds,
+        idempotency_fn=idempotency_fn,
+        record_factory=record_factory,
+        provider=provider,
+        phase_resolver=phase_resolver,
+    )
+    if tail_source is not None:
+        src = tail_source
+    else:
+        src = provider.make_filewatch_source(
+            session_id, path=str(events_path), start_at="beginning"
+        )
+    skip = offset_store.read(session_id) if offset_store is not None else 0
+    line_no = 0
+    try:
+        async with src as entered:
+            iterator = entered.__aiter__()
+            try:
+                while True:
+                    rec = await _next_record(iterator, stop)
+                    if rec is _TAIL_DONE:
+                        break
+                    line_no += 1
+                    if line_no <= skip:
+                        # Already durably ingested on a prior run — re-read-skip (efficiency).
+                        continue
+                    await _push_line(pipeline, adapter, session_id, rec.payload, result)
+                    # Advance the durable cursor ONLY at a spool-durable checkpoint (buffer
+                    # empty ⇒ this line's episode is composed + appended), never before.
+                    if offset_store is not None and not sink.has_pending:
+                        offset_store.write(session_id, line_no)
+            except (OSError, UnicodeDecodeError) as exc:
+                # P2 parity with run_observe: a mid-read source failure ends the pass cleanly.
+                result.source_errors += 1
+                logger.warning(
+                    "tail %s: source read error, recovered by ending pass: %s", session_id, exc
+                )
+            await pipeline.flush()
     finally:
-        # Mirror the fixture_runner lifecycle: always close, even if push/flush raised.
+        # Always close the pipeline (drains the sink), even if the read/flush raised.
         await pipeline.close()
     result.appended = sink.appended
     result.skipped = sink.skipped

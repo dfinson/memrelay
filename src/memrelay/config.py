@@ -154,6 +154,16 @@ class IngestConfig:
     session_freshness_s: float = 30.0
     max_sessions: int = 4096
 
+    # E1-S2 #11 — intake source selection for the daemon poller. ``"replay"`` (default)
+    # keeps #8's periodic whole-file run_observe replay as the sole, lossless capture — so
+    # the zero-config daemon behaviour is byte-identical to today. ``"file_watch"`` opts a
+    # session into the real-time live-tail: a long-lived traceforge FileWatchSource streams
+    # appended events as they land (latency), while the periodic replay is retained as the
+    # lossless backstop. Both feed the one idempotent spool (dedupe on idempotency_key), so
+    # the tail is a best-effort latency layer, not an independent correctness path. Flipping
+    # the default to ``"file_watch"`` is a deliberate one-line follow-up once it soaks.
+    intake_source: str = "replay"
+
 
 @dataclass
 class LoggingConfig:
