@@ -142,6 +142,22 @@ class IngestConfig:
     spool_retention_bytes: int = 0
 
 
+@dataclass
+class LoggingConfig:
+    """Structured-logging settings (E11-S6, #22).
+
+    ``level`` is the root log level applied by
+    :func:`memrelay.logging_config.configure_logging` at the daemon and MCP entrypoints.
+    Additive and back-compat: the default keeps the pre-#22 ``INFO`` behaviour and is
+    overridable via ``[logging] level`` in the config file or the ``MEMRELAY_LOGGING__LEVEL``
+    environment variable. The value is a stdlib level name (``DEBUG`` / ``INFO`` /
+    ``WARNING`` / ``ERROR`` / ``CRITICAL``); an unrecognized value falls back to ``INFO`` at
+    configure time so a typo never crashes startup.
+    """
+
+    level: str = "INFO"
+
+
 @dataclass(frozen=True)
 class Namespace:
     """One declared namespace: a scope *name* and the repos assigned to it (#41).
@@ -198,6 +214,7 @@ class Config:
     llm: LLMConfig = field(default_factory=LLMConfig)
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     #: Optional repo-grouping map from ``[namespaces.*]``; empty unless configured.
     namespaces: NamespacesConfig = field(default_factory=NamespacesConfig)
 
@@ -361,6 +378,7 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
     llm = LLMConfig(**_known(LLMConfig, data.get("llm")))
     embeddings = EmbeddingsConfig(**_known(EmbeddingsConfig, data.get("embeddings")))
     ingest = IngestConfig(**_known(IngestConfig, data.get("ingest")))
+    logging_cfg = LoggingConfig(**_known(LoggingConfig, data.get("logging")))
     namespaces = _namespaces_from_dict(data.get("namespaces"))
     home = data.get("home", Config.home)
     return Config(
@@ -369,6 +387,7 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
         llm=llm,
         embeddings=embeddings,
         ingest=ingest,
+        logging=logging_cfg,
         namespaces=namespaces,
     )
 

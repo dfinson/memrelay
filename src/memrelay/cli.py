@@ -13,7 +13,6 @@ import json
 import os
 import tomllib
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
 
 import click
 
@@ -24,6 +23,11 @@ from memrelay.config import (
     ensure_home,
     load_config,
     resolve_config_path,
+)
+from memrelay.logging_config import (
+    _REDACTED,
+    _redact_uri_credentials,
+    configure_logging,
 )
 from memrelay.providers.base import AgentProvider, LLMStrategyHint
 from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
@@ -299,29 +303,10 @@ def _load_config(path: str | None = None, *, recovery: str = _CONFIG_RECOVERY) -
         ) from exc
 
 
-#: Placeholder shown in place of a redacted secret in ``memrelay config`` output.
-_REDACTED = "***redacted***"
-
-
-def _redact_uri_credentials(uri: str) -> str:
-    """Mask a password embedded inline in a connection URI (``scheme://user:pass@host``).
-
-    neo4j accepts credentials inside ``graph.connection.uri``. Only the password token is
-    replaced; scheme, user, host, and port are not secrets and stay visible. A URI without
-    an inline password (the common case) is returned unchanged.
-    """
-    try:
-        parts = urlsplit(uri)
-    except ValueError:
-        return uri
-    if not parts.password:
-        return uri
-    userinfo, _, hostport = parts.netloc.rpartition("@")
-    user = userinfo.partition(":")[0]
-    netloc = f"{user}:{_REDACTED}@{hostport}"
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
-
-
+# ``_REDACTED`` and ``_redact_uri_credentials`` now live in
+# :mod:`memrelay.logging_config` (reused by the #22 structured-logging redaction
+# processor) and are imported at the top of this module; the config-output redactor
+# below keeps the same ``memrelay.cli`` import surface via that re-export.
 def _redact_secrets(resolved: dict) -> dict:
     """Mask secret values in a resolved-config dict before display (never leak secrets).
 
@@ -658,10 +643,13 @@ def config_cmd(config_path: str | None) -> None:
 @main.command()
 def mcp() -> None:
     """Start the MCP stdio server (invoked by the agent, not by users)."""
-    # stdout is the MCP transport here — must not print anything to it.
+    # stdout is the MCP transport here — logs must go to stderr only (see
+    # configure_logging / run_stdio), never stdout, or the protocol stream corrupts.
     from memrelay.mcp.server import run_stdio
 
-    run_stdio()
+    cfg = load_config()
+    configure_logging(cfg.logging.level)
+    run_stdio(cfg)
 
 
 @main.command(name="_serve", hidden=True)
@@ -669,7 +657,9 @@ def serve() -> None:
     """(internal) Run the daemon in the foreground; spawned by `memrelay start`."""
     from memrelay.daemon.lifecycle import run_foreground
 
-    run_foreground(load_config())
+    cfg = load_config()
+    configure_logging(cfg.logging.level)
+    run_foreground(cfg)
 
 
 if __name__ == "__main__":
