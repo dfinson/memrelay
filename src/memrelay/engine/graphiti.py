@@ -15,6 +15,7 @@ otherwise default to the OpenAI reranker which needs a key).
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from dataclasses import dataclass
@@ -46,6 +47,15 @@ _EPISODE_NAME_MAX = 60
 #: provenance (see :meth:`MemoryEngine.note`). Excluded from repo matching so a
 #: ``forget --repo`` never treats an un-tagged note as belonging to a repo.
 _NOTE_SENTINEL = "memrelay-note"
+
+#: Wall-clock budget for a single recall graph query (E8-S4 AC2). ``MemoryEngine.search``
+#: wraps the Graphiti ``search_`` call in :func:`asyncio.wait_for` with this timeout; if the
+#: query overruns, recall degrades to an empty-but-valid result instead of hanging or raising,
+#: so a slow graph never wedges the agent. Kept below the daemon client's IPC timeout
+#: (``mcp/client.py`` ``DEFAULT_TIMEOUT`` = 5.0s) so this graceful-empty fires first, before the
+#: client gives up with a hard error. Injectable per-instance via the ``search_timeout`` ctor
+#: argument (the test seam); production uses this default.
+_SEARCH_TIMEOUT_SECONDS = 4.0
 
 
 class PassthroughCrossEncoder(CrossEncoderClient):
@@ -93,10 +103,18 @@ class _EngineParts:
 class MemoryEngine:
     """Persistent memory over an embedded graph backend via graphiti-core."""
 
-    def __init__(self, graphiti: Graphiti, driver: GraphDriver, cfg: Config) -> None:
+    def __init__(
+        self,
+        graphiti: Graphiti,
+        driver: GraphDriver,
+        cfg: Config,
+        *,
+        search_timeout: float = _SEARCH_TIMEOUT_SECONDS,
+    ) -> None:
         self._graphiti = graphiti
         self._driver = driver
         self._cfg = cfg
+        self._search_timeout = search_timeout
 
     @classmethod
     async def from_config(
@@ -202,12 +220,32 @@ class MemoryEngine:
         keyword-only and defaults to ``None``; when it is not supplied the result is
         **byte-identical** to the no-argument path (and no extra graph query runs), so
         existing callers — including the retrieval-eval harness — are unaffected.
+
+        Latency guard (E8-S4 AC2): the graph query is bounded by ``self._search_timeout``
+        (:data:`_SEARCH_TIMEOUT_SECONDS`). If it overruns, recall returns an empty-but-valid
+        ``{"nodes": [], "edges": [], "scores": []}`` — rendered as the not-found map upstream —
+        instead of hanging or raising, so a slow graph never wedges the agent. The ``search_``
+        call is atomic, so a timeout yields no partial rows; the empty result is the documented
+        "none available" case. A search that completes within the budget is unaffected (its
+        result is byte-identical to the un-guarded path), so the retrieval eval still sees the
+        full ranking.
         """
-        results = await self._graphiti.search_(
-            query=query,
-            config=COMBINED_HYBRID_SEARCH_RRF,
-            group_ids=[namespace],
-        )
+        try:
+            results = await asyncio.wait_for(
+                self._graphiti.search_(
+                    query=query,
+                    config=COMBINED_HYBRID_SEARCH_RRF,
+                    group_ids=[namespace],
+                ),
+                timeout=self._search_timeout,
+            )
+        except TimeoutError:
+            logger.warning(
+                "recall search timed out after %.1fs (namespace=%s); returning empty result",
+                self._search_timeout,
+                namespace,
+            )
+            return {"nodes": [], "edges": [], "scores": []}
         node_pairs: list[tuple[dict[str, Any], float | None]] = [
             (
                 {
