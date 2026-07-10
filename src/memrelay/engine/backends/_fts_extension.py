@@ -27,6 +27,17 @@ entirely, is fully offline after the first fetch, and was proven equivalent to a
 successful ``INSTALL FTS; LOAD FTS;`` in #76. We also export ``SSL_CERT_FILE`` and
 keep the native ``INSTALL FTS`` as a fallback.
 
+Resilience to a *yanked* upstream artifact (#118): the prefetch URL is derived
+from the installed ``ladybug.__version__``, so a single missing build must not
+hard-fail us. Upstream pulled v0.18.1's FTS extension from the CDN (HTTP 404)
+while v0.18.0 stayed live, which reddened every note->recall test project-wide
+(#114). When the installed version's artifact is unreachable we fall back, in
+order, to a small fixed list of known-good published versions
+(``_FALLBACK_VERSIONS``) and use the first that is reachable, warning which
+version was loaded in place of the requested one. The native ``INSTALL FTS`` path
+does *not* help here — it re-derives the same host and version and 404s
+identically — so this Python-side version fallback is the actual cure.
+
 The manylinux ABI decides Ladybug's platform tag — ``linux_amd64`` (new C++ ABI)
 vs. ``linux_old_amd64`` (old ABI); ``getPlatform()`` in ``extension.cpp``. The
 installed 0.18.0 wheel resolved to ``linux_amd64`` in CI, but we try both so a
@@ -59,6 +70,14 @@ _EXTENSION_FILENAME = "libfts.lbug_extension"
 _USER_AGENT = "memrelay-ladybug-fts/1.0 (+https://github.com/dfinson/memrelay)"
 # Override of the prefetch cache location (mainly for tests and locked-down envs).
 _CACHE_ENV = "MEMRELAY_EXTENSION_DIR"
+# Known-good published Ladybug versions, newest first, probed only when the
+# *installed* version's FTS artifact is unreachable (e.g. upstream yanked it from
+# the CDN — #118, resilience follow-up to #114). Bounded on purpose: a small,
+# fixed list, never an unbounded scan or algorithmic version-guessing. Extend it
+# as upstream publishes new known-good builds. The installed version is always
+# tried first (it is the only build guaranteed to match the loaded engine's ABI),
+# so this list is a recovery path, not the primary source of truth.
+_FALLBACK_VERSIONS: tuple[str, ...] = ("0.18.0",)
 
 
 def _ladybug_platform_candidates() -> tuple[str, ...]:
@@ -148,25 +167,87 @@ def _download(url: str, dst: Path) -> None:
             tmp.unlink()
 
 
+def _candidate_versions(installed: str) -> tuple[str, ...]:
+    """Return the probe order: the installed version first, then known-good fallbacks.
+
+    Deduplicated with order preserved, so when the installed version already *is* a
+    ``_FALLBACK_VERSIONS`` entry (e.g. 0.18.0) it is not probed twice. The installed
+    version leads because it is the only extension build guaranteed to match the
+    loaded engine's ABI; fallbacks are used only when it is unreachable.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for version in (installed, *_FALLBACK_VERSIONS):
+        if version not in seen:
+            seen.add(version)
+            ordered.append(version)
+    return tuple(ordered)
+
+
+def _extension_url(version: str, plat: str) -> str:
+    return f"{_EXTENSION_HOST}/v{version}/{plat}/fts/{_EXTENSION_FILENAME}"
+
+
+def _cache_path(version: str, plat: str) -> Path:
+    return _cache_dir() / f"ladybug-{version}" / plat / _EXTENSION_FILENAME
+
+
 def _ensure_extension_file(plat: str) -> Path | None:
     """Return a local path to the ``plat`` FTS extension, downloading once.
 
-    ``None`` when the download fails (missing build / network / HTTP), so the
-    caller can try the next candidate tag or the native installer.
+    Probes candidate versions in order — the installed Ladybug version first, then
+    the known-good ``_FALLBACK_VERSIONS`` — and returns the first that is already
+    cached or downloads cleanly. This makes the prefetch resilient to a yanked
+    upstream artifact (#118): the installed version's happy path is unchanged (it
+    is tried first and returns immediately when reachable), and a lower, known-good
+    version is used only when the installed one is missing.
+
+    ``None`` when *every* candidate fails (missing build / network / HTTP) — after
+    emitting a single clean, actionable warning naming the versions tried and the
+    host, never a raw traceback — so the caller can try the next platform tag or
+    the native installer.
     """
-    version = _ladybug_version()
-    dst = _cache_dir() / f"ladybug-{version}" / plat / _EXTENSION_FILENAME
-    if dst.is_file() and dst.stat().st_size > 0:
+    installed = _ladybug_version()
+    versions = _candidate_versions(installed)
+    for version in versions:
+        dst = _cache_path(version, plat)
+        if dst.is_file() and dst.stat().st_size > 0:
+            if version != installed:
+                logger.warning(
+                    "Ladybug FTS extension for installed version %s unavailable at %s; "
+                    "using cached fallback version %s",
+                    installed,
+                    _EXTENSION_HOST,
+                    version,
+                )
+            return dst
+
+        url = _extension_url(version, plat)
+        try:
+            _download(url, dst)
+        except Exception as exc:  # noqa: BLE001 - try the next candidate version
+            logger.warning("Ladybug FTS extension prefetch from %s failed: %s", url, exc)
+            continue
+
+        if version != installed:
+            logger.warning(
+                "Ladybug FTS extension for installed version %s unavailable at %s; "
+                "using reachable fallback version %s",
+                installed,
+                _EXTENSION_HOST,
+                version,
+            )
+        else:
+            logger.debug("Cached Ladybug FTS extension at %s", dst)
         return dst
 
-    url = f"{_EXTENSION_HOST}/v{version}/{plat}/fts/{_EXTENSION_FILENAME}"
-    try:
-        _download(url, dst)
-    except Exception as exc:  # noqa: BLE001 - fall back to the next candidate/native
-        logger.warning("Ladybug FTS extension prefetch from %s failed: %s", url, exc)
-        return None
-    logger.debug("Cached Ladybug FTS extension at %s", dst)
-    return dst
+    logger.warning(
+        "No reachable Ladybug FTS extension for %s; tried version(s) %s at %s",
+        plat,
+        ", ".join(versions),
+        _EXTENSION_HOST,
+    )
+    return None
 
 
 def prefetch_fts_extension() -> None:
