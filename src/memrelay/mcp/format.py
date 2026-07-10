@@ -26,6 +26,18 @@ link to the core) while a link solely between two compact nodes is left for dril
 tiering is display-only and pure: with no numeric scores every node is high (identical to
 pre-E8-S3), and the top-scored node is always high, so a non-empty result never collapses to
 the not-found text.
+
+Recall finally caps the rendered map to a token budget (E8-S4, ``mcp/format.py``): after
+selection and tiering it keeps the highest-scored nodes down until the ``### Entities`` detail
+would exceed :data:`_MAX_MAP_CHARS` (a deterministic character proxy for tokens), so recall
+stays fast and never blows the caller's context window. The single top-scored node is always
+rendered — even if it alone exceeds the budget — so a real recall is never emptied, and a
+budget-dropped node leaves both the node list and the edge/visible-edge lists (mermaid and
+``### Relationships`` stay in sync, exactly as a selection-dropped node does). The cut is
+display-only and pure — it never reorders or rescores the ranking the retrieval eval reads — so
+the same recall renders byte-identically every time. The engine guards recall latency
+separately (``engine/graphiti.py``): a search that exceeds its timeout yields an empty-but-valid
+result here rather than raising.
 """
 
 from __future__ import annotations
@@ -55,6 +67,17 @@ _GAP_DOMINANCE_RATIO = 2.0
 #: meaningful "typical gap" to measure a dominant cliff against.
 _GAP_MIN_NODES = 3
 
+#: Hard character budget on the rendered entity detail — a deterministic token proxy (E8-S4
+#: AC1/AC3). After selection and tiering the map is filled with the highest-scored nodes and
+#: stops before the next node would push the ``### Entities`` detail past this, so recall stays
+#: fast and never blows the caller's context window. It is a plain char count (no external
+#: tokenizer): at the usual ~4 chars/token this is roughly 2000 tokens of entity detail. It
+#: bounds the variable-size entity section (the context-dominating part); mermaid labels are
+#: already length-capped (``_MERMAID_MAX_LABEL``) and edges are derived from the kept nodes.
+#: This module constant is the tuning surface (AC3 "configurable"); the single top-scored node
+#: is always rendered even if it alone exceeds the budget, so a real recall is never emptied.
+_MAX_MAP_CHARS = 8000
+
 
 def format_as_map(results: dict[str, Any]) -> str:
     """Format a ``search`` response ``{"nodes", "edges", "scores"}`` as a map.
@@ -78,6 +101,12 @@ def format_as_map(results: dict[str, Any]) -> str:
     low-tier node stays compact (name + ``uuid`` + drill-down hint). An edge renders only
     when at least one endpoint is high-tier, so ``### Relationships`` and the Mermaid diagram
     stay in sync and a link solely between two compact nodes is left for drill-down.
+
+    Finally the kept nodes are capped to a token budget via :func:`_budget_survivors` (E8-S4):
+    the highest-scored nodes are filled in until the ``### Entities`` detail would exceed
+    :data:`_MAX_MAP_CHARS`, with the top-scored node always kept. A budget-dropped node is
+    removed before the edge and visible-edge lists are built, so the diagram and
+    ``### Relationships`` stay in sync; the cut is display-only and never reorders the ranking.
     """
     nodes = results.get("nodes") or []
     edges = results.get("edges") or []
@@ -88,6 +117,22 @@ def format_as_map(results: dict[str, Any]) -> str:
     kept = _select_indices(nodes, edges, scores)
     nodes = [nodes[index] for index in kept]
     scores = [scores[index] if index < len(scores) else None for index in kept]
+
+    # E8-S3 density tiers fix each kept node's detail level from its score. Compute them here,
+    # before the E8-S4 budget, so the budget only *drops* nodes and never rescores or retiers
+    # a survivor (a node kept under budget renders at exactly the tier tiering assigned).
+    high_flags = _high_tier_flags(scores)
+
+    # E8-S4 token budget: keep the highest-scored nodes down until _MAX_MAP_CHARS is hit (the
+    # top-scored node always survives, even oversized). Truncation is display-only — it never
+    # reorders/rescores the ranking the retrieval eval reads — so a budget-dropped node simply
+    # leaves the node list AND, below, the edge/visible-edge lists (mermaid + ### Relationships
+    # stay in sync, exactly as a #54-dropped node does).
+    survivors = _budget_survivors(nodes, scores, high_flags)
+    nodes = [nodes[index] for index in survivors]
+    scores = [scores[index] for index in survivors]
+    high_flags = [high_flags[index] for index in survivors]
+
     kept_uuids = {node["uuid"] for node in nodes if node.get("uuid")}
     edges = [
         edge
@@ -98,7 +143,6 @@ def format_as_map(results: dict[str, Any]) -> str:
     # E8-S3 density tiers: high-tier nodes render full facts + edges; low-tier nodes stay
     # compact. An edge is visible when at least one endpoint is high-tier, so its fact is
     # owned by a full-detail node (and a degree-rescued hub keeps its link to the core).
-    high_flags = _high_tier_flags(scores)
     high_uuids = {
         node["uuid"]
         for node, high in zip(nodes, high_flags, strict=True)
@@ -264,6 +308,53 @@ def _high_tier_flags(scores: list[Any]) -> list[bool]:
         return [True] * len(scores)
     boundary = statistics.median(finite)
     return [_is_score(value) and value >= boundary for value in scores]
+
+
+def _budget_survivors(
+    nodes: list[dict[str, Any]], scores: list[Any], high_flags: list[bool]
+) -> list[int]:
+    """Node indices that fit the token budget, highest score first (E8-S4 AC1).
+
+    After #54 selection and #55 tiering, fill the map with the highest-scored nodes and stop
+    once the next one would push the rendered entity detail past :data:`_MAX_MAP_CHARS` (a
+    deterministic char proxy for tokens). The single top-scored node is always kept — even if it
+    alone exceeds the budget — so a non-empty recall never renders empty and the #1 result is
+    never dropped. Ordering is by score only (finite scores first, higher before lower, ties and
+    unscored nodes by input position), a display-time cut that never reorders or rescores the
+    ranking. Survivors are returned in input order, so kept nodes still render ``n0``, ``n1``, …
+    as before. Pure function of the nodes, scores and tiers (no wall-clock / RNG): the same
+    recall renders byte-identically every time.
+    """
+    order = sorted(
+        range(len(nodes)),
+        key=lambda index: (
+            0 if _is_score(scores[index]) else 1,
+            -scores[index] if _is_score(scores[index]) else 0.0,
+            index,
+        ),
+    )
+    survivors: list[int] = []
+    used = 0
+    for rank, index in enumerate(order):
+        cost = _node_budget_cost(nodes[index], scores[index], high_flags[index])
+        if rank == 0 or used + cost <= _MAX_MAP_CHARS:
+            survivors.append(index)
+            used += cost
+        else:
+            break
+    survivors.sort()
+    return survivors
+
+
+def _node_budget_cost(node: dict[str, Any], score: float | None, high: bool) -> int:
+    """Rendered size of one node's ``### Entities`` line — the budget's per-node unit (E8-S4).
+
+    Counts the exact characters :func:`_format_node_line` emits for this node at its tier (a
+    high node carries its full ``summary``; a low node is a compact stub) plus one for the line
+    separator, so the accumulated budget tracks the size the caller actually pays for. Pure
+    function of the node, score and tier.
+    """
+    return len(_format_node_line(node, score, high)) + 1
 
 
 def _format_node_line(node: dict[str, Any], score: float | None, high: bool) -> str:

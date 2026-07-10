@@ -545,6 +545,113 @@ def test_tiered_output_is_deterministic() -> None:
     assert "drill down for details" in first and "_(score" in first
 
 
+# ------------------------------------------------------- E8-S4 token budget (AC1/AC3)
+
+
+def _node_cost(rendered: str, position: int = 0) -> int:
+    """Budget cost of one rendered entity line (its length + the 1-char separator).
+
+    Mirrors :func:`memrelay.mcp.format._node_budget_cost` from the black-box side: the entity
+    line under ``### Entities`` *is* ``_format_node_line``'s output, so measuring it here lets a
+    test set a budget in real rendered units without hand-counting the tuning format.
+    """
+    return len(_entity_block(rendered)[position]) + 1
+
+
+def test_budget_stops_at_char_cap(monkeypatch) -> None:
+    # (AC1) fill highest-score nodes until the char budget is hit, then stop: the lower-ranked
+    # nodes that would overflow the cap drop out of BOTH the entity list and the diagram.
+    payload = _scored([0.9, 0.9, 0.9, 0.9])  # equal -> #54 keeps all, all high tier, equal cost
+    full = format_as_map(payload)
+    assert _kept_uuids(full) == ["u0", "u1", "u2", "u3"]  # inert at the default budget
+
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", _node_cost(full) * 2)
+    capped = format_as_map(payload)
+    assert _kept_uuids(capped) == ["u0", "u1"]  # only the first two fit under the cap
+    _assert_valid_mermaid(capped)
+
+
+def test_budget_always_keeps_oversized_top_node(monkeypatch) -> None:
+    # (invariant) the single highest-scored node is always rendered -- in full -- even when it
+    # alone exceeds the budget, so the cap never drops the #1 result nor empties a real recall.
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", 1)  # smaller than any node line
+    rendered = format_as_map(_scored([0.9, 0.9, 0.9]))
+
+    assert _kept_uuids(rendered) == ["u0"]  # only the forced top node survives
+    top = _entity_block(rendered)[0]
+    assert "`u0`" in top and "drill down for details" not in top  # rendered at full (high) tier
+    assert rendered != "No relevant memories found."
+    _assert_valid_mermaid(rendered)
+
+
+def test_budget_never_empties_a_real_result(monkeypatch) -> None:
+    # (invariant) an aggressive cap still never collapses a real recall to the not-found text --
+    # the forced top node guarantees at least one surviving entity -- yet empty input is unchanged.
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", 1)
+    for payload in (_scored([0.001]), _scored([0.9, 0.8, 0.1, 0.05]), _scored([3, 1])):
+        rendered = format_as_map(payload)
+        assert rendered != "No relevant memories found."
+        assert rendered.startswith("## Memory Map")
+        assert _kept_uuids(rendered)  # >= 1 entity survives the cap
+    # empty input still short-circuits to the not-found text (the budget code never runs).
+    assert format_as_map({"nodes": [], "edges": [], "scores": []}) == "No relevant memories found."
+
+
+def test_budget_truncation_is_deterministic(monkeypatch) -> None:
+    # (invariant) truncation is a pure function of nodes + scores + budget (no wall-clock / RNG),
+    # so a capped render is byte-identical across calls.
+    payload = _scored([0.9, 0.9, 0.9, 0.9])
+    cap = _node_cost(format_as_map(payload)) * 2  # room for exactly the first two nodes
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", cap)
+    first = format_as_map(payload)
+    assert first == format_as_map(payload)
+    assert _kept_uuids(first) == ["u0", "u1"]  # sanity: the cap actually bit
+
+
+def test_budget_dropped_nodes_prune_edges_in_sync(monkeypatch) -> None:
+    # (invariant) a budget-dropped node leaves BOTH the entity list and the visible-edge list, so
+    # the diagram and ### Relationships stay in sync: an edge solely between two dropped nodes
+    # vanishes, while a survivor->dropped boundary fact stays in text (mermaid omits the arrow),
+    # exactly as a #54-dropped node behaves.
+    edges = [
+        {"name": "CORE", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": "linkAB"},
+        {"name": "BND", "source_node_uuid": "u1", "target_node_uuid": "u2", "fact": "linkBC"},
+        {"name": "ORPH", "source_node_uuid": "u2", "target_node_uuid": "u3", "fact": "linkCD"},
+    ]
+    payload = _scored([0.9, 0.9, 0.9, 0.9], edges)  # all kept + high by #54/#55 before the cap
+    cap = _node_cost(format_as_map(payload)) * 2  # room for exactly u0 + u1
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", cap)
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1"]  # u2/u3 dropped by the cap
+    assert "linkAB" in rendered  # survivor<->survivor fact kept
+    assert "linkBC" in rendered  # survivor->dropped fact kept in text (same as #54)
+    assert "linkCD" not in rendered and "ORPH" not in rendered  # dropped<->dropped edge gone
+    body = "\n".join(_assert_valid_mermaid(rendered))  # validator: every arrow hits a declared id
+    assert 'n0["N0"]' in body and 'n1["N1"]' in body
+    assert "n2" not in body and "n3" not in body  # dropped nodes are never declared
+
+
+def test_default_budget_is_inert() -> None:
+    # (AC3/no-regress) the default _MAX_MAP_CHARS is large enough that a normal recall renders
+    # every node #54/#55 kept -- the cap only bites pathologically large maps, so existing output
+    # stands. Equal scores keep all three past selection, so any drop here would be the budget.
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "AuthService", "summary": "handles login and issues tokens"},
+            {"uuid": "u1", "name": "JWT", "summary": "compact bearer token format"},
+            {"uuid": "u2", "name": "Session", "summary": "server-side session store"},
+        ],
+        "edges": [
+            {"name": "USES", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": "jwt"},
+        ],
+        "scores": [0.9, 0.9, 0.9],
+    }
+    rendered = format_as_map(payload)
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]  # nothing dropped at the default cap
+    _assert_valid_mermaid(rendered)
+
+
 # --------------------------------------------------------------------------- detail
 
 
