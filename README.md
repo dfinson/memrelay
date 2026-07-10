@@ -48,6 +48,20 @@ copilot        # or: claude, codex, cursor, aider, …
 
 Memory is automatic. The daemon observes sessions in the background and the MCP server provides memory tools to every registered agent.
 
+## Teach your agent when to recall
+
+Memory only helps if your agent actually calls `memory_recall` at the right moments. memrelay can append a short, **opt-in** guidance block to an agent's instructions file so it knows to pull in prior context *before* starting work and to note what it learned *after*:
+
+```bash
+memrelay guidance                    # preview + confirm, then append to ./AGENTS.md
+memrelay guidance --dry-run          # just show what would be written
+memrelay guidance --target claude    # write to ./CLAUDE.md instead
+memrelay guidance --target copilot   # write to ./.github/copilot-instructions.md
+memrelay guidance --path FILE        # write to any explicit instruction file
+```
+
+memrelay never edits an instruction file without your explicit run and confirmation (pass `--yes` to skip the prompt in scripts; `--dry-run` writes nothing). The guidance lives in a fenced `<!-- memrelay:guidance:… -->` block, so re-running updates it **in place** and never touches your own content. Run it from your repo root — memory is scoped to that repo by default.
+
 ## Zero configuration
 
 The default stack requires **zero API keys**:
@@ -91,6 +105,7 @@ memrelay start                       # Start daemon (background)
 memrelay stop                        # Stop daemon
 memrelay status                      # Health: sessions, episodes, spool depth
 memrelay observe                     # Replay a discovered session through the pipeline into the spool
+memrelay guidance                    # Append opt-in recall guidance to an agent's instructions file
 memrelay config                      # Show current config
 
 # Planned — not yet implemented (currently stubs):
@@ -208,8 +223,8 @@ traceforge 0.1.0 API used and the deltas from `SPEC.md`.
 🚧 **Pre-1.0 and under active development** — the core is functional but still being
 assembled epic by epic, and the package is unpublished (v0.0.1). What works today:
 
-- **CLI** — `init`, `start`, `stop`, `status`, `observe`, `mcp`, and `config` are all
-  implemented (`forget` and `seed` remain stubs).
+- **CLI** — `init`, `start`, `stop`, `status`, `observe`, `guidance`, `mcp`, and `config`
+  are all implemented (`forget` and `seed` remain stubs).
 - **Engine (E4)** — a config-driven Graphiti wrapper over an embedded Kuzu database,
   with local fastembed embeddings and the `borrow-host` / `byo-key` LLM strategies.
 - **Daemon (E6/E7)** — a background process that owns the Kuzu engine, hosts the
