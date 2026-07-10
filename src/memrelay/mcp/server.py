@@ -12,6 +12,9 @@ protocol channel.
 
 from __future__ import annotations
 
+import functools
+from collections.abc import Mapping
+
 from mcp.server.fastmcp import FastMCP
 
 from memrelay.config import Config, load_config
@@ -28,17 +31,35 @@ SERVER_INSTRUCTIONS = (
 
 
 def build_mcp_server(
-    client: DaemonClient, *, context_resolver: ContextResolver | None = None
+    client: DaemonClient,
+    *,
+    namespace_map: Mapping[str, str] | None = None,
+    context_resolver: ContextResolver | None = None,
 ) -> FastMCP:
-    """Build the FastMCP server with the three memory tools registered."""
+    """Build the FastMCP server with the three memory tools registered.
+
+    The tools resolve the caller's namespace through a *zero-arg* context resolver. By
+    default that resolver is :func:`~memrelay.mcp.namespace.resolve_context` bound to
+    ``namespace_map`` — the config ``[namespaces.*]`` repo→namespace map — so recall/note
+    resolve the SAME namespace the capture/observe path writes (#106). An empty/``None``
+    map derives the git-owner namespace, byte-identical to the zero-config path. An
+    explicit ``context_resolver`` (a test seam) takes precedence and bypasses the map.
+    """
     server = FastMCP(SERVER_NAME, instructions=SERVER_INSTRUCTIONS)
-    register_tools(server, client, context_resolver or resolve_context)
+    resolver = context_resolver or functools.partial(resolve_context, namespace_map=namespace_map)
+    register_tools(server, client, resolver)
     return server
 
 
 def run_stdio(config: Config | None = None) -> None:
-    """Serve the MCP tools over stdio until the agent closes the transport."""
-    cfg = config or load_config()
+    """Serve the MCP tools over stdio until the agent closes the transport.
+
+    Loads config (unless one is injected for tests via ``config``) and threads its
+    ``[namespaces.*]`` map into the tools, so recall/note resolve the same namespace the
+    observe path writes (#106). The ``config`` parameter is the injection seam:
+    ``memrelay mcp`` calls this with no argument, which keeps loading config here.
+    """
+    cfg = config if config is not None else load_config()
     client = DaemonClient.for_home(cfg.home_path)
-    server = build_mcp_server(client)
+    server = build_mcp_server(client, namespace_map=cfg.namespaces.repo_map)
     server.run("stdio")
