@@ -19,12 +19,20 @@ class FakeEngine:
 
     def __init__(self, poison: set[str] | None = None) -> None:
         self.notes: list[tuple[str, str, str | None]] = []
+        self.sources: list[str | None] = []
         self._poison = poison or set()
 
-    async def note(self, content: str, namespace: str, repo: str | None = None) -> str:
+    async def note(
+        self,
+        content: str,
+        namespace: str,
+        repo: str | None = None,
+        source: str | None = None,
+    ) -> str:
         if content in self._poison:
             raise RuntimeError(f"boom: {content}")
         self.notes.append((content, namespace, repo))
+        self.sources.append(source)
         return f"uuid-{len(self.notes)}"
 
 
@@ -156,4 +164,39 @@ def test_legacy_record_without_phase_key_ingests(tmp_path: Path) -> None:
     engine = FakeEngine()
     asyncio.run(_drain(engine, spool))
     assert engine.notes[0][0] == "old fact", "missing phase key must not break ingest"
+    spool.close()
+
+
+# ---------------------------------------------------- agent provenance (E5-S3 #40)
+
+
+def test_source_is_forwarded_to_engine(tmp_path: Path) -> None:
+    # The ingester threads record["source"] (the agent id) into engine.note so the
+    # engine can stamp agent provenance; content/namespace/repo are untouched.
+    spool = Spool(tmp_path / "spool" / "spool.db")
+    spool.append(
+        EpisodeRecord.new(
+            "a fact", "proj-a", repo="acme/widgets", source="claude", idempotency_key="k"
+        ).to_dict()
+    )
+    engine = FakeEngine()
+    asyncio.run(_drain(engine, spool))
+
+    assert engine.notes[0] == ("a fact", "proj-a", "acme/widgets")
+    assert engine.sources[0] == "claude", "agent id forwarded into engine.note(source=...)"
+    spool.close()
+
+
+def test_legacy_record_without_source_key_ingests(tmp_path: Path) -> None:
+    # A spool row written before #40 has no ``source`` key; ``record.get("source")`` ->
+    # None, which the engine treats as the byte-identical pre-#40 (repo-only) path.
+    spool = Spool(tmp_path / "spool" / "spool.db")
+    legacy = EpisodeRecord.new("old fact", "proj-a", idempotency_key="k").to_dict()
+    del legacy["source"]
+    spool.append(legacy)
+    engine = FakeEngine()
+    asyncio.run(_drain(engine, spool))
+
+    assert engine.notes[0][0] == "old fact", "missing source key must not break ingest"
+    assert engine.sources[0] is None, "absent source resolves to None (compat fallback)"
     spool.close()

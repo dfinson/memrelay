@@ -125,13 +125,37 @@ class MemoryEngine:
         )
         return cls(graphiti=graphiti, driver=driver, cfg=cfg)
 
-    async def note(self, content: str, namespace: str, repo: str | None = None) -> str:
-        """Store a fact as an episode; returns the episode uuid (or 'Noted.')."""
+    async def note(
+        self,
+        content: str,
+        namespace: str,
+        repo: str | None = None,
+        source: str | None = None,
+    ) -> str:
+        """Store a fact as an episode; returns the episode uuid (or 'Noted.').
+
+        ``source`` is optional agent provenance (E5-S3 #40) — the id of the agent
+        that produced the memory (e.g. ``"copilot"`` / ``"claude"``). When it is
+        given, the episode's ``source_description`` is a stable, greppable
+        ``key=value`` string so a future ``prefer_repo`` tiebreaker can parse repo
+        and agent back out (SPEC §4.4): ``repo=<owner/name> agent=<agent>``, or just
+        ``agent=<agent>`` when ``repo`` is absent. When ``source`` is falsy the
+        description is **byte-identical to the pre-#40 behaviour** (``repo`` alone,
+        falling back to ``"memrelay-note"``) so existing callers are unaffected.
+        """
+        if source:
+            tokens = []
+            if repo:
+                tokens.append(f"repo={repo}")
+            tokens.append(f"agent={source}")
+            source_description = " ".join(tokens)
+        else:
+            source_description = repo or "memrelay-note"
         result = await self._graphiti.add_episode(
             name=_episode_name(content),
             episode_body=content,
             source=EpisodeType.message,
-            source_description=repo or "memrelay-note",
+            source_description=source_description,
             reference_time=datetime.now(UTC),
             group_id=namespace,
         )
