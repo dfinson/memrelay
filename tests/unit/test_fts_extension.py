@@ -9,7 +9,9 @@ OOTB Linux guarantee working around Ladybug's native downloader TLS bug.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,27 @@ class _RecordingDriver:
         self.queries.append(query)
         if self._fail_on is not None and query.startswith(self._fail_on):
             raise RuntimeError("simulated execute failure")
+
+
+def _make_fake_download(reachable: set[str], recorder: list[str] | None = None):
+    """Return a fake ``_download`` that 404s any version not in ``reachable``.
+
+    ``reachable`` holds the version strings whose CDN artifact "exists"; a request
+    for any other version raises an HTTP 404, exactly like a yanked artifact. This
+    is the single seam that keeps the fallback tests offline — no socket is opened.
+    """
+
+    def fake_download(url: str, dst: Path) -> None:
+        if recorder is not None:
+            recorder.append(url)
+        # URL shape: {host}/v{version}/{plat}/fts/{filename}
+        version = url.split("/v", 1)[1].split("/", 1)[0]
+        if version not in reachable:
+            raise urllib.error.HTTPError(url, 404, "Not Found", hdrs={}, fp=None)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_bytes(f"ext-{version}".encode())
+
+    return fake_download
 
 
 @pytest.mark.parametrize(
@@ -249,3 +272,100 @@ def test_prefetch_noop_when_no_published_build(monkeypatch):
     fx.prefetch_fts_extension()
 
     assert calls == []
+
+
+# --- #118: resilience to a yanked upstream artifact (version fallback) ----------
+
+
+def test_candidate_versions_orders_installed_first_and_dedupes(monkeypatch):
+    """Installed version leads; known-good fallbacks follow; no version probed twice."""
+    monkeypatch.setattr(fx, "_FALLBACK_VERSIONS", ("0.18.0", "0.17.5"))
+
+    # Installed distinct from every fallback → it leads, fallbacks follow in order.
+    assert fx._candidate_versions("0.18.1") == ("0.18.1", "0.18.0", "0.17.5")
+    # Installed coincides with a fallback entry → deduped, still leads.
+    assert fx._candidate_versions("0.18.0") == ("0.18.0", "0.17.5")
+
+
+def test_ensure_extension_file_prefers_installed_and_skips_fallback_probe(monkeypatch, tmp_path):
+    """Happy path is byte-identical: reachable installed version, fallback never touched."""
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "0.18.1")
+    monkeypatch.setattr(fx, "_FALLBACK_VERSIONS", ("0.18.0",))
+    requested: list[str] = []
+    monkeypatch.setattr(fx, "_download", _make_fake_download({"0.18.1", "0.18.0"}, requested))
+
+    path = fx._ensure_extension_file("linux_amd64")
+
+    assert path == tmp_path / "ladybug-0.18.1" / "linux_amd64" / fx._EXTENSION_FILENAME
+    assert path.read_bytes() == b"ext-0.18.1"
+    # Only the installed version is fetched — the fallback URL is never requested.
+    assert requested == [
+        "https://extension.ladybugdb.com/v0.18.1/linux_amd64/fts/libfts.lbug_extension"
+    ]
+
+
+def test_ensure_extension_file_falls_back_to_reachable_version(monkeypatch, tmp_path, caplog):
+    """Installed 404 → newest reachable fallback 200 → the fallback binary is used."""
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "0.18.1")
+    monkeypatch.setattr(fx, "_FALLBACK_VERSIONS", ("0.18.0",))
+    requested: list[str] = []
+    monkeypatch.setattr(fx, "_download", _make_fake_download({"0.18.0"}, requested))
+
+    with caplog.at_level(logging.WARNING, logger="memrelay.engine.backends._fts_extension"):
+        path = fx._ensure_extension_file("linux_amd64")
+
+    assert path == tmp_path / "ladybug-0.18.0" / "linux_amd64" / fx._EXTENSION_FILENAME
+    assert path.read_bytes() == b"ext-0.18.0"
+    # Installed version probed first (404), then the fallback (200).
+    assert requested == [
+        "https://extension.ladybugdb.com/v0.18.1/linux_amd64/fts/libfts.lbug_extension",
+        "https://extension.ladybugdb.com/v0.18.0/linux_amd64/fts/libfts.lbug_extension",
+    ]
+    # An actionable warning names requested vs. loaded version and the host.
+    assert "0.18.1" in caplog.text
+    assert "0.18.0" in caplog.text
+    assert fx._EXTENSION_HOST in caplog.text
+
+
+def test_ensure_extension_file_all_candidates_fail_is_clean(monkeypatch, tmp_path, caplog):
+    """Every candidate 404 → ``None`` and one clean, actionable warning (no traceback)."""
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "0.18.1")
+    monkeypatch.setattr(fx, "_FALLBACK_VERSIONS", ("0.18.0",))
+    monkeypatch.setattr(fx, "_download", _make_fake_download(set()))  # nothing reachable
+
+    with caplog.at_level(logging.WARNING, logger="memrelay.engine.backends._fts_extension"):
+        result = fx._ensure_extension_file("linux_amd64")  # must not raise
+
+    assert result is None
+    # Exactly one summary line, naming every version tried and the host.
+    summaries = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("No reachable Ladybug FTS extension")
+    ]
+    assert len(summaries) == 1
+    summary = summaries[0]
+    assert "linux_amd64" in summary
+    assert "0.18.1" in summary
+    assert "0.18.0" in summary
+    assert fx._EXTENSION_HOST in summary
+
+
+def test_load_end_to_end_falls_back_to_reachable_version(monkeypatch, tmp_path):
+    """Loader path: installed yanked → the cached fallback binary is LOADed, not native."""
+    monkeypatch.setenv("MEMRELAY_EXTENSION_DIR", str(tmp_path))
+    monkeypatch.setattr(fx, "_configure_ssl_cert_env", lambda: None)
+    monkeypatch.setattr(fx, "_ladybug_version", lambda: "0.18.1")
+    monkeypatch.setattr(fx, "_FALLBACK_VERSIONS", ("0.18.0",))
+    monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ("linux_amd64",))
+    monkeypatch.setattr(fx, "_download", _make_fake_download({"0.18.0"}))
+
+    driver = _RecordingDriver()
+    asyncio.run(fx.load_ladybug_fts_extension(driver))
+
+    # Installed 0.18.1 is yanked, so the reachable 0.18.0 binary is LOADed — no native.
+    fallback = tmp_path / "ladybug-0.18.0" / "linux_amd64" / fx._EXTENSION_FILENAME
+    assert driver.queries == [f"LOAD EXTENSION '{fallback.as_posix()}'"]
