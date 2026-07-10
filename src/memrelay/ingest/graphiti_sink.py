@@ -57,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -69,6 +70,9 @@ if TYPE_CHECKING:
     from traceforge import SessionEvent
 
     from memrelay.config import Config
+
+
+logger = logging.getLogger(__name__)
 
 #: Kinds the assembler renders into episode **content** (#26). Non-message kinds now
 #: contribute too: ``tool.call.completed`` (intent + success + touched files + result)
@@ -672,7 +676,10 @@ class ObserveResult:
     work-unit plus at most one session summary — not one per event (Epic E2). ``parsed``
     still counts raw events read from the source; ``skipped`` counts events that
     contributed no content to any work-unit (harness noise, empty turns, bare boundary
-    signals).
+    signals). ``malformed`` counts source records skipped because they could not be
+    parsed — a corrupt/partial line is tallied here and never crashes ingest (P1);
+    ``source_errors`` counts recovered mid-read source failures such as truncation or
+    replacement of the events file (P2).
     """
 
     session_id: str
@@ -681,6 +688,8 @@ class ObserveResult:
     parsed: int = 0
     appended: int = 0
     skipped: int = 0
+    malformed: int = 0
+    source_errors: int = 0
 
 
 async def run_observe(
@@ -710,6 +719,15 @@ async def run_observe(
     handed to the pipeline; if the model bundle or ML deps are missing it logs and runs
     this pass phase-off rather than crashing. ``governance=None`` keeps observation
     opt-out (SPEC §3.3).
+
+    **Ingestion robustness (E1-S7 #12).** The read loop is defensive: a malformed or
+    partial source line is skipped and tallied in ``result.malformed`` (never raises —
+    one bad line can't crash the run), and a mid-read source failure (the events file
+    truncated/replaced/unreadable) is caught, tallied in ``result.source_errors``, and
+    recovered by flushing partial progress and ending the pass cleanly. Exactly-once is
+    **already** guaranteed downstream by the spool's unique ``idempotency_key`` (re-observing
+    re-reads the whole file and appends zero duplicate episodes), so no durable source
+    read-offset is needed for correctness; one is deferred as a pure re-parse optimization.
     """
     from traceforge import Enricher, EventPipeline
 
@@ -753,10 +771,39 @@ async def run_observe(
     adapter = provider.make_adapter(session_id)
     result = ObserveResult(session_id=session_id, namespace=namespace, repo=repo)
     try:
-        for line in provider.make_source(session_id, path=str(events_path)):
-            for event in adapter.parse(line):
-                result.parsed += 1
-                await pipeline.push(event)
+        try:
+            for line in provider.make_source(session_id, path=str(events_path)):
+                # P1: a corrupt/partial source record is skipped + counted, never crashes
+                # ingest. The traceforge adapter *silently* drops unparseable input (its
+                # ``parse`` contract is "never raise"), so we detect malformed records here
+                # to keep a visible tally. A well-formed object that maps to zero events is
+                # valid-but-contentless, NOT malformed, and is left uncounted.
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                try:
+                    obj = json.loads(stripped)
+                except (json.JSONDecodeError, ValueError):
+                    obj = None
+                if not isinstance(obj, dict):
+                    result.malformed += 1
+                    logger.warning("observe %s: skipped malformed source record", session_id)
+                    continue
+                try:
+                    events = list(adapter.parse(stripped))
+                except Exception as exc:  # noqa: BLE001 - one bad record must never crash ingest
+                    result.malformed += 1
+                    logger.warning("observe %s: adapter raised on record: %s", session_id, exc)
+                    continue
+                for event in events:
+                    result.parsed += 1
+                    await pipeline.push(event)
+        except (OSError, UnicodeDecodeError) as exc:
+            # P2: source truncated/replaced/unreadable mid-read — flush partial, don't crash.
+            result.source_errors += 1
+            logger.warning(
+                "observe %s: source read error, recovered by ending pass: %s", session_id, exc
+            )
         await pipeline.flush()
     finally:
         # Mirror the fixture_runner lifecycle: always close, even if push/flush raised.
