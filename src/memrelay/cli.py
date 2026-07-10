@@ -15,7 +15,7 @@ from pathlib import Path
 
 import click
 
-from memrelay import __version__
+from memrelay import __version__, guidance
 from memrelay.config import Config, ensure_home, load_config
 from memrelay.providers.base import AgentProvider, LLMStrategyHint
 from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
@@ -397,6 +397,66 @@ def observe(session_id: str | None, spool_path: str | None, copilot_home: str | 
     click.echo(f"  episodes:  {result.appended}")
     click.echo(f"  skipped:   {result.skipped}")
     click.echo(f"  spool:     {db_path}")
+
+
+@main.command(name="guidance")
+@click.option(
+    "--target",
+    type=click.Choice(sorted(guidance.TARGETS)),
+    default=guidance.DEFAULT_TARGET,
+    show_default=True,
+    help="Which repo-local agent instruction file to update.",
+)
+@click.option(
+    "--path",
+    "explicit_path",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Write to this exact instruction file instead of the --target default.",
+)
+@click.option("--dry-run", is_flag=True, help="Preview the change and exit; write nothing.")
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt (non-interactive).")
+def guidance_cmd(target: str, explicit_path: str | None, dry_run: bool, yes: bool) -> None:
+    """Append opt-in memrelay recall guidance to an agent's instructions file.
+
+    Writes a short, marked block telling the agent when and how to use memrelay's
+    ``memory_recall`` / ``memory_detail`` / ``memory_note`` tools, so it actually recalls
+    prior context at the right moments. Opt-in and non-destructive: nothing is written
+    without your explicit confirmation (or ``--yes``), the block is fenced so a re-run
+    updates it in place instead of duplicating, and content outside the block is never
+    touched. Use ``--dry-run`` to preview the exact block and target without writing.
+
+    The default target is a repo-local ``AGENTS.md`` in the current directory (run from
+    your repo root); ``--target`` selects another supported agent's file and ``--path``
+    points at any explicit instruction file.
+    """
+    path = (
+        Path(explicit_path) if explicit_path else guidance.resolve_target_path(target, Path.cwd())
+    )
+
+    try:
+        preview = guidance.apply_guidance(path, write=False)
+    except guidance.MalformedMarkersError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"target: {path}")
+    click.echo(f"action: {preview.action.value}")
+    click.echo("")
+    click.echo(guidance.render_block())
+    click.echo("")
+
+    if dry_run:
+        click.echo("dry run: nothing written.")
+        return
+    if preview.action is guidance.Action.UNCHANGED:
+        click.echo(f"{path}: already up to date.")
+        return
+    if not yes and not click.confirm(f"Write memrelay guidance to {path}?"):
+        click.echo("aborted: nothing written.")
+        return
+
+    result = guidance.apply_guidance(path, write=True)
+    click.echo(f"{result.action.value}: {path}")
 
 
 @main.command()

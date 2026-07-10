@@ -16,7 +16,17 @@ from memrelay.cli import main
 def test_help_lists_all_commands() -> None:
     result = CliRunner().invoke(main, ["--help"])
     assert result.exit_code == 0
-    for command in ("init", "start", "stop", "status", "forget", "seed", "config", "mcp"):
+    for command in (
+        "init",
+        "start",
+        "stop",
+        "status",
+        "guidance",
+        "forget",
+        "seed",
+        "config",
+        "mcp",
+    ):
         assert command in result.output
 
 
