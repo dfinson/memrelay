@@ -118,10 +118,22 @@ class RunObserveCapture:
     Launches one asyncio task that loops :func:`~memrelay.ingest.graphiti_sink.run_observe`
     over the session's trace every ``interval`` seconds. Each pass re-reads the (growing)
     ``events.jsonl`` and appends only new episodes — idempotent by the spool's unique
-    ``idempotency_key`` — so the task is safe to run repeatedly and safe to cancel at any
-    point. A failed pass is logged and never crashes the daemon; on :meth:`stop` a final
-    pass drains the trailing work-unit and the ``session.ended`` summary before the task is
-    cancelled and awaited, so nothing is lost and nothing leaks.
+    ``idempotency_key`` — so a pass is safe to repeat. Because that replay is **synchronous**
+    and scans the whole file (``run_observe`` is ``async`` in name but its body enriches and
+    writes to the sqlite spool with no real loop yields), every pass is **offloaded to a
+    worker thread** (see :meth:`_observe_once`); running it inline on the daemon loop would
+    block the global ingester drain and the socket listener for the whole pass. A failed pass
+    is logged and never crashes the daemon.
+
+    On :meth:`stop` the loop is asked to stop and awaited — deliberately **not** cancelled,
+    since the worker thread can't be interrupted and abandoning it would leave a thread writing
+    to a possibly-closed spool — then one final pass drains the trailing work-unit and the
+    ``session.ended`` summary, so nothing is lost and no task, handle, or thread leaks.
+
+    Cost note: re-reading the whole ``events.jsonl`` each pass is O(file) and re-parses
+    already-seen lines (deduped by the spool, so correct — just not maximal). A durable source
+    read-offset for incremental tailing is deliberately deferred (see ``run_observe`` / #11);
+    the cadence is kept no more aggressive than the poll interval to bound the re-parse cost.
     """
 
     def __init__(
@@ -161,10 +173,24 @@ class RunObserveCapture:
             logger.debug("session %s: capture loop errored", self._ref.session_id, exc_info=True)
 
     async def _observe_once(self) -> None:
+        try:
+            await asyncio.to_thread(self._observe_blocking)
+        except Exception:  # noqa: BLE001 - one bad pass must not stop live capture
+            logger.warning("session %s: observe pass failed", self._ref.session_id, exc_info=True)
+
+    def _observe_blocking(self) -> None:
+        # run_observe is ``async`` in name but performs a *synchronous* full-file replay
+        # (read events.jsonl -> enrich -> GraphitiSink -> sqlite spool) with no real loop
+        # yields, so awaiting it inline on the daemon loop would block the global ingester
+        # drain and the socket listener for the whole pass. Run it to completion on this
+        # worker thread (dispatched via asyncio.to_thread) with its own short-lived loop, so
+        # the daemon loop stays responsive no matter how large the session's trace is. The
+        # shared spool is built for exactly this: a lock + check_same_thread=False make a
+        # cross-thread writer safe, so this coexists with the daemon-loop ingester draining it.
         from memrelay.ingest.graphiti_sink import run_observe
 
-        try:
-            await run_observe(
+        asyncio.run(
+            run_observe(
                 self._ref.path,
                 self._ref.session_id,
                 spool=self._spool,
@@ -172,21 +198,27 @@ class RunObserveCapture:
                 config=self._config,
                 namespace_map=self._namespace_map,
             )
-        except Exception:  # noqa: BLE001 - one bad pass must not stop live capture
-            logger.warning("session %s: observe pass failed", self._ref.session_id, exc_info=True)
+        )
 
     async def stop(self) -> None:
-        """Stop the loop, then do one final drain pass; leaves no task or handle behind."""
+        """Stop the loop and do one final drain pass; leaves no task, handle, or thread behind.
+
+        Deliberately does **not** ``cancel`` the loop task: each observe runs on a worker
+        thread (see :meth:`_observe_blocking`) that cannot be interrupted, so cancelling
+        mid-pass would abandon a thread still writing to the spool (possibly an already-closed
+        one). Instead we set the stop event — which the interruptible :meth:`_wait` honours
+        immediately — and await the task, so at most one in-flight pass finishes first and no
+        thread is orphaned. A final pass then captures the trailing work-unit and the
+        ``session.ended`` summary; it is idempotent, so re-observing the file adds only new
+        episodes.
+        """
         self._stop.set()
         task, self._task = self._task, None
         if task is not None:
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
+            await task
         # Final pass *after* the loop is fully stopped: capture the trailing work-unit and
-        # the session.ended summary. Idempotent, so a race with the cancelled loop is safe.
+        # the session.ended summary. Idempotent, so it is safe even if the last loop pass
+        # already covered part of it.
         await self._observe_once()
 
     async def _wait(self) -> None:

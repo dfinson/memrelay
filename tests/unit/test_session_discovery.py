@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -257,18 +258,21 @@ def test_run_observe_capture_observes_on_cadence_and_final_drains(monkeypatch: A
     import memrelay.ingest.graphiti_sink as graphiti_sink
 
     calls: list[str] = []
-    observed = asyncio.Event()
 
     async def fake_run_observe(path: Any, session_id: str, **kwargs: Any) -> None:
+        # The capture offloads each pass onto a worker thread; a list append is safe there and
+        # is published to the loop when the ``to_thread`` future resolves.
         calls.append(session_id)
-        observed.set()
 
     monkeypatch.setattr(graphiti_sink, "run_observe", fake_run_observe)
 
     async def scenario() -> tuple[list[str], asyncio.Task[None] | None, RunObserveCapture]:
-        async def parking_wait(interval: float, stop: asyncio.Event) -> None:
-            # Park the loop after its first observe until stop is set, so the cadence is
-            # fully deterministic (exactly one loop pass before we stop it).
+        observed = asyncio.Event()
+
+        async def signal_then_park(interval: float, stop: asyncio.Event) -> None:
+            # Runs on the loop right after the (offloaded) observe returns: fire once so the
+            # test resumes deterministically, then park until stop — exactly one loop pass.
+            observed.set()
             await stop.wait()
 
         capture = RunObserveCapture(
@@ -278,12 +282,12 @@ def test_run_observe_capture_observes_on_cadence_and_final_drains(monkeypatch: A
             config=None,
             namespace_map=None,
             interval=2.0,
-            wait=parking_wait,
+            wait=signal_then_park,
         )
         capture.start()
         task = capture._task
         await asyncio.wait_for(observed.wait(), timeout=5.0)  # one loop observe happened
-        await capture.stop()  # sets stop, cancels + awaits the loop, then final-drains
+        await capture.stop()  # sets stop, awaits the loop (no cancel), then final-drains
         return calls, task, capture
 
     seen, task, capture = asyncio.run(scenario())
@@ -291,3 +295,48 @@ def test_run_observe_capture_observes_on_cadence_and_final_drains(monkeypatch: A
     assert seen == ["s1", "s1"]
     assert task is not None and task.done()  # loop task finished — nothing leaked
     assert capture._task is None  # handle released
+
+
+def test_observe_runs_off_the_event_loop_thread(monkeypatch: Any) -> None:
+    """Each observe pass executes on a worker thread, never inline on the daemon loop.
+
+    ``run_observe`` is a synchronous full-file replay; awaiting it inline would block the
+    daemon's event loop — starving the global ingester drain and the socket listener — for the
+    whole pass. This proves the capture offloads it: every pass runs on a thread other than the
+    loop's, so however long a replay takes it cannot stall the loop. A regression to an inline
+    ``await run_observe(...)`` makes the observed thread id equal the loop's and trips this
+    assertion cleanly (without hanging the suite).
+    """
+    import memrelay.ingest.graphiti_sink as graphiti_sink
+
+    observe_tids: list[int] = []
+
+    async def fake_run_observe(path: Any, session_id: str, **kwargs: Any) -> None:
+        observe_tids.append(threading.get_ident())
+
+    monkeypatch.setattr(graphiti_sink, "run_observe", fake_run_observe)
+
+    async def scenario() -> tuple[int, list[int]]:
+        observed = asyncio.Event()
+
+        async def signal_then_park(interval: float, stop: asyncio.Event) -> None:
+            observed.set()
+            await stop.wait()
+
+        capture = RunObserveCapture(
+            _ref("s1", "C:/nope/events.jsonl"),
+            spool=object(),
+            provider=object(),
+            config=None,
+            namespace_map=None,
+            wait=signal_then_park,
+        )
+        capture.start()
+        await asyncio.wait_for(observed.wait(), timeout=5.0)
+        await capture.stop()
+        return threading.get_ident(), observe_tids
+
+    loop_tid, tids = asyncio.run(scenario())
+    assert tids, "run_observe never executed"
+    # Every pass (loop pass + final drain) ran on a thread other than the daemon loop's.
+    assert all(tid != loop_tid for tid in tids)
