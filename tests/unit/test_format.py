@@ -327,6 +327,224 @@ def test_edge_between_two_dropped_nodes_is_removed() -> None:
     assert "orphan link" not in rendered and "GONE" not in rendered
 
 
+# ------------------------------------------------------ E8-S3 density tiers (AC1-AC3)
+
+
+def _entity_block(rendered: str) -> list[str]:
+    """The ``### Entities`` bullet lines (one per surviving node), in input order."""
+    section = rendered.split("### Entities", 1)[-1].split("### Relationships", 1)[0]
+    return [line for line in section.splitlines() if line.startswith("- ")]
+
+
+def _tier_split(
+    scores: list[float], edges: list[dict] | None = None
+) -> tuple[list[str], list[str]]:
+    """Render ``_scored(...)`` and return (high-tier uuids, low-tier uuids) by entity line."""
+    rendered = format_as_map(_scored(scores, edges))
+    high, low = [], []
+    for line in _entity_block(rendered):
+        uuid = re.search(r"`(u\d+)`", line).group(1)
+        (low if "drill down for details" in line else high).append(uuid)
+    return high, low
+
+
+def test_high_tier_renders_full_facts_and_edges() -> None:
+    # (AC) a high-score node renders its summary (facts) AND its edge in ### Relationships.
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "N0", "summary": "top fact"},
+            {"uuid": "u1", "name": "N1", "summary": "second fact"},
+        ],
+        "edges": [
+            {"name": "REL", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": "linked"}
+        ],
+        "scores": [0.9, 0.9],  # equal -> both at/above the median -> both high (full)
+    }
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1"]
+    assert "top fact" in rendered and "second fact" in rendered  # summaries (facts) shown
+    assert "_(score 0.90)_" in rendered  # score suffix shown
+    assert "### Relationships" in rendered and "linked" in rendered  # edges shown
+    assert "drill down for details" not in rendered  # nothing compact
+    _assert_valid_mermaid(rendered)
+
+
+def test_low_tier_is_compact_without_summary_or_score() -> None:
+    # (AC) a kept-but-lower node stays compact: name + uuid + hint; summary and score withheld.
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "N0", "summary": "s0"},
+            {"uuid": "u1", "name": "N1", "summary": "s1"},
+            {"uuid": "u2", "name": "N2", "summary": "s2"},
+            {"uuid": "u3", "name": "N3", "summary": "s3"},
+            {"uuid": "u4", "name": "N4", "summary": "s4"},
+        ],
+        "edges": [],
+        "scores": [0.9, 0.8, 0.7, 0.1, 0.05],  # #54 keeps u0/u1/u2; kept-median 0.8 -> u2 low
+    }
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]
+    low = [line for line in _entity_block(rendered) if "`u2`" in line][0]
+    assert "N2" in low and "drill down for details" in low  # name + hint kept
+    assert "s2" not in rendered  # summary withheld from the compact node
+    assert "score" not in low  # no score suffix on the compact line
+    assert "s0" in rendered and "s1" in rendered  # the high nodes keep their facts
+    assert "_(score 0.90)_" in rendered
+    _assert_valid_mermaid(rendered)
+
+
+def test_tiering_is_scale_free_across_score_scales() -> None:
+    # (AC) tiers derive from the median of the kept scores, so a stub-scale run and an
+    # RRF-scale run with the same shape split into the same high/low sets (no absolute cutoff).
+    stub = _tier_split([1.0, 0.9, 0.8, 0.1, 0.05])
+    rrf = _tier_split([0.05, 0.045, 0.04, 0.005, 0.0025])
+    assert stub == rrf == (["u0", "u1"], ["u2"])
+
+
+def test_degree_rescued_hub_is_low_tier_but_keeps_core_links() -> None:
+    # (D3) a node kept only by the degree>=2 rescue scores below the kept median -> low tier
+    # (compact, summary withheld), yet its edges to the high core still render.
+    edges = [
+        {"name": "E1", "source_node_uuid": "u0", "target_node_uuid": "u2", "fact": "hub link one"},
+        {"name": "E2", "source_node_uuid": "u1", "target_node_uuid": "u2", "fact": "hub link two"},
+    ]
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "N0", "summary": "s0"},
+            {"uuid": "u1", "name": "N1", "summary": "s1"},
+            {"uuid": "u2", "name": "Hub", "summary": "hub summary"},
+        ],
+        "edges": edges,
+        "scores": [0.9, 0.8, 0.1],  # u2 below cutoff but degree 2 -> rescued, and low tier
+    }
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]
+    hub = [line for line in _entity_block(rendered) if "`u2`" in line][0]
+    assert "drill down for details" in hub  # low tier by score
+    assert "hub summary" not in rendered  # its own summary withheld
+    assert "hub link one" in rendered and "hub link two" in rendered  # links to the core survive
+    _assert_valid_mermaid(rendered)
+
+
+def test_low_to_low_edge_suppressed_but_low_to_high_kept() -> None:
+    # (D2) an edge renders only when >=1 endpoint is high: the two low-high links stay while
+    # the link solely between the two compact nodes is suppressed from text AND diagram.
+    edges = [
+        {"name": "HL", "source_node_uuid": "u2", "target_node_uuid": "u0", "fact": "low to high"},
+        {"name": "LL", "source_node_uuid": "u2", "target_node_uuid": "u3", "fact": "low to low"},
+        {"name": "LH", "source_node_uuid": "u3", "target_node_uuid": "u1", "fact": "other to high"},
+    ]
+    payload = {
+        "nodes": [{"uuid": f"u{i}", "name": f"N{i}"} for i in range(4)],
+        "edges": edges,
+        "scores": [0.9, 0.9, 0.1, 0.1],  # u2/u3 degree-rescued -> kept, low tier
+    }
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2", "u3"]
+    assert "low to high" in rendered and "other to high" in rendered
+    assert "low to low" not in rendered and "LL" not in rendered  # low-low link left for drill-down
+    _assert_valid_mermaid(rendered)
+
+
+def test_only_low_low_edges_drops_the_relationships_section() -> None:
+    # (D2) when every visible edge is suppressed, the ### Relationships header is dropped, yet
+    # the result is still a valid, non-empty map (never the not-found text).
+    edges = [
+        {"name": "LL1", "source_node_uuid": "u2", "target_node_uuid": "u3", "fact": "buried one"},
+        {"name": "LL2", "source_node_uuid": "u3", "target_node_uuid": "u2", "fact": "buried two"},
+    ]
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "N0", "summary": "s0"},
+            {"uuid": "u1", "name": "N1", "summary": "s1"},
+            {"uuid": "u2", "name": "N2"},
+            {"uuid": "u3", "name": "N3"},
+        ],
+        "edges": edges,
+        "scores": [0.9, 0.8, 0.1, 0.1],  # u2/u3 rescued (low tier); their only links are low-low
+    }
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2", "u3"]
+    assert "### Relationships" not in rendered
+    assert "buried one" not in rendered and "buried two" not in rendered
+    assert rendered != "No relevant memories found."
+    _assert_valid_mermaid(rendered)
+
+
+def test_unscored_recall_renders_every_node_full() -> None:
+    # (D1) no numeric score means no density signal, so every kept node renders full -
+    # identical to pre-E8-S3 output (no compact lines).
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "N0", "summary": "s0"},
+            {"uuid": "u1", "name": "N1", "summary": "s1"},
+        ],
+        "edges": [{"name": "R", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": "f"}],
+    }
+    rendered = format_as_map(payload)
+
+    assert _kept_uuids(rendered) == ["u0", "u1"]
+    assert "s0" in rendered and "s1" in rendered  # both full
+    assert "drill down for details" not in rendered  # nothing compact
+    assert "### Relationships" in rendered and "f" in rendered
+    _assert_valid_mermaid(rendered)
+
+
+def test_top_node_always_full_and_result_never_empty() -> None:
+    # (D4/floor) the top-scored node is always high tier, so a real recall never renders as
+    # all-compact and never collapses to the not-found text.
+    for payload in (_scored([0.001]), _scored([0.9, 0.8, 0.1, 0.05]), _scored([3, 1])):
+        rendered = format_as_map(payload)
+        assert rendered.startswith("## Memory Map")
+        assert rendered != "No relevant memories found."
+        entities = _entity_block(rendered)
+        assert entities
+        assert "drill down for details" not in entities[0]  # the top entity renders full
+
+
+def test_every_kept_node_exposes_a_drilldown_uuid() -> None:
+    # (AC) both tiers keep the back-ticked uuid handle, so every rendered entity stays
+    # resolvable via memory_detail regardless of density.
+    payload = {
+        "nodes": [
+            {"uuid": "aaaa", "name": "N0", "summary": "s0"},
+            {"uuid": "bbbb", "name": "N1", "summary": "s1"},
+            {"uuid": "cccc", "name": "N2", "summary": "s2"},
+        ],
+        "edges": [],
+        "scores": [0.9, 0.85, 0.8],  # #54 keeps aaaa/bbbb; kept-median 0.875 -> aaaa high, bbbb low
+    }
+    rendered = format_as_map(payload)
+
+    entities = _entity_block(rendered)
+    for line in entities:
+        assert re.search(r"`[0-9a-z]+`", line), f"entity line lacks a drill-down handle: {line!r}"
+    assert any("drill down for details" in line for line in entities)  # a low node is present
+    assert any("_(score" in line for line in entities)  # a high node is present
+
+
+def test_tiered_output_is_deterministic() -> None:
+    # (D4) tiering is a pure function of the scores: a mixed-tier payload renders identically.
+    payload = {
+        "nodes": [
+            {"uuid": "u0", "name": "N0", "summary": "s0"},
+            {"uuid": "u1", "name": "N1", "summary": "s1"},
+            {"uuid": "u2", "name": "N2", "summary": "s2"},
+        ],
+        "edges": [{"name": "R", "source_node_uuid": "u0", "target_node_uuid": "u2", "fact": "f02"}],
+        "scores": [0.9, 0.8, 0.7],
+    }
+    first = format_as_map(payload)
+    assert first == format_as_map(payload)
+    # sanity: this fixture actually spans both tiers.
+    assert "drill down for details" in first and "_(score" in first
+
+
 # --------------------------------------------------------------------------- detail
 
 
