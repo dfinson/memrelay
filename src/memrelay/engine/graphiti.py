@@ -25,6 +25,7 @@ from graphiti_core.cross_encoder.client import CrossEncoderClient
 from graphiti_core.graphiti import Graphiti
 from graphiti_core.nodes import EntityNode, EpisodeType
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
+from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 
 from memrelay.config import Config, ensure_home, load_config
 
@@ -40,6 +41,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EPISODE_NAME_MAX = 60
+
+#: The ``source_description`` an episode carries when it has neither repo nor agent
+#: provenance (see :meth:`MemoryEngine.note`). Excluded from repo matching so a
+#: ``forget --repo`` never treats an un-tagged note as belonging to a repo.
+_NOTE_SENTINEL = "memrelay-note"
 
 
 class PassthroughCrossEncoder(CrossEncoderClient):
@@ -303,6 +309,98 @@ class MemoryEngine:
         result = close()
         if inspect.isawaitable(result):
             await result
+
+    async def forget(
+        self,
+        *,
+        repo: str | None = None,
+        namespace: str | None = None,
+        dry_run: bool = False,
+    ) -> int:
+        """Delete memories for a repo or a whole namespace (E9-S1 / #58).
+
+        Exactly one of ``repo`` / ``namespace`` must be given. Returns the number of
+        **episodes** deleted (or that *would* be deleted when ``dry_run`` is set) — the
+        user-facing unit of memory; derived entities/edges are not counted. This method
+        is purely additive: it never mutates ``note`` / ``search`` / ``detail`` data
+        beyond the delete it is asked to perform.
+
+        ``namespace`` deletes the entire namespace graph (every node/edge whose
+        ``group_id`` equals the namespace). ``repo`` deletes only the episodic nodes
+        tagged with that repo (in any namespace); entities shared with surviving
+        episodes are preserved. **The delete is irreversible.**
+        """
+        if bool(repo) == bool(namespace):
+            raise ValueError("exactly one of repo or namespace must be provided")
+        if namespace:
+            return await self._forget_namespace(namespace, dry_run=dry_run)
+        assert repo is not None  # narrowed by the guard above
+        return await self._forget_repo(repo, dry_run=dry_run)
+
+    async def _forget_namespace(self, namespace: str, *, dry_run: bool) -> int:
+        """Drop the whole namespace graph via graphiti-core's ``clear_data``.
+
+        ``namespace`` is matched as an exact ``group_id`` (the opaque partition key
+        ``note`` / ``search`` already use verbatim) — no case folding. Returns the count
+        of episodes that live (or lived) in the namespace.
+        """
+        records, _, _ = await self._driver.execute_query(
+            "MATCH (e:Episodic) WHERE e.group_id = $group_id RETURN count(e) AS episode_count",
+            group_id=namespace,
+            routing_="r",
+        )
+        count = int(records[0]["episode_count"]) if records else 0
+        if not dry_run:
+            # DETACH DELETEs Entity/Episodic/Community/RelatesToNode_ where group_id
+            # matches, plus every incident edge; nothing outside the group is touched.
+            await clear_data(self._driver, group_ids=[namespace])
+        return count
+
+    async def _forget_repo(self, repo: str, *, dry_run: bool) -> int:
+        """Delete the episodic nodes tagged with ``repo`` via ``remove_episode``.
+
+        The repo lives inside each episode's ``source_description`` (verbatim, possibly
+        mixed-case), so matching is case-insensitive (``strip().lower()`` on both sides,
+        mirroring :func:`memrelay.config._normalize_repo`). ``remove_episode`` cascades
+        to edges/entities created solely by a removed episode while preserving entities
+        that other episodes still mention. Returns the number of matched episodes.
+        """
+        target = repo.strip().lower()
+        records, _, _ = await self._driver.execute_query(
+            "MATCH (e:Episodic) RETURN e.uuid AS uuid, e.source_description AS source_description",
+            routing_="r",
+        )
+        uuids: list[str] = []
+        for record in records:
+            parsed = _episode_repo(record.get("source_description"))
+            if parsed is not None and parsed.strip().lower() == target:
+                uuids.append(record["uuid"])
+        if not dry_run:
+            for uuid in uuids:
+                await self._graphiti.remove_episode(uuid)
+        return len(uuids)
+
+
+def _episode_repo(source_description: str | None) -> str | None:
+    """Recover the repo an episode was tagged with, or ``None``.
+
+    Inverse of :meth:`MemoryEngine.note`'s ``source_description`` encoding, which is one
+    of: ``repo=<repo> agent=<agent>``, ``agent=<agent>``, a bare ``<repo>``, or the
+    ``memrelay-note`` sentinel. The two provenance-less forms (agent-only, sentinel)
+    yield ``None`` so they never match a ``forget --repo``.
+    """
+    text = (source_description or "").strip()
+    if not text:
+        return None
+    if "=" in text:
+        for token in text.split(" "):
+            key, sep, value = token.partition("=")
+            if sep and key == "repo":
+                return value.strip() or None
+        return None
+    if text == _NOTE_SENTINEL:
+        return None
+    return text
 
 
 def _zip_scores(items: list[Any], scores: list[float] | None) -> list[tuple[Any, float | None]]:

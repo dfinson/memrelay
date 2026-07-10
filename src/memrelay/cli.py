@@ -471,11 +471,66 @@ def guidance_cmd(target: str, explicit_path: str | None, dry_run: bool, yes: boo
 @main.command()
 @click.option("--repo", metavar="OWNER/NAME", help="Delete all episodes from a specific repo.")
 @click.option("--namespace", metavar="NAME", help="Delete an entire namespace graph.")
-def forget(repo: str | None, namespace: str | None) -> None:
-    """Delete memories for a repo or namespace."""
+@click.option("--yes", "-y", is_flag=True, help="Skip the confirmation prompt (non-interactive).")
+@click.option(
+    "--dry-run", is_flag=True, help="Report what would be deleted and exit; delete nothing."
+)
+def forget(repo: str | None, namespace: str | None, yes: bool, dry_run: bool) -> None:
+    """Delete memories for a repo or namespace.
+
+    ``--repo OWNER/NAME`` deletes the episodes tagged with that repo (entities shared with
+    other memories are preserved); ``--namespace NAME`` deletes the entire namespace graph.
+    The delete is **irreversible** — you are asked to confirm first unless ``--yes`` is given.
+    Use ``--dry-run`` to see how many episodes would be removed without deleting anything.
+    """
     if not repo and not namespace:
         raise click.UsageError("provide --repo OWNER/NAME or --namespace NAME")
-    _todo("forget", "the retrieval/lifecycle epic")
+    if repo and namespace:
+        raise click.UsageError("provide only one of --repo or --namespace")
+
+    import asyncio
+
+    from memrelay.engine.graphiti import MemoryEngine
+
+    cfg = load_config()
+    target = f"repo {repo!r}" if repo else f"namespace {namespace!r}"
+
+    async def _run() -> tuple[int, bool]:
+        """Return ``(count, aborted)`` — count is deleted (or would-be-deleted) episodes."""
+        try:
+            engine = await MemoryEngine.from_config(cfg)
+        except Exception as exc:  # noqa: BLE001 - any open failure becomes a clean CLI error
+            raise click.ClickException(
+                f"could not open the memory graph: {exc}. "
+                "If the daemon is running, stop it first with `memrelay stop`."
+            ) from exc
+        try:
+            count = await engine.forget(repo=repo, namespace=namespace, dry_run=True)
+            if dry_run or count == 0:
+                return count, False
+            if not yes:
+                click.echo(f"This will permanently delete {count} episode(s) for {target}.")
+                click.echo("This action is IRREVERSIBLE.")
+                if not click.confirm("Proceed?"):
+                    return count, True
+            deleted = await engine.forget(repo=repo, namespace=namespace)
+            return deleted, False
+        finally:
+            await engine.close()
+
+    count, aborted = asyncio.run(_run())
+
+    if aborted:
+        click.echo("aborted: nothing deleted.")
+    elif dry_run:
+        if count == 0:
+            click.echo(f"dry run: no memories found for {target}.")
+        else:
+            click.echo(f"dry run: would delete {count} episode(s) for {target}; nothing deleted.")
+    elif count == 0:
+        click.echo(f"no memories found for {target}; nothing deleted.")
+    else:
+        click.echo(f"deleted {count} episode(s) for {target}.")
 
 
 @main.command()
