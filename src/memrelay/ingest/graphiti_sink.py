@@ -642,18 +642,6 @@ class GraphitiSink(StorageSink):
     async def close(self) -> None:
         await self.flush()
 
-    @property
-    def has_pending(self) -> bool:
-        """True while an unflushed work-unit is buffered (i.e. no durable checkpoint yet).
-
-        The live tail (#11) consults this after each pushed line: when it is ``False`` the
-        buffer is empty — every event consumed so far has been composed and durably
-        ``spool.append``-ed at a boundary — so the tail's durable line-cursor may safely
-        advance to that line. While it is ``True`` an episode is still open (not yet in the
-        spool), so the cursor must hold.
-        """
-        return bool(self._buffer_pieces)
-
 
 def resolve_session_cwd(events_path: str | Path) -> str | None:
     """Read a session's working directory from its first ``session.start`` record.
@@ -887,59 +875,6 @@ async def _push_line(
         await pipeline.push(event)
 
 
-class OffsetStoreLike(Protocol):
-    """Duck type for :class:`OffsetStore` (or a test fake): read/advance a line-cursor."""
-
-    def read(self, session_id: str) -> int:  # pragma: no cover - protocol
-        ...
-
-    def write(self, session_id: str, line_no: int) -> None:  # pragma: no cover - protocol
-        ...
-
-
-class OffsetStore:
-    """Durable per-session line-cursor for the live tail (#11) — a re-read-efficiency layer.
-
-    Records, per session, the number of source **lines** whose episodes are already durably
-    in the spool, so a restarted tail skips re-pushing them. It is deliberately **not** a
-    correctness mechanism: losslessness is owned by ``start_at="beginning"`` + the spool's
-    idempotency dedupe (and the periodic replay backstop). :func:`run_tail` advances the
-    cursor to a line **only after** that line's episode is durably ``spool.append``-ed, so a
-    crash between the spool write and the cursor advance re-reads + re-ingests (deduped, safe)
-    and never skips an un-ingested line.
-
-    The cursor is a plain **line count** — never an inode or byte offset — so resume is
-    insulated from Windows' ``st_ino==0`` file identity (traceforge's rotation fallback) and
-    needs no traceforge coupling; ``events.jsonl`` is append-only, so a line count is stable
-    across restarts. The default is a tiny atomic file-per-session under ``<home>/offsets``;
-    tests inject a fake.
-    """
-
-    def __init__(self, directory: str | Path) -> None:
-        self._dir = Path(directory)
-
-    def _path(self, session_id: str) -> Path:
-        safe = session_id.replace("/", "_").replace("\\", "_")
-        return self._dir / f"{safe}.offset"
-
-    def read(self, session_id: str) -> int:
-        try:
-            text = self._path(session_id).read_text(encoding="utf-8")
-        except OSError:
-            return 0
-        try:
-            return max(0, int(text.strip()))
-        except ValueError:
-            return 0
-
-    def write(self, session_id: str, line_no: int) -> None:
-        self._dir.mkdir(parents=True, exist_ok=True)
-        path = self._path(session_id)
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(str(line_no), encoding="utf-8")
-        tmp.replace(path)  # atomic on the same filesystem
-
-
 #: Sentinel returned by :func:`_next_record` when the tail should stop (stop set or source
 #: exhausted). Both cases break the read loop identically, so one sentinel suffices.
 _TAIL_DONE = object()
@@ -994,7 +929,6 @@ async def run_tail(
     spool: SpoolLike,
     stop: asyncio.Event | None = None,
     tail_source: Any | None = None,
-    offset_store: OffsetStoreLike | None = None,
     source: str | None = None,
     namespace_map: Mapping[str, str] | None = None,
     config: Config | None = None,
@@ -1016,12 +950,13 @@ async def run_tail(
 
     **Best-effort, not independently lossless.** Correctness is owned by the periodic
     ``run_observe`` replay backstop + the spool's unique ``idempotency_key``; this tail only
-    cuts latency. The optional ``offset_store`` is a *re-read-efficiency* layer: its durable
-    per-session line-cursor advances to a line **only after** that line's episode is durably
-    ``spool.append``-ed (detected via ``sink.has_pending``), never before — so a crash between
-    the spool write and the cursor advance re-reads + re-ingests (deduped, safe) and never
-    skips an un-ingested line (at-least-once + spool dedupe = exactly-once). When no
-    ``offset_store`` is given the tail simply re-reads from the top on restart (still deduped).
+    cuts latency. ``start_at="beginning"`` guarantees every work-unit is buffered from offset
+    0 and therefore composes *whole* — byte-identical to replay — so tail episodes dedupe
+    cleanly against the spool with no truncated/novel-key segments. It carries **no durable
+    offset**: on a restart the tail simply re-reads from the top (0→EOF) once, and the spool's
+    idempotency dedupe makes those re-reads harmless no-ops. Keeping the tail cursor-free is
+    deliberate — the replay backstop + spool own losslessness, so the tail adds zero new
+    correctness state or failure surface.
 
     **Thread boundary (the crux).** ``FileWatchSource`` runs a watchdog *observer thread*,
     but that thread's only cross-thread act is ``loop.call_soon_threadsafe(changed.set)``;
@@ -1054,8 +989,6 @@ async def run_tail(
         src = provider.make_filewatch_source(
             session_id, path=str(events_path), start_at="beginning"
         )
-    skip = offset_store.read(session_id) if offset_store is not None else 0
-    line_no = 0
     try:
         async with src as entered:
             iterator = entered.__aiter__()
@@ -1064,15 +997,7 @@ async def run_tail(
                     rec = await _next_record(iterator, stop)
                     if rec is _TAIL_DONE:
                         break
-                    line_no += 1
-                    if line_no <= skip:
-                        # Already durably ingested on a prior run — re-read-skip (efficiency).
-                        continue
                     await _push_line(pipeline, adapter, session_id, rec.payload, result)
-                    # Advance the durable cursor ONLY at a spool-durable checkpoint (buffer
-                    # empty ⇒ this line's episode is composed + appended), never before.
-                    if offset_store is not None and not sink.has_pending:
-                        offset_store.write(session_id, line_no)
             except (OSError, UnicodeDecodeError) as exc:
                 # P2 parity with run_observe: a mid-read source failure ends the pass cleanly.
                 result.source_errors += 1

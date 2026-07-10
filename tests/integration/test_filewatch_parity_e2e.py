@@ -76,6 +76,32 @@ def _replay_keys(fixture: Path) -> set[str]:
     return {record["idempotency_key"] for record in spool.records}
 
 
+def _first_workunit_boundary(lines: list[str], scratch: Path, whole_keys: set[str]) -> int:
+    """Smallest prefix length that ends exactly at a COMPLETE work-unit boundary.
+
+    "Complete" = the prefix's replay episodes are all WHOLE work-units — their keys are a
+    non-empty subset of the full-file replay keys — NOT a truncated partial-WU segment that the
+    trailing flush emits under a *novel* key. (Empirically the fixture's trailing flush over a
+    mid-work-unit prefix yields exactly such a novel partial key, distinct from the complete-WU
+    key: precisely the truncation hazard ``start_at="beginning"`` avoids.) This boundary is where
+    the live tail flushes the work-unit DURING iteration (the open-work-unit buffer empties), so a
+    ``start_at="beginning"`` tail over this prefix composes that WU whole, == replay.
+
+    Computed from the fixture (not hard-coded) so the guard stays correct if the fixture changes.
+    """
+    probe_dir = scratch / "_probe"
+    probe_dir.mkdir(exist_ok=True)
+    probe = probe_dir / "events.jsonl"
+    for count in range(1, len(lines) + 1):
+        _write_lines(probe, lines[:count])
+        spool = RecordingSpool()
+        asyncio.run(run_observe(probe, SID, spool=spool))
+        keys = {record["idempotency_key"] for record in spool.records}
+        if keys and keys <= whole_keys:
+            return count
+    raise AssertionError("no complete work-unit boundary found in fixture")
+
+
 # ── AC4 parity through a real FileWatchSource ───────────────────────────────────────────────
 def test_filewatch_tail_parity_e2e(copilot_fixture: Path, tmp_path: Path) -> None:
     """AC4: the tail over a REAL FileWatchSource composes the SAME episodes as the replay."""
@@ -153,3 +179,49 @@ def test_filewatch_real_thread_bridge_runs_on_loop(copilot_fixture: Path, tmp_pa
     assert spool.append_threads == {threading.get_ident()}
     # …and the bridge delivered the real, correct episode set (parity through the bridge).
     assert {record["idempotency_key"] for record in spool.records} == ref_keys
+
+
+# ── B2 mid-session guard (Amendment 1): start_at="beginning" composes whole pre-existing WUs ─
+def test_filewatch_beginning_composes_preexisting_whole_workunit(
+    copilot_fixture: Path, tmp_path: Path
+) -> None:
+    """A tail that starts AFTER the file already holds a complete work-unit composes it WHOLE.
+
+    The founder-gated guard for ``start_at``: with ``start_at="beginning"`` the tail buffers the
+    pre-existing work-unit from offset 0 and composes it whole → the SAME ``idempotency_key`` as
+    replay, no truncated/novel-key segment. A ``start_at="end"`` tail would begin at EOF, read
+    nothing from the static prefix, and miss the WU entirely (zero keys) — so the equality below
+    would fail. This is the test that "would have caught start_at=end".
+    """
+    lines = _fixture_lines(copilot_fixture)
+
+    # The full-file replay keys are all WHOLE work-units; the guard's boundary must land on one
+    # of them (never a truncated partial-WU key).
+    whole_keys = _replay_keys(copilot_fixture)
+    assert len(whole_keys) == 3
+
+    # The earliest prefix that already contains exactly one COMPLETE work-unit (computed, not
+    # hard-coded) — i.e. the tail is "started AFTER the fixture already contains >=1 complete WU".
+    boundary = _first_workunit_boundary(lines, tmp_path, whole_keys)
+    prefix = lines[:boundary]
+
+    events = tmp_path / "events.jsonl"
+    _write_lines(events, prefix)
+    ref_wu_keys = _replay_keys(events)  # replay over the identical pre-existing prefix
+    assert ref_wu_keys and ref_wu_keys <= whole_keys  # a whole WU, not a truncated partial
+    assert len(ref_wu_keys) == 1  # exactly one complete work-unit is present
+
+    spool = RecordingSpool()
+
+    async def scenario() -> None:
+        stop = asyncio.Event()
+        src = FileWatchSource(str(events), "copilot", start_at="beginning")
+        task = asyncio.create_task(run_tail(events, SID, spool=spool, tail_source=src, stop=stop))
+        # The pre-existing complete WU drains 0→EOF on the loop; wait for its single episode.
+        await _pump_until(lambda: len(spool.records) >= 1)
+        stop.set()
+        await task
+
+    asyncio.run(scenario())
+    # WHOLE-work-unit segment id, identical to replay — never a truncated subset key.
+    assert {record["idempotency_key"] for record in spool.records} == ref_wu_keys
