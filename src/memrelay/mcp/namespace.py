@@ -60,15 +60,31 @@ def _parse_owner_name(url: str) -> str | None:
     return f"{segments[-2]}/{segments[-1]}"
 
 
+def _normalize_repo(repo: str) -> str:
+    """Canonicalize an ``owner/name`` id for map lookup: trim + lowercase.
+
+    Mirrors :func:`memrelay.config._normalize_repo` (a documented hard contract):
+    #41 stores its ``[namespaces.*]`` ``repo_map`` keys lowercased+stripped because
+    GitHub slugs are case-insensitive, whereas :func:`current_repo` returns the remote
+    URL's ``owner/name`` verbatim (often mixed-case). Normalizing the lookup key here
+    keeps a config entry (``dfinson/memrelay``) from silently missing a mixed-case
+    remote (``Dfinson/MemRelay``). Kept inline so this module stays dependency-free.
+    """
+    return repo.strip().lower()
+
+
 def resolve_namespace(repo: str | None, namespace_map: Mapping[str, str] | None = None) -> str:
     """Resolve a memory namespace from a repo id (SPEC §5.2).
 
-    1. explicit ``namespace_map`` override, else
+    1. explicit ``namespace_map`` override — ``repo`` is matched case-insensitively by
+       normalizing it to the lowercase ``owner/name`` key form #41 stores, else
     2. the GitHub owner (``owner`` from ``owner/name``), else
     3. the OS username (local-only / no remote).
     """
-    if repo and namespace_map and repo in namespace_map:
-        return namespace_map[repo]
+    if repo and namespace_map:
+        mapped = namespace_map.get(_normalize_repo(repo))
+        if mapped is not None:
+            return mapped
     if repo and "/" in repo:
         return repo.split("/", 1)[0]
     return getpass.getuser()
