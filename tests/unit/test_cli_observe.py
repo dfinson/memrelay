@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from click.testing import CliRunner
 
 from memrelay import cli
+from memrelay.config import Config, Namespace, NamespacesConfig
 from memrelay.ingest.graphiti_sink import ObserveResult
 
 
@@ -30,7 +31,9 @@ def test_observe_invokes_run_observe(monkeypatch, tmp_path: Path) -> None:
         captured["select_arg"] = session_id
         return ref
 
-    async def fake_run_observe(events_path, session_id, *, spool, provider, config):
+    async def fake_run_observe(
+        events_path, session_id, *, spool, provider, config, namespace_map=None
+    ):
         captured["events_path"] = events_path
         captured["session_id"] = session_id
         captured["spool"] = spool
@@ -65,7 +68,9 @@ def test_observe_uses_explicit_spool_path(monkeypatch, tmp_path: Path) -> None:
     ref = SimpleNamespace(session_id="s", path=str(tmp_path / "events.jsonl"))
     opened: dict = {}
 
-    async def fake_run_observe(events_path, session_id, *, spool, provider, config):
+    async def fake_run_observe(
+        events_path, session_id, *, spool, provider, config, namespace_map=None
+    ):
         return ObserveResult(session_id=session_id, namespace="ns", repo=None)
 
     monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: ref)
@@ -118,7 +123,9 @@ def test_observe_resolves_provider_via_registry(monkeypatch, tmp_path: Path) -> 
         captured["select_provider"] = provider
         return SimpleNamespace(session_id="s", path=str(tmp_path / "events.jsonl"))
 
-    async def fake_run_observe(events_path, session_id, *, spool, provider, config):
+    async def fake_run_observe(
+        events_path, session_id, *, spool, provider, config, namespace_map=None
+    ):
         captured["run_provider"] = provider
         return ObserveResult(session_id=session_id, namespace="ns", repo=None)
 
@@ -133,3 +140,35 @@ def test_observe_resolves_provider_via_registry(monkeypatch, tmp_path: Path) -> 
     assert result.exit_code == 0, result.output
     assert captured["select_provider"] is sentinel
     assert captured["run_provider"] is sentinel
+
+
+def test_observe_passes_config_repo_map_as_namespace_map(monkeypatch, tmp_path: Path) -> None:
+    """The observe command threads ``cfg.namespaces.repo_map`` into ``run_observe`` (#39).
+
+    This is the "wire it live" proof: before #39 the merged ``[namespaces.*]`` map was
+    built but never consumed. Here a config with one declared namespace must surface as
+    the ``namespace_map`` kwarg so the resolver can override the default owner derivation.
+    """
+    captured: dict = {}
+    ref = SimpleNamespace(session_id="s", path=str(tmp_path / "events.jsonl"))
+    cfg = Config(namespaces=NamespacesConfig((Namespace("acme", ("acme/api",)),)))
+
+    async def fake_run_observe(
+        events_path, session_id, *, spool, provider, config, namespace_map=None
+    ):
+        captured["namespace_map"] = namespace_map
+        captured["config"] = config
+        return ObserveResult(session_id=session_id, namespace="acme", repo="acme/api")
+
+    monkeypatch.setattr(cli, "load_config", lambda: cfg)
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: object())
+    monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: ref)
+    monkeypatch.setattr(cli, "_open_spool", lambda db_path: _FakeSpool())
+    monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
+    monkeypatch.setattr("memrelay.ingest.graphiti_sink.run_observe", fake_run_observe)
+
+    result = CliRunner().invoke(cli.main, ["observe"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["config"] is cfg
+    assert captured["namespace_map"] == {"acme/api": "acme"}

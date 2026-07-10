@@ -158,7 +158,7 @@ repos = ["acme/api", "acme/web", "acme/shared"]
 repos = ["me/dotfiles"]
 ```
 
-This declares a repo→namespace map that memrelay's namespace resolution consults ahead of its defaults. Rules (all enforced when the config loads, with a message naming the offending namespace or repo):
+This declares a repo→namespace map that memrelay consults when grouping an observed session into a namespace, ahead of its default derivation (GitHub owner, then OS username). Rules (all enforced when the config loads, with a message naming the offending namespace or repo):
 
 - **Repo keys are `"owner/name"`, matched case-insensitively.** They're normalized to lowercase, so `Acme/API` and `acme/api` are the same repo.
 - **A repo may belong to at most one namespace** — assigning the same repo to two namespaces is an error.

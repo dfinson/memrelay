@@ -387,7 +387,14 @@ def observe(session_id: str | None, spool_path: str | None, copilot_home: str | 
     spool = _open_spool(db_path)
 
     result = asyncio.run(
-        run_observe(ref.path, ref.session_id, spool=spool, provider=provider, config=cfg)
+        run_observe(
+            ref.path,
+            ref.session_id,
+            spool=spool,
+            provider=provider,
+            config=cfg,
+            namespace_map=cfg.namespaces.repo_map,
+        )
     )
 
     click.echo(f"observed session {result.session_id}")
