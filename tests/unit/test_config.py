@@ -171,3 +171,52 @@ def test_ingest_flags_via_file_and_env_precedence(tmp_path: Path) -> None:
     cfg2 = load_config(path=cfg_file, environ={"MEMRELAY_INGEST__ENABLE_PHASE": "false"})
     assert cfg2.ingest.enable_phase is False  # env beats file
     assert cfg2.ingest.enable_boundary is True  # untouched file value survives
+
+
+def test_spool_budget_defaults_disabled() -> None:
+    """Zero-config: the disk budget is off (byte-identical to pre-#33 append-only)."""
+    cfg = load_config(environ={})
+    assert cfg.ingest.spool_max_bytes == 0
+    assert cfg.ingest.spool_compaction_pct == 0.9
+
+
+def test_spool_budget_via_kwargs() -> None:
+    """Explicit overrides set the budget and high-water fraction (E3-S4 #33)."""
+    cfg = load_config(
+        environ={}, ingest={"spool_max_bytes": 5_000_000, "spool_compaction_pct": 0.75}
+    )
+    assert cfg.ingest.spool_max_bytes == 5_000_000
+    assert cfg.ingest.spool_compaction_pct == 0.75
+
+
+def test_spool_budget_via_env_coerce() -> None:
+    """``MEMRELAY_INGEST__SPOOL_MAX_BYTES`` coerces to int and ``…_PCT`` to float."""
+    cfg = load_config(
+        environ={
+            "MEMRELAY_INGEST__SPOOL_MAX_BYTES": "1048576",
+            "MEMRELAY_INGEST__SPOOL_COMPACTION_PCT": "0.8",
+        }
+    )
+    assert cfg.ingest.spool_max_bytes == 1048576
+    assert isinstance(cfg.ingest.spool_max_bytes, int)
+    assert cfg.ingest.spool_compaction_pct == 0.8
+
+
+def test_spool_budget_via_file_and_env_precedence(tmp_path: Path) -> None:
+    """An ``[ingest]`` TOML budget loads; env still beats file."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        """
+        [ingest]
+        spool_max_bytes = 2000000
+        spool_compaction_pct = 0.6
+        """,
+        encoding="utf-8",
+    )
+    cfg = load_config(path=cfg_file, environ={})
+    assert cfg.ingest.spool_max_bytes == 2000000
+    assert cfg.ingest.spool_compaction_pct == 0.6
+
+    cfg2 = load_config(path=cfg_file, environ={"MEMRELAY_INGEST__SPOOL_MAX_BYTES": "999"})
+    assert cfg2.ingest.spool_max_bytes == 999  # env beats file
+    assert cfg2.ingest.spool_compaction_pct == 0.6  # untouched file value survives

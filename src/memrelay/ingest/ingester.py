@@ -27,13 +27,20 @@ Rate management (E3-S5 #32) shapes *when* and *how hard* the loop drains:
   ``engine.note`` keeps failing past ``max_retries`` is finally dropped too. Both are
   logged loudly, counted, and checkpointed so one bad episode can never stall ingest for
   every episode behind it.
+* **Backpressure & disk budget (E3-S4 #33).** Before ingesting, the loop checks the
+  spool against a configurable byte budget; while it is over the high-water mark it
+  summarizes the **oldest unprocessed** episodes *in place* (via an injectable, offline
+  ``summarizer`` and the spool's atomic ``replace``) so the spool cannot grow the disk
+  without bound while the engine is behind. Disabled by default (``max_bytes=0``), so the
+  zero-config path is unchanged.
 * **Metrics.** :meth:`metrics` exposes in-process counters (attempts, failures, retries,
-  poison drops, backoff seconds, flushes) for observability; :meth:`stats` keeps its
-  frozen two-key shape for the daemon health report.
+  poison drops, backoff seconds, flushes, compactions) for observability; :meth:`stats`
+  keeps its frozen two-key shape for the daemon health report.
 
 The engine and spool are injected and only duck-typed (``await engine.note(...)``,
-``spool.read_batch/checkpoint/pending``), and the backoff wait is injectable, so the
-loop unit-tests against fakes with no Kuzu, no network, and no real sleeping.
+``spool.read_batch/checkpoint/pending/pending_bytes/replace``), and the backoff wait and
+summarizer are injectable, so the loop unit-tests against fakes with no Kuzu, no network,
+and no real sleeping.
 """
 
 from __future__ import annotations
@@ -50,6 +57,7 @@ from memrelay.ingest.backoff import (
     DEFAULT_MAX_DELAY,
     next_delay,
 )
+from memrelay.ingest.summarizer import Summarizer, default_summarizer
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,13 @@ DEFAULT_MAX_RETRIES: int | None = 5
 #: One poll (≈ ``idle_sleep``) keeps drain latency sub-second while still coalescing a
 #: burst of arrivals into a single flush.
 DEFAULT_IDLE_FLUSH_CYCLES = 1
+
+#: Max compaction passes per poll when over the disk budget (E3-S4 #33). Each pass folds
+#: the oldest ``batch_size`` unprocessed rows into summaries; the cap bounds how long a
+#: single poll can spend compacting so the drain loop stays responsive, and it backstops
+#: any pathological "made no progress" case (the loop also bails the moment used-bytes
+#: stops falling). Several passes let one poll claw a badly-over-budget spool back down.
+DEFAULT_MAX_COMPACTION_PASSES = 64
 
 
 def _content_with_phase(content: str, phase: str | None) -> str:
@@ -101,6 +116,10 @@ class _Spool(Protocol):
 
     def pending(self) -> int: ...
 
+    def pending_bytes(self) -> int: ...
+
+    def replace(self, delete_seqs: list[int], insert_records: list[dict[str, Any]]) -> None: ...
+
 
 #: An injectable interruptible wait: sleep ``delay`` seconds unless ``stop`` fires first.
 BackoffWait = Callable[[float, asyncio.Event], Awaitable[None]]
@@ -130,6 +149,11 @@ class IngestMetrics:
     batches_drained: int = 0
     #: Cumulative seconds of backoff wait scheduled (before interruption).
     backoff_sleep_seconds: float = 0.0
+    #: Over-budget compaction passes run (E3-S4 #33): each folds the oldest unprocessed
+    #: batch into summaries in place to keep the spool under its disk budget.
+    compactions: int = 0
+    #: Original episodes folded away by compaction (the rows the summaries replaced).
+    episodes_compacted: int = 0
 
 
 class Ingester:
@@ -150,6 +174,13 @@ class Ingester:
         rng: jitter source for backoff (injectable for deterministic tests).
         backoff_wait: injectable interruptible wait; defaults to an ``asyncio.wait_for``
             on ``stop`` so a real deployment sleeps but tests need not.
+        max_bytes: spool disk budget in bytes (E3-S4 #33). ``0`` (default) disables
+            compaction, so the zero-config path is byte-identical to pre-#33.
+        compaction_pct: high-water fraction of ``max_bytes`` at which the oldest
+            unprocessed episodes are summarized in place before ingest.
+        summarizer: injectable seam folding the oldest episodes into fewer/smaller ones;
+            the default (:func:`~memrelay.ingest.summarizer.default_summarizer`) is pure
+            and offline so tests never touch a real LLM.
     """
 
     def __init__(
@@ -165,6 +196,9 @@ class Ingester:
         backoff_cap: float = DEFAULT_MAX_DELAY,
         rng: Callable[[], float] = random.random,
         backoff_wait: BackoffWait | None = None,
+        max_bytes: int = 0,
+        compaction_pct: float = 0.9,
+        summarizer: Summarizer = default_summarizer,
     ) -> None:
         self._engine = engine
         self._spool = spool
@@ -176,6 +210,9 @@ class Ingester:
         self._backoff_cap = backoff_cap
         self._rng = rng
         self._injected_backoff_wait = backoff_wait
+        self._max_bytes = max_bytes
+        self._compaction_pct = compaction_pct
+        self._summarizer = summarizer
         self._metrics = IngestMetrics()
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -188,6 +225,13 @@ class Ingester:
         last_pending = 0
         idle_polls = 0
         while not stop.is_set():
+            # Disk watchdog first, so the oldest unprocessed episodes are summarized in
+            # place *before* ingest whenever the spool is over its budget (E3-S4 #33).
+            if self._maybe_compact(stop):
+                # Compaction lowered pending() without a checkpoint, which would fool the
+                # active-session detector below (it infers "new arrivals" from a rising
+                # pending). Re-baseline so a compaction is never misread as a new burst.
+                last_pending = self._spool.pending()
             pending = self._spool.pending()
             if pending == 0:
                 # Nothing buffered: reset the idle window and wait for the next arrival.
@@ -232,6 +276,51 @@ class Ingester:
                 await self._ingest_one(seq, record, stop)
                 if stop.is_set():
                     return
+
+    def _maybe_compact(self, stop: asyncio.Event) -> bool:
+        """Summarize the oldest unprocessed episodes while over the disk budget (#33).
+
+        Returns ``True`` if it compacted at least once. Disabled (an immediate no-op)
+        when ``max_bytes <= 0``, which is the default — so the whole feature is dormant
+        and behaviour is byte-identical unless a budget is configured.
+
+        While the spool's :meth:`~memrelay.ingest.spool.Spool.pending_bytes` is at or
+        above ``compaction_pct`` of the budget, it repeatedly takes the oldest
+        ``batch_size`` unprocessed rows, folds them through the injected ``summarizer``
+        into fewer, size-bounded records, and swaps them in via one atomic
+        :meth:`~memrelay.ingest.spool.Spool.replace`. It stops as soon as the backlog is
+        back under budget, when there is nothing left worth compressing (``< 2`` rows),
+        when a pass fails to reclaim any bytes (no-progress guard), or after
+        :data:`DEFAULT_MAX_COMPACTION_PASSES` — so it can never spin. It never writes the
+        cursor and only ever touches rows past it, so the spool's no-loss / no-dup /
+        monotonic-cursor guarantees hold across a crash mid-compaction.
+        """
+        if self._max_bytes <= 0:
+            return False
+        threshold = self._compaction_pct * self._max_bytes
+        compacted = False
+        for _ in range(DEFAULT_MAX_COMPACTION_PASSES):
+            if stop.is_set():
+                break
+            used = self._spool.pending_bytes()
+            if used < threshold:
+                break
+            batch = self._spool.read_batch(self._batch_size)
+            if len(batch) < 2:
+                # 0 or 1 pending rows cannot be compressed into anything smaller.
+                break
+            seqs = [seq for seq, _ in batch]
+            records = [record for _, record in batch]
+            summaries = self._summarizer(records)
+            self._spool.replace(seqs, summaries)
+            self._metrics.compactions += 1
+            self._metrics.episodes_compacted += len(records)
+            compacted = True
+            if self._spool.pending_bytes() >= used:
+                # A pass that reclaimed nothing (e.g. a budget below one summary's size):
+                # bail rather than loop uselessly toward the pass cap.
+                break
+        return compacted
 
     async def _ingest_one(self, seq: int, record: dict[str, Any], stop: asyncio.Event) -> None:
         """Note one record with backoff; checkpoint only once it is truly handled.
