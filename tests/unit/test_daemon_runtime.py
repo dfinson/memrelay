@@ -15,7 +15,11 @@ from pathlib import Path
 from memrelay.config import load_config
 from memrelay.daemon import transport
 from memrelay.daemon.protocol import StubBackend
-from memrelay.daemon.runtime import DaemonRuntime, default_ingester_factory
+from memrelay.daemon.runtime import (
+    DaemonRuntime,
+    default_ingester_factory,
+    default_poller_factory,
+)
 from memrelay.daemon.transport import Endpoint, resolve_endpoint
 
 
@@ -235,3 +239,109 @@ def test_default_ingester_factory_threads_disk_budget(tmp_path: Path) -> None:
     )
     assert default is not None
     assert default._max_bytes == 0  # dormant: zero-config daemon path unchanged
+
+
+class _FakePoller:
+    """A hosted session poller: reports live counters, idles until stop, tracks aclose."""
+
+    def __init__(self, *, sessions_observed: int = 3, active_sessions: int = 2) -> None:
+        self._sessions_observed = sessions_observed
+        self._active_sessions = active_sessions
+        self.ran = asyncio.Event()
+        self.closed = False
+
+    async def run(self, stop: asyncio.Event) -> None:
+        self.ran.set()
+        await stop.wait()
+
+    def stats(self) -> dict:
+        return {
+            "sessions_observed": self._sessions_observed,
+            "active_sessions": self._active_sessions,
+        }
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_default_runtime_hosts_no_poller(tmp_path: Path) -> None:
+    """Session discovery is opt-in: the default runtime hosts no poller and reports zeros.
+
+    This is the safety default the in-process/test tier relies on — without it a plain
+    ``DaemonRuntime`` would scan a real agent home."""
+    endpoint = resolve_endpoint(tmp_path)
+
+    async def scenario() -> tuple:
+        runtime = DaemonRuntime(
+            _config(tmp_path),
+            endpoint,
+            backend=StubBackend(),
+            ingester_factory=lambda engine, cfg: None,
+        )
+        await runtime.start()
+        serve_task = asyncio.create_task(runtime.serve())
+        try:
+            health = await _roundtrip(endpoint, {"method": "health"})
+            poller = runtime.poller
+        finally:
+            runtime.request_shutdown()
+            await asyncio.wait_for(serve_task, timeout=5.0)
+        return poller, health
+
+    poller, health = asyncio.run(scenario())
+    assert poller is None  # no factory supplied → discovery is off
+    assert health["sessions_observed"] == 0
+    assert health["active_sessions"] == 0
+
+
+def test_hosted_poller_surfaces_session_counters_and_is_closed(tmp_path: Path) -> None:
+    """An injected poller is handed the resolved backend, feeds health, and is closed on stop."""
+    endpoint = resolve_endpoint(tmp_path)
+
+    async def scenario() -> tuple:
+        backend = _RecordingBackend()
+        created: dict = {}
+
+        def poller_factory(engine, cfg):
+            assert engine is backend  # the poller shares the daemon's resolved backend
+            poller = _FakePoller(sessions_observed=3, active_sessions=2)
+            created["poller"] = poller
+            return poller
+
+        runtime = DaemonRuntime(
+            _config(tmp_path),
+            endpoint,
+            backend=backend,
+            ingester_factory=lambda engine, cfg: None,
+            poller_factory=poller_factory,
+        )
+        await runtime.start()
+        serve_task = asyncio.create_task(runtime.serve())
+        try:
+            await asyncio.wait_for(created["poller"].ran.wait(), timeout=5.0)
+            health = await _roundtrip(endpoint, {"method": "health"})
+        finally:
+            runtime.request_shutdown()
+            await asyncio.wait_for(serve_task, timeout=5.0)
+        return created["poller"], health
+
+    poller, health = asyncio.run(scenario())
+    # The poller's live counters surface through the health-augmenting wrapper.
+    assert health["sessions_observed"] == 3
+    assert health["active_sessions"] == 2
+    # Shutdown tore the poller down cleanly.
+    assert poller.closed is True
+
+
+def test_default_poller_factory_wires_real_poller(tmp_path: Path) -> None:
+    """The default factory builds the real poller over the shared spool, without polling.
+
+    Merely *building* the poller opens the canonical ``<home>/spool/spool.db`` (same file
+    the ingester drains) and returns the frozen ``run``/``stats``/``aclose`` contract; no
+    session is discovered until ``run`` is driven, so this stays hermetic."""
+    cfg = _config(tmp_path)
+    poller = default_poller_factory(object(), cfg)
+    assert poller is not None
+    assert callable(poller.run) and callable(poller.stats) and callable(poller.aclose)
+    assert poller.stats() == {"sessions_observed": 0, "active_sessions": 0}
+    assert (cfg.home_path / "spool" / "spool.db").exists()
