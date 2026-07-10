@@ -171,6 +171,40 @@ class CopilotProvider(AgentProvider):
             raise ValueError("make_source requires a session_id or an explicit path")
         return CopilotSource(events_path)
 
+    def make_filewatch_source(
+        self,
+        session_id: str | None = None,
+        *,
+        path: str | Path | None = None,
+        start_at: str = "beginning",
+    ) -> Any:
+        """Return a live traceforge ``FileWatchSource`` tailing a session's ``events.jsonl``.
+
+        The daemon's real-time intake (#11): a long-lived, watchdog-backed source that,
+        with the default ``start_at="beginning"``, drains the file 0→EOF once and then
+        tails appended lines as OS filesystem events arrive — one continuous
+        replay-then-tail source. Scope it by ``session_id`` (resolved under
+        ``~/.copilot/session-state/<id>/events.jsonl``) or an explicit ``path``, exactly
+        like :meth:`make_source`. Each yielded ``RawRecord.payload`` is a raw JSONL line,
+        ready for :meth:`make_adapter`'s ``parse``.
+
+        This is the **best-effort latency** intake: it is paired with the periodic
+        :func:`~memrelay.ingest.graphiti_sink.run_observe` replay backstop and the
+        idempotent spool, so the tail itself needs no crash-durable offset —
+        losslessness is owned by replay + spool dedupe, not the tail. traceforge's
+        ``FileWatchSource`` is watchdog-backed but crosses back to the asyncio loop with
+        ``loop.call_soon_threadsafe`` only; all reads/records happen on the loop thread.
+        """
+        if path is not None:
+            events_path = Path(path)
+        elif session_id is not None:
+            events_path = self.session_state_root / session_id / EVENTS_FILENAME
+        else:
+            raise ValueError("make_filewatch_source requires a session_id or an explicit path")
+        from traceforge.sources import FileWatchSource
+
+        return FileWatchSource(str(events_path), self.id, start_at=start_at)
+
     # ── fallback (SQLite + markdown) path ────────────────────────────────────
 
     def make_fallback_source(

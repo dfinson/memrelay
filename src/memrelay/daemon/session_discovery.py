@@ -199,6 +199,104 @@ class RunObserveCapture:
             pass
 
 
+class LiveTailCapture:
+    """Per-session capture (#11) = #8's replay backstop **plus** a long-lived FileWatch tail.
+
+    Composes an *unchanged* :class:`RunObserveCapture` (the lossless backstop: periodic
+    whole-file :func:`~memrelay.ingest.graphiti_sink.run_observe` replay) with a best-effort,
+    real-time tail (:func:`~memrelay.ingest.graphiti_sink.run_tail`, ``start_at="beginning"``,
+    streamed until stopped). Both feed the **same** idempotent spool, deduped on
+    ``idempotency_key`` — so the tail is a pure latency optimization and needs no independent
+    losslessness or crash-durable offset: correctness is owned by the replay + spool dedupe,
+    latency by the tail.
+
+    Lifecycle mirrors :class:`RunObserveCapture` exactly (the poller drives both identically):
+    ``start`` launches the replay loop then the tail task; ``stop`` signals the tail's normal
+    (un-cancelled) select-based drain and awaits it — its ``finally`` runs the source
+    ``__aexit__`` (watchdog observer stop + join, file close) so nothing leaks — then runs the
+    replay's authoritative final drain. On LRU eviction / ``aclose`` the poller calls
+    :meth:`stop`, tearing down both.
+    """
+
+    def __init__(
+        self,
+        ref: SessionRef,
+        *,
+        spool: Any,
+        provider: Any,
+        config: Config,
+        namespace_map: Any = None,
+        interval: float = DEFAULT_POLL_INTERVAL,
+        wait: PollWait | None = None,
+        tail_source_factory: Callable[[SessionRef], Any] | None = None,
+        offset_store: Any = None,
+        replay_capture: RunObserveCapture | None = None,
+    ) -> None:
+        self._ref = ref
+        self._spool = spool
+        self._provider = provider
+        self._config = config
+        self._namespace_map = namespace_map
+        self._tail_source_factory = tail_source_factory
+        self._offset_store = offset_store
+        #: The retained #8 backstop — injected for tests, else built with the same wiring.
+        self._replay = replay_capture or RunObserveCapture(
+            ref,
+            spool=spool,
+            provider=provider,
+            config=config,
+            namespace_map=namespace_map,
+            interval=interval,
+            wait=wait,
+        )
+        self._stop = asyncio.Event()
+        self._tail_task: asyncio.Task[None] | None = None
+
+    def start(self) -> None:
+        """Launch the replay backstop then the live tail (idempotent)."""
+        self._replay.start()
+        if self._tail_task is None:
+            self._tail_task = asyncio.create_task(self._run_tail())
+
+    async def _run_tail(self) -> None:
+        from memrelay.ingest.graphiti_sink import run_tail
+
+        tail_source = (
+            self._tail_source_factory(self._ref) if self._tail_source_factory is not None else None
+        )
+        try:
+            await run_tail(
+                self._ref.path,
+                self._ref.session_id,
+                spool=self._spool,
+                provider=self._provider,
+                config=self._config,
+                namespace_map=self._namespace_map,
+                stop=self._stop,
+                tail_source=tail_source,
+                offset_store=self._offset_store,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a tail must never crash the poller/daemon
+            logger.warning("session %s: live tail failed", self._ref.session_id, exc_info=True)
+
+    async def stop(self) -> None:
+        """Stop the tail (clean drain), then the replay backstop; leaves no task/handle."""
+        # (1) Signal the tail's select-based stop and await its normal-context drain. A cancel
+        #     fallback covers a wedged task, but the select means stop.set() alone suffices.
+        self._stop.set()
+        task, self._tail_task = self._tail_task, None
+        if task is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        # (2) The replay backstop's authoritative final drain (#8, unchanged): captures the
+        #     trailing work-unit + session.ended summary, lossless regardless of the tail.
+        await self._replay.stop()
+
+
 class SessionDiscoveryPoller:
     """Detect active sessions on a cadence and keep one capture running per session.
 
