@@ -131,6 +131,70 @@ class Spool:
             ).fetchone()
         return int(count)
 
+    def pending_bytes(self) -> int:
+        """Return the on-disk byte footprint of *unprocessed* episodes (E3-S4 #33).
+
+        The companion to :meth:`pending` (which counts them): this sums the stored byte
+        length of every row past the durable cursor (``seq > cursor``). That is exactly
+        the **backpressure backlog** — the data that grows when the ingester falls behind
+        and that "summarize-in-place" compaction can actually reclaim (compaction is
+        forbidden from touching already-ingested history below the cursor). Measuring the
+        controllable quantity, rather than the whole file, is what lets the ingester's
+        budget loop converge: each compaction pass strictly shrinks this number.
+
+        Already-checkpointed rows are excluded by design; their retention is the spool's
+        append-only crash-safety invariant, a separate concern from this budget.
+        """
+        with self._lock:
+            (total,) = self._conn.execute(
+                "SELECT COALESCE(SUM("
+                " LENGTH(CAST(record AS BLOB))"
+                " + LENGTH(CAST(idempotency_key AS BLOB))), 0)"
+                " FROM episodes WHERE seq > (SELECT seq FROM cursor WHERE id = ?)",
+                (_CURSOR_ID,),
+            ).fetchone()
+        return int(total)
+
+    def replace(self, delete_seqs: list[int], insert_records: list[dict[str, Any]]) -> None:
+        """Atomically drop ``delete_seqs`` and append ``insert_records`` (E3-S4 #33).
+
+        The single crash-safe primitive behind "summarize-in-place": the ingester reads
+        the oldest *unprocessed* rows, folds them into fewer/smaller summary records, and
+        calls this to swap them in. Both halves run in **one transaction** — SQLite's
+        implicit transaction spans the ``DELETE``\\ s and ``INSERT``\\ s and is finalized by
+        a single :meth:`commit`, with a :meth:`rollback` on any error — so a crash (or a
+        failing insert) leaves the spool in exactly one of two consistent states:
+
+        * **before commit** → the originals are intact and simply re-drain; **after
+          commit** → the summaries are present and the originals are gone.
+
+        Crash-safety of the durable cursor is preserved because this never writes the
+        cursor and only ever deletes rows **strictly past it** (a ``seq > cursor`` guard
+        on every delete, so already-checkpointed history can never be removed even by a
+        buggy caller). New summary rows are appended (fresh, monotonic ``seq``), keeping
+        the append-only ordering contract; their deterministic ``idempotency_key`` makes
+        a re-attempted compaction safe.
+        """
+        if not delete_seqs and not insert_records:
+            return
+        with self._lock:
+            try:
+                for seq in delete_seqs:
+                    self._conn.execute(
+                        "DELETE FROM episodes WHERE seq = ?"
+                        " AND seq > (SELECT seq FROM cursor WHERE id = ?)",
+                        (int(seq), _CURSOR_ID),
+                    )
+                for record in insert_records:
+                    self._conn.execute(
+                        "INSERT INTO episodes (idempotency_key, record) VALUES (?, ?)",
+                        (record["idempotency_key"], to_row(record)),
+                    )
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+
     def close(self) -> None:
         """Release the SQLite connection (and its WAL lock)."""
         with self._lock:

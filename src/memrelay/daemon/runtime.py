@@ -71,7 +71,12 @@ def default_ingester_factory(engine: Any, config: Config) -> SupportsIngest | No
     spool_dir = config.home_path / "spool"
     spool_dir.mkdir(parents=True, exist_ok=True)
     spool = Spool(spool_dir / "spool.db")
-    return Ingester(engine, spool)
+    return Ingester(
+        engine,
+        spool,
+        max_bytes=config.ingest.spool_max_bytes,
+        compaction_pct=config.ingest.spool_compaction_pct,
+    )
 
 
 @dataclass

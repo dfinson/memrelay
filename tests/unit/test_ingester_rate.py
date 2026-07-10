@@ -312,6 +312,8 @@ def test_stats_shape_is_frozen_and_metrics_are_separate(tmp_path: Path) -> None:
         "poison_skipped",
         "batches_drained",
         "backoff_sleep_seconds",
+        "compactions",
+        "episodes_compacted",
     }
     assert metrics["episodes_ingested"] == 1
     spool.close()

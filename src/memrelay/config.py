@@ -124,6 +124,14 @@ class IngestConfig:
     enable_phase: bool = False
     enable_boundary: bool = False
 
+    # E3-S4 #33 — spool disk-budget backpressure. ``spool_max_bytes`` is the budget in
+    # bytes; ``0`` disables compaction entirely, so the zero-config default is
+    # byte-identical to the pre-#33 append-only behaviour. When the spool's live size
+    # reaches ``spool_compaction_pct`` of the budget, the ingester summarizes the oldest
+    # unprocessed episodes in place (see memrelay.ingest.summarizer) to bound disk.
+    spool_max_bytes: int = 0
+    spool_compaction_pct: float = 0.9
+
 
 @dataclass(frozen=True)
 class Namespace:
