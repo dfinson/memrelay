@@ -49,7 +49,13 @@ def _content_with_phase(content: str, phase: str | None) -> str:
 
 
 class _Engine(Protocol):
-    async def note(self, content: str, namespace: str, repo: str | None = None) -> str: ...
+    async def note(
+        self,
+        content: str,
+        namespace: str,
+        repo: str | None = None,
+        source: str | None = None,
+    ) -> str: ...
 
 
 class _Spool(Protocol):
@@ -106,7 +112,12 @@ class Ingester:
         """Note one record, then checkpoint it — even if noting failed (skip poison)."""
         try:
             content = _content_with_phase(record["content"], record.get("phase"))
-            await self._engine.note(content, record["namespace"], record.get("repo"))
+            await self._engine.note(
+                content,
+                record["namespace"],
+                record.get("repo"),
+                source=record.get("source"),
+            )
             self._episodes_ingested += 1
         except Exception:
             logger.exception(

@@ -113,3 +113,15 @@ def test_idempotency_key_is_phase_independent() -> None:
     off = EpisodeRecord.new("c", "ns", session_id="s", event_id="e")
     on = EpisodeRecord.new("c", "ns", session_id="s", event_id="e", phase="implementation")
     assert on.idempotency_key == off.idempotency_key == make_idempotency_key("s", "e", "c")
+
+
+def test_idempotency_key_is_source_independent() -> None:
+    # E5-S3 #40: agent provenance (``source``) must NEVER enter the key. The key is
+    # derived from (session_id, event_id, content) only, so a record's key is
+    # byte-identical whether or not a real agent id is stamped — provenance is a sidecar.
+    without = EpisodeRecord.new("c", "ns", session_id="s", event_id="e")
+    with_agent = EpisodeRecord.new("c", "ns", session_id="s", event_id="e", source="claude")
+    other_agent = EpisodeRecord.new("c", "ns", session_id="s", event_id="e", source="copilot")
+    expected = make_idempotency_key("s", "e", "c")
+    assert with_agent.idempotency_key == without.idempotency_key == expected
+    assert other_agent.idempotency_key == expected, "different agent must not change the key"

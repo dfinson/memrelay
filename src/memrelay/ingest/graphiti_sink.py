@@ -688,7 +688,7 @@ async def run_observe(
     session_id: str,
     *,
     spool: SpoolLike,
-    source: str = DEFAULT_SOURCE,
+    source: str | None = None,
     namespace_map: Mapping[str, str] | None = None,
     config: Config | None = None,
     cwd: str | None = None,
@@ -720,6 +720,11 @@ async def run_observe(
 
     cfg = config if config is not None else load_config()
     provider = provider if provider is not None else get_registry().create(DEFAULT_PROVIDER_ID)
+    # E5-S3 #40: stamp the REAL agent id (provider.id) as provenance, not a hardcoded
+    # constant. An explicit ``source=`` still wins (tests inject it); default None resolves
+    # to the resolved provider's id so copilot→"copilot" (== the old DEFAULT_SOURCE, so
+    # existing observe behaviour is unchanged) and claude→"claude".
+    resolved_source = source if source is not None else getattr(provider, "id", DEFAULT_SOURCE)
 
     resolved_cwd = cwd if cwd is not None else resolve_session_cwd(events_path)
     namespace, repo = resolve_context(resolved_cwd, namespace_map)
@@ -731,7 +736,7 @@ async def run_observe(
         spool,
         namespace=namespace,
         repo=repo,
-        source=source,
+        source=resolved_source,
         allow_kinds=allow_kinds,
         deny_kinds=deny_kinds,
         idempotency_fn=idempotency_fn,
