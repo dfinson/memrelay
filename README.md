@@ -256,11 +256,17 @@ assembled epic by epic, and the package is unpublished (v0.0.1). What works toda
   ([#71](https://github.com/dfinson/memrelay/issues/71), byo-key LLM). memrelay serves its
   MCP server to the JSON-registry agents (Copilot, Claude, Cline, Amazon Q, OpenCode) and
   ingests the rest. See [SPEC.md](SPEC.md) for the coverage matrix.
+- **Framework runtimes (E12-S6, opt-in)** — six agent *frameworks* — CrewAI, LangGraph,
+  MAF (Microsoft Agent Framework), OpenAI Agents, Pydantic AI, and smolagents — ingest over
+  a live `http_poll` / `sse` endpoint ([#72](https://github.com/dfinson/memrelay/issues/72)),
+  rather than by scanning an on-disk store like the CLI agents. They are **opt-in**: a
+  framework is picked up only when its `MEMRELAY_<FRAMEWORK>_ENDPOINT` environment variable
+  is set, so it is never auto-detected and never changes `memrelay init` / `status` on a box
+  that hasn't opted in. Ingest-only, byo-key LLM.
 
 Still early: the `local` LLM strategy ([#64](https://github.com/dfinson/memrelay/issues/64))
-and the framework-runtime providers (CrewAI, LangGraph, OpenAI Agents, …) are planned. See
-[SPEC.md](SPEC.md) for the full plan and [docs/e0-spike.md](docs/e0-spike.md) for the
-original Copilot ingestion spike.
+is planned. See [SPEC.md](SPEC.md) for the full plan and
+[docs/e0-spike.md](docs/e0-spike.md) for the original Copilot ingestion spike.
 
 ## License
 

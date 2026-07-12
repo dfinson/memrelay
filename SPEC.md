@@ -175,7 +175,7 @@ class AgentProvider(abc.ABC):                 # an abc.ABC, not a Protocol — c
 
 **Registration & discovery.** A provider joins the registry by decorating its class with `@register` (`memrelay.providers.registry`). `get_registry()` lazily imports every sibling module under `memrelay.providers` via `pkgutil`, so a new `providers/<agent>.py` self-registers with **no edit to any central list**. The registry resolves a provider three ways: by explicit id (`create`), by auto-detection (`detect` / `resolve` — the first agent whose `is_present()` is true, falling back to the default `copilot`), or as the default. Providers are built through the uniform `from_home(home=None)` classmethod.
 
-**Built-in providers.** TraceForge already ships mappings for ~18 agents; memrelay wraps them progressively. **Twelve coding agents ship today.** Copilot CLI is the reference provider (canonical `copilot.yaml` mapping over per-session `events.jsonl`, with the SQLite `turns` → `CopilotPreParser` → `copilot_markdown` fallback; borrow-host LLM); Claude Code ([#70](https://github.com/dfinson/memrelay/issues/70)) proved the seam holds with no core changes; and E12-S5 ([#71](https://github.com/dfinson/memrelay/issues/71)) broadened coverage to the remaining ten coding agents. Each rides entirely on its TraceForge mapping (+ preprocessor) and is exercised by the CI conformance matrix (§12 Step 5). memrelay **serves** its MCP server to agents whose MCP registry is JSON (a non-destructive merge); the rest are **ingest-only** until their TOML/YAML registries can be written without a new dependency. The ten E12-S5 providers advertise the `byo-key` LLM strategy (no host-borrow path exists for them yet).
+**Built-in providers.** TraceForge already ships mappings for ~18 agents; memrelay wraps them progressively. **Twelve coding agents ship today.** Copilot CLI is the reference provider (canonical `copilot.yaml` mapping over per-session `events.jsonl`, with the SQLite `turns` → `CopilotPreParser` → `copilot_markdown` fallback; borrow-host LLM); Claude Code ([#70](https://github.com/dfinson/memrelay/issues/70)) proved the seam holds with no core changes; and E12-S5 ([#71](https://github.com/dfinson/memrelay/issues/71)) broadened coverage to the remaining ten coding agents. Each rides entirely on its TraceForge mapping (+ preprocessor) and is exercised by the CI conformance matrix (§12 Step 5). memrelay **serves** its MCP server to agents whose MCP registry is JSON (a non-destructive merge); the rest are **ingest-only** until their TOML/YAML registries can be written without a new dependency. The ten E12-S5 providers advertise the `byo-key` LLM strategy (no host-borrow path exists for them yet). A further **six agent frameworks** ship as **opt-in live-source** providers (E12-S6, [#72](https://github.com/dfinson/memrelay/issues/72)) — see *Framework providers* below.
 
 | Provider (`id`) | TraceForge mapping | Ingest | Serving |
 | --- | --- | --- | --- |
@@ -192,11 +192,20 @@ class AgentProvider(abc.ABC):                 # an abc.ABC, not a Protocol — c
 | `sweagent` | `sweagent.yaml` | ✅ | ingest-only (no MCP host) |
 | `antigravity` | `antigravity.yaml` | ✅ | ingest-only (no standard MCP) |
 
-Still planned:
+**Framework providers (opt-in, live sources).** Six agent *frameworks* — CrewAI, LangGraph, MAF (Microsoft Agent Framework), OpenAI Agents, Pydantic AI, and smolagents — ship as of E12-S6 ([#72](https://github.com/dfinson/memrelay/issues/72)). Unlike the twelve CLI agents above (which auto-detect by scanning an on-disk session store), these are **framework runtimes** that emit events at *runtime* over an HTTP or SSE endpoint — there is no on-disk trace to scan — so they are wired as **opt-in live sources**. A framework provider is present — and thus eligible for ingest — **only** when its `MEMRELAY_<FRAMEWORK>_ENDPOINT` environment variable points at that endpoint. With no endpoint configured, `is_present()` is false, so the provider is **never auto-detected**, **never wins `resolve()`**, and is **not registered by `memrelay init`** — default `memrelay` behavior on a box that has not opted in is byte-identical to one without these providers at all. They are **ingest-only** (memrelay ingests events *from* the framework's live endpoint; it does not serve MCP *to* it) and advertise the `byo-key` LLM strategy. Each rides entirely on its installed TraceForge mapping (+ preprocessor, or the OTel-span adapter for MAF) and joins the same CI conformance matrix (§12 Step 5) through a recorded replay fixture.
 
-- **Framework runtimes (opt-in, live sources):** CrewAI, LangGraph, Microsoft Agent Framework, OpenAI Agents, Pydantic AI, smolagents — via `http_poll` / `sse`.
+| Provider (`id`) | TraceForge mapping | Live transport | Opt-in env var |
+| --- | --- | --- | --- |
+| `crewai` | `crewai.yaml` | `http_poll` | `MEMRELAY_CREWAI_ENDPOINT` |
+| `langgraph` | `langgraph.yaml` | `sse` | `MEMRELAY_LANGGRAPH_ENDPOINT` |
+| `maf` | `maf.yaml` (OTel spans) | `sse` | `MEMRELAY_MAF_ENDPOINT` |
+| `openai_agents` | `openai_agents.yaml` (+ preprocessor) | `http_poll` | `MEMRELAY_OPENAI_AGENTS_ENDPOINT` |
+| `pydantic_ai` | `pydantic_ai.yaml` (+ preprocessor) | `sse` | `MEMRELAY_PYDANTIC_AI_ENDPOINT` |
+| `smolagents` | `smolagents.yaml` (+ preprocessor) | `http_poll` | `MEMRELAY_SMOLAGENTS_ENDPOINT` |
 
-**Auto-detection.** `memrelay init` / `status` uses the provider registry's `detect()` — each provider's cheap `is_present()` check — to report which agents are present on the machine and wire them automatically. Unknown or opted-out agents are skipped.
+Both live transports are exercised (three `http_poll`, three `sse`). The **same** `make_source` replays a recorded fixture **synchronously** (for hermetic conformance + unit replay) when given a `path=`, and builds the live *async* `HttpPollSource` / `SSESource` only when resolving the configured endpoint.
+
+**Auto-detection.** `memrelay init` / `status` uses the provider registry's `detect()` — each provider's cheap `is_present()` check — to report which agents are present on the machine and wire them automatically. Unknown or opted-out agents are skipped. The six framework providers are opt-in: they stay invisible to `detect()` unless their `MEMRELAY_<FRAMEWORK>_ENDPOINT` is set, so they never alter default detection.
 
 ---
 

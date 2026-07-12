@@ -1,0 +1,5 @@
+{"task": "Find the weather", "timestamp": "2026-01-01T00:00:00Z"}
+{"system_prompt": "You are a helpful agent."}
+{"step_number": 1, "model_output": "I will search", "observations": "none", "timing": {"start_time": "2026-01-01T00:00:01Z"}, "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": "{\"q\": \"weather\"}"}}], "token_usage": {"input_tokens": 5, "output_tokens": 3}}
+{"plan": "1. search 2. answer", "timing": {"start_time": "2026-01-01T00:00:02Z"}}
+{"output": "It is sunny."}

@@ -1,0 +1,4 @@
+{"type": "agent_run_start", "timestamp": "2026-01-01T00:00:00Z", "agent_name": "demo", "model_name": "gpt-4o"}
+{"kind": "request", "timestamp": "2026-01-01T00:00:01Z", "parts": [{"part_kind": "user-prompt", "content": "hello"}]}
+{"event_kind": "function_tool_call", "timestamp": "2026-01-01T00:00:02Z", "tool_name": "search", "tool_call_id": "tc1", "args": {"q": "x"}}
+{"kind": "response", "timestamp": "2026-01-01T00:00:03Z", "model_name": "gpt-4o", "usage": {"input_tokens": 5, "output_tokens": 3}, "parts": [{"part_kind": "text", "content": "hi there"}]}

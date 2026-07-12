@@ -115,3 +115,42 @@ provider's `Source` knows how to read:
   carries a `data.timestamp` for deterministic ordering.
 - These fixtures are **illustrative, not redacted real captures** — they contain no real
   paths, usernames, or secrets, only placeholder ids and generic sample text.
+
+## E12-S6 framework fixtures (`#72`)
+
+Six **minimal synthetic** fixtures — one per agent *framework* added in E12-S6 (CrewAI,
+LangGraph, MAF, OpenAI Agents, Pydantic AI, smolagents) — drive the live-source unit tests
+(`tests/unit/test_providers_e12_live.py`) and the same registry-driven conformance matrix
+(`tests/integration/test_agent_conformance.py`).
+
+These providers differ from the CLI agents above: they are **live-source, opt-in framework
+runtimes** that emit events over an `http_poll` or `sse` endpoint at runtime — there is no
+on-disk session store to scan. For hermetic conformance we therefore record a short
+**replay fixture** of what that live trace carries, and each provider's dual-mode
+`make_source(path=…)` replays the fixture **synchronously** (the live async
+`HttpPollSource` / `SSESource` is built only when a `MEMRELAY_<FRAMEWORK>_ENDPOINT` is
+configured — never in tests). Every line is fed through the framework's real TraceForge
+mapping (+ preprocessor, or the `OtelSpanAdapter` for MAF) and must replay to the exact
+canonical `SessionEvent` kinds below with the `session_id` stamped through:
+
+| Fixture | Source shape (recorded live trace) | Canonical kinds it replays to |
+| --- | --- | --- |
+| `crewai_session.jsonl` | JSONL event-bus records (flat) | `session.started`, `agent.spawned`, `tool.call.started`, `tool.call.completed`, `task.completed`, `session.ended` |
+| `langgraph_session.jsonl` | JSONL `astream_events(v2)` records (flat) | `workflow.started`, `llm.call.started`, `llm.call.completed`, `tool.call.started`, `tool.call.completed`, `workflow.completed` |
+| `maf_session.jsonl` | JSONL OTel span dicts (→ `OtelSpanAdapter`) | `turn.started`, `message.user`, `memory.query.started`, `hook.completed` |
+| `openai_agents_session.jsonl` | JSONL trace/span records (native → preprocessor) | `session.started`, `tool.call.started`, `tool.call.completed`, `llm.call.completed` |
+| `pydantic_ai_session.jsonl` | JSONL streamed part/event records (native → preprocessor) | `session.started`, `message.user`, `tool.call.started`, `llm.call.completed` |
+| `smolagents_session.jsonl` | JSONL memory-step records (field-presence → preprocessor) | `session.started`, `message.system`, `message.assistant`, `tool.call.started`, `planning.started`, `session.ended` |
+
+### Notes
+
+- **Opt-in / ingest-only.** With no `MEMRELAY_<FRAMEWORK>_ENDPOINT` set, each provider's
+  `is_present()` is false, so it is never auto-detected and never wins `resolve()` — default
+  detection is byte-identical to a box without these providers. They are ingest-only (their
+  `register` / MCP serving hooks raise `NotImplementedError`) and advertise `byo-key`.
+- **Preprocessors.** `openai_agents`, `pydantic_ai`, and `smolagents` ship non-flat event
+  shapes, so their TraceForge mapping runs a preprocessor first (e.g. splitting a
+  smolagents `ActionStep` with `tool_calls` into an assistant message + a tool call). `maf`
+  emits OTel spans, normalized by `OtelSpanAdapter` rather than a flat JSON mapping.
+- Like the E12-S5 set, these are **illustrative, not redacted real captures** — placeholder
+  ids and generic sample text only.

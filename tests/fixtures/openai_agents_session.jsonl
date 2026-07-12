@@ -1,0 +1,3 @@
+{"object": "trace", "id": "trace_1", "workflow_name": "demo", "group_id": "g1", "metadata": {}}
+{"object": "trace.span", "id": "span_1", "trace_id": "trace_1", "parent_id": null, "started_at": "2026-01-01T00:00:01Z", "ended_at": "2026-01-01T00:00:02Z", "span_data": {"type": "function", "name": "search", "input": {"q": "x"}, "output": "ok"}}
+{"object": "trace.span", "id": "span_2", "trace_id": "trace_1", "parent_id": null, "started_at": "2026-01-01T00:00:03Z", "ended_at": "2026-01-01T00:00:04Z", "span_data": {"type": "generation", "model": "gpt-4o", "input": [], "output": [], "usage": {"input_tokens": 5, "output_tokens": 3}}}
