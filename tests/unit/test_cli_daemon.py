@@ -9,11 +9,16 @@ real subprocess is launched. Everything is pinned under ``tmp_path`` by
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from memrelay.cli import main
+from memrelay.config import ensure_home, load_config
+from memrelay.daemon import lifecycle
 
 #: Frozen golden of the EXACT file ``memrelay init`` must write for Copilot. Verified
 #: byte-identical to ``main``'s pre-E12 ``DEFAULT_CONFIG_TOML``; the E12 change renders
@@ -168,3 +173,66 @@ def test_double_start_does_not_respawn(cli_env: tuple[Path, Path], fake_daemon_s
     assert "already running" in second.output
     assert fake_daemon_spawn["count"] == 1  # single-instance: no second spawn
     runner.invoke(main, ["stop"])
+
+
+def test_concurrent_starts_spawn_single_daemon(
+    cli_env: tuple[Path, Path], fake_daemon_spawn: dict
+) -> None:
+    """Racing ``start_daemon`` calls must spawn exactly one daemon (rt-serve F1).
+
+    Without the start lock, every thread sees ``probe_health -> None`` and every
+    thread ``spawn_detached`` -> multiple daemons. The advisory lock serializes
+    them: losers block, then re-probe under the lock and find the winner's
+    healthy daemon, so ``fake_daemon_spawn`` records a single spawn.
+    """
+    config = load_config()
+    ensure_home(config)
+
+    workers = 5
+    barrier = threading.Barrier(workers)
+    results: list = []
+    errors: list = []
+
+    def race() -> None:
+        try:
+            barrier.wait(timeout=10.0)
+            results.append(lifecycle.start_daemon(config))
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=race, name=f"start-{i}") for i in range(workers)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20.0)
+
+    assert not any(thread.is_alive() for thread in threads), "a start thread hung"
+    assert errors == [], f"start_daemon raced into errors: {errors}"
+    assert fake_daemon_spawn["count"] == 1  # exactly one spawn despite the race
+    assert len(results) == workers
+    assert all(status.running for status in results)
+
+    lifecycle.stop_daemon(config)
+
+
+def test_start_does_not_spawn_while_start_lock_held(
+    cli_env: tuple[Path, Path], fake_daemon_spawn: dict
+) -> None:
+    """A second start while the start lock is held must not race in a daemon.
+
+    Simulates an in-flight start (the lock held, no daemon healthy yet): a second
+    ``start_daemon`` blocks on the lock and, on timeout, raises rather than
+    spawning a competing daemon. Proves the check->spawn section is gated.
+    """
+    config = load_config()
+    home = ensure_home(config)
+
+    fd = os.open(lifecycle.lock_path(home), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        assert lifecycle._try_exclusive_lock(fd)  # stand in for an in-flight start
+        with pytest.raises(lifecycle.DaemonStartError):
+            lifecycle.start_daemon(config, lock_timeout=0.2, poll_interval=0.02)
+        assert fake_daemon_spawn["count"] == 0  # gate held -> no spawn occurred
+    finally:
+        lifecycle._release_lock(fd)
+        os.close(fd)
