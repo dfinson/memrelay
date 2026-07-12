@@ -24,6 +24,7 @@ import asyncio
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
 from graphiti_core.driver.driver import GraphProvider
 from graphiti_core.edges import EntityEdge
 from graphiti_core.errors import GroupsEdgesNotFoundError
@@ -262,6 +263,52 @@ class _FakeGraphiti:
         self.removed.append(uuid)
 
 
+class _CrashGraphiti:
+    """A **stateful** graphiti stand-in for the crash-mid-remove case, mutating the same ``rows``
+    dict the :class:`_FakeDriver` reads by reference so a *re-run* sees the partially-applied state.
+
+    ``add_episode`` appends the summary the engine wrote — with whatever ``source_description`` the
+    engine chose (the fake computes nothing itself, so it stays honest under a stashed/pre-fix
+    source) — as a real ``Episodic`` row, so a later pass's ``_read_working_set`` sees it.
+    ``remove_episode`` deletes the matching row, but first raises ``RuntimeError`` once
+    ``fail_after`` removals have already succeeded: the summary is present, only *some* victims are
+    gone — exactly the interrupted state that must converge on re-run.
+    """
+
+    def __init__(
+        self,
+        rows_by_ns: dict[str, list[dict[str, Any]]],
+        *,
+        fail_after: int | None = None,
+    ) -> None:
+        self._rows_by_ns = rows_by_ns
+        self.fail_after = fail_after
+        self.added: list[dict[str, Any]] = []
+        self.removed: list[str] = []
+
+    async def add_episode(self, **kwargs: Any) -> None:
+        self.added.append(kwargs)
+        self._rows_by_ns.setdefault(kwargs["group_id"], []).append(
+            {
+                "uuid": f"summary::{kwargs['source_description']}",
+                "valid_at": 10_000,
+                "content": kwargs["episode_body"],
+                "source_description": kwargs["source_description"],
+                "entity_edges": [],
+            }
+        )
+
+    async def remove_episode(self, uuid: str) -> None:
+        if self.fail_after is not None and len(self.removed) >= self.fail_after:
+            raise RuntimeError(f"simulated crash after {self.fail_after} removals")
+        for rows in self._rows_by_ns.values():
+            for i, row in enumerate(rows):
+                if row["uuid"] == uuid:
+                    del rows[i]
+                    break
+        self.removed.append(uuid)
+
+
 class _FakeDriver:
     """A graph driver stand-in that records every Cypher call and serves canned episode rows.
 
@@ -466,8 +513,9 @@ def test_fired_pass_adds_one_summary_then_removes_eligible(monkeypatch) -> None:
 
 
 def test_fired_pass_summary_key_matches_victims(monkeypatch) -> None:
-    # The summary's source_description is deterministically keyed off the victim uuid set, so a
-    # crash-retry (which recomputes the same key) can detect and skip a duplicate.
+    # The summary's source_description is deterministically keyed off the victim uuid set (so a
+    # crash-retry recomputes the same key and skips a duplicate) AND records the victims themselves,
+    # so a crash PARTWAY through removal is resumable (see #F1 crash-resume test below).
     rows = {"ns": [_row(f"u{i}", i, 0) for i in range(1, 9)]}  # E=8, oldest 4 eligible
     driver = _FakeDriver(GraphProvider.KUZU, rows)
     graphiti = _FakeGraphiti()
@@ -477,8 +525,12 @@ def test_fired_pass_summary_key_matches_victims(monkeypatch) -> None:
     asyncio.run(engine.compact("ns"))
 
     victims = graphiti.removed
-    expected_sd = compaction_source_description(summary_key(victims))
-    assert graphiti.added[0]["source_description"] == expected_sd
+    identity = compaction_source_description(summary_key(victims))
+    sd = graphiti.added[0]["source_description"]
+    # The key=<hash> identity is byte-identical to the pre-#F1 SD (so a clean re-run still skips
+    # recreation), EXTENDED purely additively with a deterministic members= token recording the
+    # victim set — which is what makes a crash partway through the removal loop resumable.
+    assert sd == f"{identity} members={','.join(sorted(victims))}"
 
 
 def test_existing_summary_is_not_recreated(monkeypatch) -> None:
@@ -508,6 +560,77 @@ def test_existing_summary_is_not_recreated(monkeypatch) -> None:
     assert result["namespaces"]["ns"]["summaries_added"] == 0
     assert graphiti.added == [], "no duplicate summary for an already-summarized victim set"
     assert graphiti.removed == victims, "the originals are still removed"
+
+
+def test_malformed_members_token_degrades_without_crashing(monkeypatch) -> None:
+    # #F1 defensive parse: a summary whose members= token is empty/malformed (as here) — or a
+    # legacy member-less summary — must degrade to an empty recorded-victim set and behave exactly
+    # as before, NEVER crashing a pass. The junk ``members=,,`` must not raise; the pass still
+    # completes and removes exactly the eligible originals, and the malformed summary is recognized
+    # (excluded from the working set), so it is never itself treated as a victim.
+    rows = {
+        "ns": [_row(f"u{i}", i, 0) for i in range(1, 9)]
+        + [
+            {
+                "uuid": "malformed-summary",
+                "valid_at": 99,
+                "content": "prior summary",
+                "source_description": (
+                    compaction_source_description(summary_key(["u1"])) + " members=,,"
+                ),
+                "entity_edges": [],
+            }
+        ]
+    }
+    driver = _FakeDriver(GraphProvider.KUZU, rows)
+    graphiti = _FakeGraphiti()
+    engine = _engine(driver, graphiti, CompactionConfig(enabled=True, min_episodes=4))
+    _patch_edges(monkeypatch, [])
+
+    result = asyncio.run(engine.compact("ns"))  # must not raise on the malformed members= token
+
+    assert isinstance(result["namespaces"]["ns"]["episodes_before"], int)
+    assert graphiti.removed == ["u1", "u2", "u3", "u4"], "the pass still removes the eligible set"
+    assert "malformed-summary" not in graphiti.removed, "the summary is excluded, never a victim"
+
+
+def test_crash_mid_remove_resumes_without_second_summary(monkeypatch) -> None:
+    # rt-engine #F1: a crash PARTWAY through the removal loop must not break idempotency. The
+    # summary is written FIRST (so the gist survives) and durably records its victim set, so a
+    # re-run FINISHES removing the still-present victims — instead of seeing a smaller working set,
+    # picking a DIFFERENT victim subset, and minting a SECOND, overlapping summary (which would also
+    # double-count the survivors in recall). A re-run must converge to the same end state as an
+    # uninterrupted pass: exactly one summary over the original victim set, all victims removed.
+    rows = {"ns": [_row(f"u{i}", i, 0) for i in range(1, 13)]}  # E=12, oldest 8 eligible
+    driver = _FakeDriver(GraphProvider.KUZU, rows)
+    cfg = CompactionConfig(enabled=True, min_episodes=4)
+    _patch_edges(monkeypatch, [])
+
+    # Pass 1 — add the summary, remove 4 of the 8 victims, then crash mid-loop.
+    crash = _CrashGraphiti(rows, fail_after=4)
+    with pytest.raises(RuntimeError):
+        asyncio.run(_engine(driver, crash, cfg).compact("ns"))
+    assert len(crash.added) == 1, "the summary is written FIRST, before any removal"
+    assert crash.removed == ["u1", "u2", "u3", "u4"], "only the first 4 victims were removed"
+    summary_sd = crash.added[0]["source_description"]
+    present = {r["uuid"] for r in rows["ns"]}
+    assert {"u5", "u6", "u7", "u8"} <= present, "the un-removed victims are still in the graph"
+
+    # Pass 2 — re-run over the partial state (same rows dict, no failure this time).
+    resume_graphiti = _CrashGraphiti(rows)
+    resume = asyncio.run(_engine(driver, resume_graphiti, cfg).compact("ns"))
+
+    # No SECOND summary: the surviving victims are recognized as members of the existing one.
+    assert resume_graphiti.added == [], "no second, overlapping summary on the resume pass"
+    assert resume["namespaces"]["ns"]["summaries_added"] == 0
+    # The interrupted removal is finished off — and only those victims are touched.
+    assert sorted(resume_graphiti.removed) == ["u5", "u6", "u7", "u8"]
+    remaining = {r["uuid"] for r in rows["ns"]}
+    assert remaining.isdisjoint({f"u{i}" for i in range(1, 9)}), "all victims are now removed"
+    # Convergence: exactly one summary survives, still covering the ORIGINAL victim set.
+    summaries = [r for r in rows["ns"] if is_compaction_summary(r["source_description"])]
+    assert len(summaries) == 1, "exactly one summary — no duplicate"
+    assert summaries[0]["source_description"] == summary_sd, "the original summary, unchanged"
 
 
 def test_summaries_are_excluded_from_the_working_set(monkeypatch) -> None:
