@@ -20,6 +20,7 @@ not just the pure resolver), that the zero-config path is byte-identical, and th
 from __future__ import annotations
 
 import asyncio
+import getpass
 from typing import Any
 
 from memrelay.config import Config, _namespaces_from_dict
@@ -123,8 +124,10 @@ def test_zero_config_owner_namespace_is_byte_identical(monkeypatch) -> None:
     """Empty map -> owner namespace on the recall side, identical to the observe side.
 
     Zero-config users have no ``[namespaces.*]`` section (``repo_map == {}``), so recall
-    must derive the git-owner namespace exactly as before #106 — and exactly as the
-    observe path does with an empty (or absent) map.
+    derives the git-owner namespace — and it must be byte-identical to what the observe
+    path derives with an empty (or absent) map. The owner is normalized (strip+lower)
+    since GitHub slugs are case-insensitive, so a mixed-case remote (``Dfinson/…``)
+    resolves to the same lowercase namespace on both sides.
     """
     cfg = Config()  # no [namespaces.*] -> repo_map == {}
     assert cfg.namespaces.repo_map == {}
@@ -135,11 +138,11 @@ def test_zero_config_owner_namespace_is_byte_identical(monkeypatch) -> None:
 
     asyncio.run(mcp.call_tool("memory_recall", {"query": "q"}))
 
-    # Owner half of owner/name, unchanged from the pre-#106 zero-config behavior.
-    assert client.search_calls[0][1] == "Dfinson"
+    # Normalized owner half of owner/name (lowercased; GitHub slugs are case-insensitive).
+    assert client.search_calls[0][1] == "dfinson"
     # Byte-identical to the bare resolver (no map) and to an empty-map observe resolve.
-    assert namespace.resolve_context()[0] == "Dfinson"
-    assert namespace.resolve_context(namespace_map={})[0] == "Dfinson"
+    assert namespace.resolve_context()[0] == "dfinson"
+    assert namespace.resolve_context(namespace_map={})[0] == "dfinson"
 
 
 def test_default_build_without_map_matches_empty_map(monkeypatch) -> None:
@@ -155,7 +158,39 @@ def test_default_build_without_map_matches_empty_map(monkeypatch) -> None:
 
     asyncio.run(mcp.call_tool("memory_recall", {"query": "q"}))
 
-    assert client.search_calls[0][1] == "Dfinson"
+    assert client.search_calls[0][1] == "dfinson"
+
+
+# --- zero-config case-fold: differently-cased spellings share ONE namespace (F1) ----
+
+
+def test_zero_config_case_variants_of_same_repo_share_namespace() -> None:
+    """Two case-different spellings of the SAME GitHub repo share ONE namespace (F1).
+
+    GitHub slugs are case-insensitive, so ``Dfinson/MemRelay`` and ``dfinson/memrelay``
+    are the same repo. With no ``[namespaces.*]`` map (the zero-config default), owner
+    inference must normalize (strip+lower) so both land in the same group_id — otherwise
+    two devs/agents whose remotes differ only in case silently never share memory. The
+    parser still returns ``owner/name`` verbatim; the normalization is in the resolver.
+    """
+    upper = namespace._parse_owner_name("git@github.com:Dfinson/MemRelay.git")
+    lower = namespace._parse_owner_name("https://github.com/dfinson/memrelay")
+    # The parser preserves case verbatim on both spellings...
+    assert upper == "Dfinson/MemRelay"
+    assert lower == "dfinson/memrelay"
+    # ...but the zero-config namespace derivation collapses both onto one namespace.
+    assert namespace.resolve_namespace(upper, {}) == namespace.resolve_namespace(lower, {})
+    assert namespace.resolve_namespace(upper, {}) == "dfinson"
+
+
+def test_zero_config_degenerate_empty_owner_falls_through_to_user() -> None:
+    """A pathological empty-owner repo id falls through to the OS-user namespace.
+
+    Owner inference strip+lowers the owner half; if that leaves it empty (e.g. ``"/x"``),
+    the resolver must not return ``""`` but fall through to the local-only username
+    default (the same branch a no-remote repo takes).
+    """
+    assert namespace.resolve_namespace("/x", {}) == getpass.getuser()
 
 
 # --- an aliased map must not capture repos that are not declared ---------------------

@@ -45,7 +45,12 @@ def current_repo(cwd: str | os.PathLike[str] | None = None) -> str | None:
 def _parse_owner_name(url: str) -> str | None:
     if not url:
         return None
-    cleaned = url[:-4] if url.endswith(".git") else url
+    # Strip a trailing slash BEFORE the ``.git`` suffix: a remote written
+    # ``https://host/owner/name.git/`` does not end with ``.git`` until the slash is
+    # gone, so stripping ``.git`` first would keep it and yield a distinct ``owner/name``
+    # that silently splits the namespace and misses the config map.
+    cleaned = url.rstrip("/")
+    cleaned = cleaned[:-4] if cleaned.endswith(".git") else cleaned
     # SSH scp-like form: git@github.com:owner/name
     if "@" in cleaned and ":" in cleaned and "//" not in cleaned:
         cleaned = cleaned.split(":", 1)[1]
@@ -78,7 +83,8 @@ def resolve_namespace(repo: str | None, namespace_map: Mapping[str, str] | None 
 
     1. explicit ``namespace_map`` override — ``repo`` is matched case-insensitively by
        normalizing it to the lowercase ``owner/name`` key form #41 stores, else
-    2. the GitHub owner (``owner`` from ``owner/name``), else
+    2. the GitHub owner (``owner`` from ``owner/name``), normalized strip+lower like the
+       map key because GitHub slugs are case-insensitive, else
     3. the OS username (local-only / no remote).
     """
     if repo and namespace_map:
@@ -86,7 +92,14 @@ def resolve_namespace(repo: str | None, namespace_map: Mapping[str, str] | None 
         if mapped is not None:
             return mapped
     if repo and "/" in repo:
-        return repo.split("/", 1)[0]
+        # Normalize the inferred owner (strip + lower) exactly as ``_normalize_repo``
+        # does for the map key. Without it, two spellings of one repo (``Dfinson/…`` vs
+        # ``dfinson/…``, which GitHub treats as the same repo) would derive two distinct
+        # namespaces and silently never share memory. Guard the degenerate empty-owner
+        # id (e.g. ``/x``) by falling through to the username default.
+        owner = repo.split("/", 1)[0].strip().lower()
+        if owner:
+            return owner
     return getpass.getuser()
 
 
