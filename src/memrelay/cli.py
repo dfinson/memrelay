@@ -164,8 +164,14 @@ def _prefetch_fts_extension(cfg: Config) -> None:
     ``INSTALL FTS`` fallback, so a prefetch problem (offline, missing build) only prints a
     warning and defers the fetch to first daemon use.
     """
-    backend = (cfg.graph.backend or "ladybug").lower()
-    if backend != "ladybug":
+    # Route the configured id through the registry's single normalization seam so this
+    # preflight and the engine (``resolve_backend``) can never disagree on which id means
+    # Ladybug — a mixed-case/whitespace id like ``"Ladybug"`` or ``" ladybug "`` prefetches
+    # here iff the engine would resolve it to the embedded default (rt-backends).
+    from memrelay.engine.backends.registry import DEFAULT_BACKEND_ID, normalize_backend_id
+
+    backend = normalize_backend_id(cfg.graph.backend)
+    if backend != DEFAULT_BACKEND_ID:
         click.echo(f"FTS extension: none to prefetch (graph backend {backend!r}).")
         return
 

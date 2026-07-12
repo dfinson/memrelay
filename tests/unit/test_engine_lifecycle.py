@@ -184,3 +184,99 @@ def test_build_embedder_openai_routes_to_byo_key_builder(monkeypatch: pytest.Mon
 
     assert result is sentinel  # routed to the byo-key builder...
     assert seen["cfg"] is cfg  # ...and handed the same config
+
+
+# --- MemoryEngine.from_config: driver cleanup on construction failure ----------
+#
+# rt-backends: ``open_driver`` acquires the backend's file-level lock. If a later
+# construction step (embedder / llm / Graphiti wiring) raises, the just-opened driver must be
+# closed *before* the error propagates — otherwise the lock leaks until GC and a subsequent
+# open of the same graph.db can fail on the stale lock. These assert the *correct* behavior
+# (close IS called on failure); they fail against the pre-fix code that never closed it.
+
+
+class _RecordingBackend:
+    """A fake backend whose ``open_driver`` hands back a driver recording its ``close``."""
+
+    id = "fake"
+
+    def __init__(self, driver: object) -> None:
+        self._driver = driver
+
+    async def open_driver(self, cfg: Config) -> object:
+        return self._driver
+
+
+def _fail_after_open(monkeypatch: pytest.MonkeyPatch, driver: object) -> None:
+    """Wire ``from_config`` so ``open_driver`` succeeds but the next step raises.
+
+    ``resolve_backend`` returns a backend yielding *driver*; ``ensure_home`` is neutralized so
+    the test never touches a real home; ``build_embedder`` (the first step after
+    ``open_driver``) raises a recognizable error.
+    """
+    from memrelay.engine import graphiti as engine_mod
+
+    def _boom(cfg: Config) -> object:
+        raise RuntimeError("embedder build failed")
+
+    def _resolve(backend_id: object = None) -> _RecordingBackend:
+        return _RecordingBackend(driver)
+
+    monkeypatch.setattr(engine_mod, "ensure_home", lambda cfg: cfg.home_path)
+    monkeypatch.setattr(engine_mod, "resolve_backend", _resolve)
+    monkeypatch.setattr(engine_mod, "build_embedder", _boom)
+
+
+def test_from_config_closes_driver_when_construction_fails_after_open(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from memrelay.engine.graphiti import MemoryEngine
+
+    closed: list[str] = []
+
+    class _AsyncCloseDriver:
+        async def close(self) -> None:
+            closed.append("closed")
+
+    _fail_after_open(monkeypatch, _AsyncCloseDriver())
+
+    with pytest.raises(RuntimeError, match="embedder build failed"):
+        asyncio.run(MemoryEngine.from_config(Config()))
+
+    assert closed == ["closed"], "the just-opened driver must be closed on construction failure"
+
+
+def test_from_config_closes_sync_close_driver_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The cleanup must tolerate a driver whose ``close`` is synchronous, too.
+    from memrelay.engine.graphiti import MemoryEngine
+
+    closed: list[str] = []
+
+    class _SyncCloseDriver:
+        def close(self) -> None:
+            closed.append("closed")
+
+    _fail_after_open(monkeypatch, _SyncCloseDriver())
+
+    with pytest.raises(RuntimeError, match="embedder build failed"):
+        asyncio.run(MemoryEngine.from_config(Config()))
+
+    assert closed == ["closed"]
+
+
+def test_from_config_close_failure_does_not_mask_construction_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A failure while closing the driver must not shadow the original construction error.
+    from memrelay.engine.graphiti import MemoryEngine
+
+    class _BadCloseDriver:
+        async def close(self) -> None:
+            raise RuntimeError("close blew up")
+
+    _fail_after_open(monkeypatch, _BadCloseDriver())
+
+    with pytest.raises(RuntimeError, match="embedder build failed"):
+        asyncio.run(MemoryEngine.from_config(Config()))
