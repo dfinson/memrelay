@@ -113,6 +113,26 @@ class _EngineParts:
     cfg: Config
 
 
+async def _close_driver_quietly(driver: Any) -> None:
+    """Best-effort close of a just-opened graph driver, swallowing any secondary error.
+
+    Used on the construction-failure path in :meth:`MemoryEngine.from_config`: the driver
+    acquires the backend's file-level lock in ``open_driver``, so a later step raising must
+    still release that lock (rather than leaking it until GC) before the *original* error
+    propagates. Tolerates a driver with no ``close`` and both sync and async ``close``
+    implementations, and never lets a cleanup failure mask the construction error.
+    """
+    close = getattr(driver, "close", None)
+    if close is None:
+        return
+    try:
+        result = close()
+        if inspect.isawaitable(result):
+            await result
+    except Exception:  # noqa: BLE001 - cleanup must not mask the original construction error
+        logger.warning("failed to close graph driver after construction error", exc_info=True)
+
+
 class MemoryEngine:
     """Persistent memory over an embedded graph backend via graphiti-core."""
 
@@ -150,16 +170,24 @@ class MemoryEngine:
 
         backend = resolve_backend(cfg.graph.backend)
         driver = await backend.open_driver(cfg)
-        resolved_embedder = embedder or build_embedder(cfg)
-        resolved_llm = llm_client or select_llm_client(cfg)
-        resolved_reranker = cross_encoder or PassthroughCrossEncoder()
+        # ``open_driver`` acquires the backend's file-level lock (see the Ladybug backend).
+        # If any later construction step raises, close the just-opened driver best-effort so
+        # its lock is released now rather than held until GC — otherwise a subsequent open of
+        # the same graph.db can fail on the stale lock (rt-backends).
+        try:
+            resolved_embedder = embedder or build_embedder(cfg)
+            resolved_llm = llm_client or select_llm_client(cfg)
+            resolved_reranker = cross_encoder or PassthroughCrossEncoder()
 
-        graphiti = Graphiti(
-            graph_driver=driver,
-            llm_client=resolved_llm,
-            embedder=resolved_embedder,
-            cross_encoder=resolved_reranker,
-        )
+            graphiti = Graphiti(
+                graph_driver=driver,
+                llm_client=resolved_llm,
+                embedder=resolved_embedder,
+                cross_encoder=resolved_reranker,
+            )
+        except BaseException:
+            await _close_driver_quietly(driver)
+            raise
         return cls(graphiti=graphiti, driver=driver, cfg=cfg)
 
     async def note(

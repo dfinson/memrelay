@@ -119,3 +119,36 @@ def test_init_fts_prefetch_noop_for_non_ladybug_backend(
     result = CliRunner().invoke(main, ["init"])
     assert result.exit_code == 0, result.output
     assert "none to prefetch" in result.output.lower()
+
+
+def test_init_and_engine_agree_on_mixedcase_backend(
+    cli_env, real_fts_prefetch, monkeypatch
+) -> None:
+    """A whitespace/mixed-case Ladybug id is green-lit by ``init`` AND resolves in the engine.
+
+    rt-backends: pre-fix ``init`` lowercased the id (no strip) while the engine
+    (``resolve_backend``) took it raw, so ``" Ladybug "`` both *skipped* the FTS prefetch here
+    (``.lower()`` left the spaces, so it looked like a non-ladybug backend) **and** raised
+    ``KeyError`` at engine start. Both sides now route through the registry's single
+    normalizer, so they agree: ``init`` prefetches Ladybug's FTS and the engine resolves the
+    very same raw id to the embedded backend. This asserts that agreement across the
+    doctor↔engine boundary — it fails against the old case-sensitive behavior.
+    """
+    from memrelay.engine.backends import resolve_backend
+
+    monkeypatch.setattr(cli, "_prefetch_fts_extension", real_fts_prefetch)
+    raw = " Ladybug "  # mixed case + surrounding whitespace
+    monkeypatch.setenv("MEMRELAY_GRAPH__BACKEND", raw)
+
+    prefetched: list[bool] = []
+    monkeypatch.setattr(fx, "prefetch_fts_extension", lambda: prefetched.append(True))
+
+    result = CliRunner().invoke(main, ["init"])
+    assert result.exit_code == 0, result.output
+    # doctor side: init recognizes the id as Ladybug and warms the FTS cache.
+    assert prefetched == [True], result.output
+    assert "none to prefetch" not in result.output.lower()
+    assert "ready" in result.output.lower()
+    # engine side: the SAME raw id resolves to the embedded backend (KeyError pre-fix).
+    assert type(resolve_backend(raw)).__name__ == "LadybugBackend"
+    assert resolve_backend(raw).id == "ladybug"

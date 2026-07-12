@@ -27,6 +27,11 @@ from memrelay.engine.backends import (
     resolve_backend,
 )
 
+# NB: ``normalize_backend_id`` is imported *locally* inside the tests that need it (not at
+# module top) on purpose — so the mixed-case ``resolve_backend`` counterfactual below can run
+# and fail with the genuine ``KeyError`` against the pre-fix code, instead of the whole module
+# failing to import because the (new) normalizer symbol doesn't exist yet.
+
 
 def test_default_backend_is_ladybug() -> None:
     assert DEFAULT_BACKEND_ID == "ladybug"
@@ -110,3 +115,71 @@ def test_unknown_backend_raises_listing_known_ids() -> None:
     # The error is actionable: it names the ids that *are* known.
     for backend_id in ("ladybug", "neo4j", "falkordb", "neptune"):
         assert backend_id in message
+
+
+# --- backend id normalization: the single seam the engine + CLI share -----------
+#
+# rt-backends: the backend id was treated case-sensitively by the engine
+# (``resolve_backend`` took the raw ``cfg.graph.backend``) while the ``init`` CLI preflight
+# lowercased it — so a config like ``"Ladybug"`` / ``"Neo4j"`` / ``" ladybug "`` could pass
+# the CLI yet raise ``KeyError`` at engine start. Both sides now route through
+# :func:`normalize_backend_id`, so they can never disagree. These tests assert the *correct*
+# behavior (the raw id resolves), not the old crash.
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("ladybug", "ladybug"),
+        ("Ladybug", "ladybug"),
+        ("LADYBUG", "ladybug"),
+        (" ladybug ", "ladybug"),
+        ("\tLadyBug\n", "ladybug"),
+        ("Neo4j", "neo4j"),
+        (" NEO4J ", "neo4j"),
+        ("FalkorDB", "falkordb"),
+        (" Neptune ", "neptune"),
+        # An empty / whitespace-only / missing id means the OOTB default.
+        (None, "ladybug"),
+        ("", "ladybug"),
+        ("   ", "ladybug"),
+        # Unknown ids are still normalized (validity is the registry's call, not this seam's).
+        ("SQLite", "sqlite"),
+    ],
+)
+def test_normalize_backend_id_folds_case_and_whitespace(raw: str | None, expected: str) -> None:
+    from memrelay.engine.backends.registry import normalize_backend_id
+
+    assert normalize_backend_id(raw) == expected
+
+
+def test_normalize_backend_id_default_is_the_registry_default() -> None:
+    from memrelay.engine.backends.registry import normalize_backend_id
+
+    # The empty/None sentinel must fold to the *registry's* declared default, not a literal.
+    assert normalize_backend_id(None) == DEFAULT_BACKEND_ID
+    assert normalize_backend_id("  ") == DEFAULT_BACKEND_ID
+
+
+@pytest.mark.parametrize(
+    ("raw", "canonical", "cls_name"),
+    [
+        ("Ladybug", "ladybug", "LadybugBackend"),
+        (" ladybug ", "ladybug", "LadybugBackend"),
+        ("LADYBUG", "ladybug", "LadybugBackend"),
+        ("Neo4j", "neo4j", "Neo4jBackend"),
+        (" NEO4J ", "neo4j", "Neo4jBackend"),
+        ("FalkorDB", "falkordb", "FalkorBackend"),
+        (" Neptune ", "neptune", "NeptuneBackend"),
+    ],
+)
+def test_resolve_backend_accepts_mixed_case_and_whitespace(
+    raw: str, canonical: str, cls_name: str
+) -> None:
+    # The engine hands ``resolve_backend`` the RAW ``cfg.graph.backend``. A mixed-case /
+    # whitespace id that the CLI preflight green-lights must resolve here too — pre-fix this
+    # raised ``KeyError`` (the case-sensitive lookup), which is the failure this test pins.
+    backend = resolve_backend(raw)
+    assert isinstance(backend, Backend)
+    assert type(backend).__name__ == cls_name
+    assert backend.id == canonical
