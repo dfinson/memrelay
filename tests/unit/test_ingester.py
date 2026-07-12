@@ -20,6 +20,7 @@ class FakeEngine:
     def __init__(self, poison: set[str] | None = None) -> None:
         self.notes: list[tuple[str, str, str | None]] = []
         self.sources: list[str | None] = []
+        self.refactor_calls: list[tuple[str | None, dict[str, int] | None]] = []
         self._poison = poison or set()
 
     async def note(
@@ -28,11 +29,15 @@ class FakeEngine:
         namespace: str,
         repo: str | None = None,
         source: str | None = None,
+        *,
+        last_commit_sha: str | None = None,
+        file_change_lines: dict[str, int] | None = None,
     ) -> str:
         if content in self._poison:
             raise RuntimeError(f"boom: {content}")
         self.notes.append((content, namespace, repo))
         self.sources.append(source)
+        self.refactor_calls.append((last_commit_sha, file_change_lines))
         return f"uuid-{len(self.notes)}"
 
 

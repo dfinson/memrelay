@@ -106,6 +106,9 @@ class _Engine(Protocol):
         namespace: str,
         repo: str | None = None,
         source: str | None = None,
+        *,
+        last_commit_sha: str | None = None,
+        file_change_lines: dict[str, int] | None = None,
     ) -> str: ...
 
 
@@ -169,8 +172,9 @@ class Ingester:
     """Drain a :class:`~memrelay.ingest.spool.Spool` into a memory engine.
 
     Args:
-        engine: object exposing ``async note(content, namespace, repo=None, source=None)``
-            (the merged :class:`~memrelay.engine.graphiti.MemoryEngine`).
+        engine: object exposing ``async note(content, namespace, repo=None, source=None,
+            *, last_commit_sha=None, file_change_lines=None)`` (the merged
+            :class:`~memrelay.engine.graphiti.MemoryEngine`).
         spool: object exposing ``read_batch`` / ``checkpoint`` / ``pending``.
         idle_sleep: seconds to wait (interruptibly) between polls when there is nothing
             to drain, or while accumulating a not-yet-full batch.
@@ -392,11 +396,24 @@ class Ingester:
 
         repo = record.get("repo")
         source = record.get("source")
+        # E9-S3 #60: forward file-refactor provenance so a big-refactor episode invalidates
+        # its file's prior facts. Pure passthrough of two spool-carried provenance fields
+        # (both ``None`` unless ``ingest.refactor_invalidation_lines`` is enabled), kept out
+        # of ``content`` / the idempotency key so the zero-config note path is unchanged.
+        last_commit_sha = record.get("last_commit_sha")
+        file_change_lines = record.get("file_change_lines")
         attempt = 0
         while True:
             self._metrics.notes_attempted += 1
             try:
-                await self._engine.note(content, namespace, repo, source=source)
+                await self._engine.note(
+                    content,
+                    namespace,
+                    repo,
+                    source=source,
+                    last_commit_sha=last_commit_sha,
+                    file_change_lines=file_change_lines,
+                )
             except Exception as exc:
                 self._metrics.notes_failed += 1
                 if self._max_retries is not None and attempt >= self._max_retries:

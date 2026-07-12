@@ -60,6 +60,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import subprocess
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -219,6 +220,8 @@ def _assemble_record(
     idempotency_fn: IdempotencyFn | None,
     record_factory: RecordFactory | None,
     phase: str | None = None,
+    last_commit_sha: str | None = None,
+    file_change_lines: dict[str, int] | None = None,
 ) -> Any:
     """Build one episode record from explicit fields via the injected seams.
 
@@ -230,9 +233,20 @@ def _assemble_record(
     It rides along as a sidecar field and is deliberately **not** an input to the
     idempotency key: the key is still computed from the phase-free ``content``, so a
     record's key is byte-identical whether or not phase enrichment is enabled.
+
+    ``last_commit_sha`` / ``file_change_lines`` (E9-S3 #60) are file-refactor provenance,
+    populated only when ``ingest.refactor_invalidation_lines`` is enabled. They are
+    forwarded to the factory **only when non-None** so that, with the feature off, injected
+    record factories see an unchanged call and every record's dict/key stays byte-identical.
+    Like ``phase``, they are never inputs to the idempotency key.
     """
     make_key = idempotency_fn or _default_idempotency_fn
     factory = record_factory or _default_record_factory
+    extra: dict[str, Any] = {}
+    if last_commit_sha is not None:
+        extra["last_commit_sha"] = last_commit_sha
+    if file_change_lines is not None:
+        extra["file_change_lines"] = file_change_lines
     return factory(
         content=content,
         namespace=namespace,
@@ -243,6 +257,7 @@ def _assemble_record(
         ts=ts_iso,
         idempotency_key=make_key(session_id, event_id, content),
         phase=phase,
+        **extra,
     )
 
 
@@ -424,6 +439,89 @@ def _render_content_piece(event: SessionEvent, kind: str) -> str | None:
     return _extract_content(event) or None
 
 
+#: Injectable ``subprocess.Popen``-alike for the git provenance helpers, mirroring
+#: :func:`memrelay.ingest.git_seed.stream_git_log`'s ``popen`` seam so tests drive a fake
+#: process instead of spawning real git. ``None`` means "use :class:`subprocess.Popen`".
+PopenFactory = Callable[..., Any]
+
+
+def _run_git(cwd: str | Path, args: list[str], *, popen: PopenFactory | None) -> tuple[int, str]:
+    """Run ``git -C <cwd> <args>`` and return ``(returncode, stdout)`` (E9-S3 #60).
+
+    The single impure primitive behind the file-refactor provenance helpers. It reuses
+    git_seed's injectable ``popen`` pattern (defaults to :class:`subprocess.Popen`) so unit
+    tests substitute a fake process. Any failure to even spawn git (binary absent, bad cwd)
+    is reported as a non-zero code with empty output rather than raised — provenance is
+    strictly best-effort and must never crash ingest, so a git failure simply means "no
+    signal" (the feature stays inert for that flush).
+    """
+    factory = popen if popen is not None else subprocess.Popen
+    argv = ["git", "-C", str(cwd), *args]
+    try:
+        proc = factory(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        stdout, _stderr = proc.communicate()
+    except OSError:
+        return (1, "")
+    return_code = proc.returncode if proc.returncode is not None else 0
+    return (return_code, stdout or "")
+
+
+def _git_head_sha(cwd: str | Path, *, popen: PopenFactory | None = None) -> str | None:
+    """Resolve the repo's current ``HEAD`` sha at ``cwd``, or ``None`` (E9-S3 #60).
+
+    ``None`` on any git failure (not a repo, detached/empty history, git absent) so the
+    caller stamps no provenance — the conservative, never-crash default.
+    """
+    return_code, out = _run_git(cwd, ["rev-parse", "HEAD"], popen=popen)
+    if return_code != 0:
+        return None
+    lines = out.splitlines()
+    sha = lines[0].strip() if lines else ""
+    return sha or None
+
+
+def _numstat_int(token: str) -> int:
+    """Parse one ``git --numstat`` count; ``-`` (binary) or garbage → ``0`` (E9-S3 #60)."""
+    token = token.strip()
+    if not token or token == "-":
+        return 0
+    try:
+        return int(token)
+    except ValueError:
+        return 0
+
+
+def _git_changed_lines(cwd: str | Path, path: str, *, popen: PopenFactory | None = None) -> int:
+    """Changed-line magnitude (added + deleted) for ``path`` in ``HEAD``'s commit (E9-S3 #60).
+
+    Uses ``git diff --numstat HEAD~1 HEAD -- <path>`` — the file's churn in the most recent
+    commit, a deterministic, reproducible integer for a given repo state. The pathspec scopes
+    the diff to this one file, so we sum every returned data line's two counts without needing
+    to match git's echoed (repo-relative) path against the caller's path. ``0`` on any git
+    failure (root commit with no parent, unmerged path, etc.), which the engine's threshold
+    gate treats as "not a big refactor" — the conservative default.
+    """
+    args = ["diff", "--numstat", "HEAD~1", "HEAD", "--", path]
+    return_code, out = _run_git(cwd, args, popen=popen)
+    if return_code != 0:
+        return 0
+    total = 0
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        total += _numstat_int(parts[0]) + _numstat_int(parts[1])
+    return total
+
+
 class GraphitiSink(StorageSink):
     """Assemble a ``SessionEvent`` stream into coherent, composed episode records.
 
@@ -446,6 +544,16 @@ class GraphitiSink(StorageSink):
         deny_kinds: kinds whose content is always dropped (applied before ``allow_kinds``).
         idempotency_fn: override for ``make_idempotency_key`` (injected in unit tests).
         record_factory: override for ``EpisodeRecord.new`` (injected in unit tests).
+        cwd: the session's git working directory, used to resolve ``HEAD`` and per-file
+            churn for E9-S3 #60 file-refactor provenance. Only consulted when
+            ``refactor_lines > 0``.
+        refactor_lines: the ``ingest.refactor_invalidation_lines`` threshold knob. ``0``
+            (default) disables all file-refactor provenance — no git runs and records are
+            byte-identical to the pre-#60 behaviour. A positive value opts in: file-touching
+            episodes are stamped with ``last_commit_sha`` + ``{path: changed_lines}`` so the
+            engine can temporally supersede a file's prior facts on a big refactor.
+        popen: injectable ``subprocess.Popen``-alike for the git provenance helpers
+            (defaults to :class:`subprocess.Popen`), so tests drive a fake process.
     """
 
     def __init__(
@@ -459,6 +567,9 @@ class GraphitiSink(StorageSink):
         deny_kinds: Iterable[str] = (),
         idempotency_fn: IdempotencyFn | None = None,
         record_factory: RecordFactory | None = None,
+        cwd: str | None = None,
+        refactor_lines: int = 0,
+        popen: PopenFactory | None = None,
     ) -> None:
         self._spool = spool
         self._namespace = namespace
@@ -470,12 +581,24 @@ class GraphitiSink(StorageSink):
         self._record_factory = record_factory or _default_record_factory
         self.appended = 0
         self.skipped = 0
+        # --- E9-S3 #60 file-refactor provenance (inert unless ``refactor_lines > 0``) ---
+        # ``cwd`` is the session's git working dir; ``refactor_lines`` the threshold knob.
+        # When the knob is 0 (the zero-config default) no git runs and no provenance is
+        # stamped, so every record is byte-identical to the pre-#60 behaviour.
+        self._cwd = cwd
+        self._refactor_lines = refactor_lines
+        self._popen = popen
+        self._head_sha_resolved = False
+        self._head_sha: str | None = None
+        self._churn_cache: dict[str, int] = {}
         # --- current work-unit buffer ---
         self._buffer_pieces: list[str] = []
         self._buffer_ids: list[str | None] = []
         self._buffer_phases: list[str | None] = []
         self._buffer_ts: str | None = None
         self._buffer_session_id: str | None = None
+        self._buffer_files: list[str] = []
+        self._buffer_files_seen: set[str] = set()
         self._activity_id: str | None = None
         # --- session-level accumulators for the summary episode (#27) ---
         self._all_ids: list[str | None] = []
@@ -543,7 +666,12 @@ class GraphitiSink(StorageSink):
         self._accumulate_summary(event, kind, piece)
 
     def _accumulate_summary(self, event: SessionEvent, kind: str, piece: str) -> None:
-        """Feed the session-level decision/outcome/file accumulators (#27)."""
+        """Feed the session-level decision/outcome/file accumulators (#27).
+
+        Touched files additionally feed the per-work-unit ``_buffer_files`` list (E9-S3 #60)
+        so :meth:`_flush_segment` can stamp file-refactor provenance scoped to exactly the
+        files this composed episode discussed — never the whole session's file set.
+        """
         if kind == "message.assistant":
             self._decisions.append(_truncate(piece, MAX_DECISION_CHARS))
         elif kind == "tool.call.completed":
@@ -552,17 +680,63 @@ class GraphitiSink(StorageSink):
             payload = payload if isinstance(payload, Mapping) else {}
             for path in _extract_touched_files(payload.get("arguments")):
                 self._add_touched_file(path)
+                self._add_buffer_file(path)
         elif kind == "file.edited":
             payload = getattr(event, "payload", None)
             payload = payload if isinstance(payload, Mapping) else {}
             path = payload.get("path")
             if isinstance(path, str) and path.strip():
                 self._add_touched_file(path.strip())
+                self._add_buffer_file(path.strip())
 
     def _add_touched_file(self, path: str) -> None:
         if path not in self._touched_seen:
             self._touched_seen.add(path)
             self._touched_files.append(path)
+
+    def _add_buffer_file(self, path: str) -> None:
+        """Record a file touched within the current work-unit (E9-S3 #60), order-unique."""
+        if path not in self._buffer_files_seen:
+            self._buffer_files_seen.add(path)
+            self._buffer_files.append(path)
+
+    def _resolve_head_sha(self) -> str | None:
+        """The session repo's ``HEAD`` sha, resolved once and cached (E9-S3 #60).
+
+        Constant for the session's repo state, so git runs at most once per sink regardless
+        of how many work-units are flushed. ``None`` (cached) when there is no cwd or git
+        cannot resolve HEAD.
+        """
+        if not self._head_sha_resolved:
+            self._head_sha = _git_head_sha(self._cwd, popen=self._popen) if self._cwd else None
+            self._head_sha_resolved = True
+        return self._head_sha
+
+    def _file_churn(self, path: str) -> int:
+        """Changed-line magnitude for ``path`` in ``HEAD``'s commit, cached (E9-S3 #60)."""
+        if path not in self._churn_cache:
+            self._churn_cache[path] = (
+                _git_changed_lines(self._cwd, path, popen=self._popen) if self._cwd else 0
+            )
+        return self._churn_cache[path]
+
+    def _file_provenance(self, files: list[str]) -> tuple[str | None, dict[str, int] | None]:
+        """Resolve ``(last_commit_sha, {path: changed_lines})`` for ``files`` (E9-S3 #60).
+
+        Returns ``(None, None)`` — no provenance, byte-identical output — unless the refactor
+        knob is enabled, a cwd is set, ``HEAD`` resolves, and at least one file was touched.
+        The sha stamp records this episode's *generation* for every touched file (even those
+        with zero churn) so a later big refactor can recognise and supersede it; the engine
+        applies the changed-line threshold per file, so stamping sub-threshold files here is
+        harmless provenance, not an invalidation.
+        """
+        if self._refactor_lines <= 0 or not self._cwd or not files:
+            return None, None
+        sha = self._resolve_head_sha()
+        if sha is None:
+            return None, None
+        churn = {path: self._file_churn(path) for path in files}
+        return sha, churn
 
     def _flush_segment(self) -> None:
         """Emit one composed episode for the buffered work-unit, then clear it.
@@ -573,6 +747,7 @@ class GraphitiSink(StorageSink):
         if not self._buffer_pieces:
             return
         content = _truncate("\n\n".join(self._buffer_pieces), MAX_EPISODE_CHARS)
+        last_commit_sha, file_change_lines = self._file_provenance(self._buffer_files)
         record = _assemble_record(
             content=content,
             namespace=self._namespace,
@@ -584,6 +759,8 @@ class GraphitiSink(StorageSink):
             idempotency_fn=self._idempotency_fn,
             record_factory=self._record_factory,
             phase=_derive_phase(self._buffer_phases),
+            last_commit_sha=last_commit_sha,
+            file_change_lines=file_change_lines,
         )
         self._spool.append(record)
         self.appended += 1
@@ -592,6 +769,8 @@ class GraphitiSink(StorageSink):
         self._buffer_phases = []
         self._buffer_ts = None
         self._buffer_session_id = None
+        self._buffer_files = []
+        self._buffer_files_seen = set()
 
     def _emit_summary(self, event: SessionEvent) -> None:
         """Emit one bounded, deterministic summary episode on ``session.ended`` (#27)."""
@@ -602,6 +781,7 @@ class GraphitiSink(StorageSink):
             return
         ts = getattr(event, "timestamp", None)
         session_id = getattr(event, "session_id", None)
+        last_commit_sha, file_change_lines = self._file_provenance(self._touched_files)
         record = _assemble_record(
             content=_truncate(body, MAX_SUMMARY_CHARS),
             namespace=self._namespace,
@@ -613,6 +793,8 @@ class GraphitiSink(StorageSink):
             idempotency_fn=self._idempotency_fn,
             record_factory=self._record_factory,
             phase=_derive_phase(self._all_phases),
+            last_commit_sha=last_commit_sha,
+            file_change_lines=file_change_lines,
         )
         self._spool.append(record)
         self.appended += 1
@@ -819,6 +1001,8 @@ def _prepare_observe(
         deny_kinds=deny_kinds,
         idempotency_fn=idempotency_fn,
         record_factory=record_factory,
+        cwd=resolved_cwd,
+        refactor_lines=cfg.ingest.refactor_invalidation_lines,
     )
     pipeline = EventPipeline(
         sinks=[sink],

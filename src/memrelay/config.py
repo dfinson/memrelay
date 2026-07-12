@@ -164,6 +164,16 @@ class IngestConfig:
     # the default to ``"file_watch"`` is a deliberate one-line follow-up once it soaks.
     intake_source: str = "replay"
 
+    # E9-S3 #60 — staleness & invalidation. ``refactor_invalidation_lines`` is the
+    # big-refactor threshold in changed lines: when a newly-ingested file episode reports a
+    # per-file changed-line count (stamped sha → HEAD) that meets or exceeds it, prior
+    # file-scoped facts for that file are superseded via Graphiti bitemporal edges
+    # (``expired_at`` / ``invalid_at`` set — never deleted; see
+    # ``MemoryEngine.invalidate_file_facts``). ``0`` disables invalidation entirely, so the
+    # zero-config default is byte-identical to the pre-#60 behaviour (the sink stamps no
+    # file provenance and ``note`` supersedes nothing).
+    refactor_invalidation_lines: int = 0
+
 
 @dataclass
 class LoggingConfig:

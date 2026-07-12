@@ -38,6 +38,7 @@ class FlakyEngine:
         namespace: str,
         repo: str | None = None,
         source: str | None = None,
+        **_: object,
     ) -> str:
         self.attempts[content] += 1
         if content in self._always_fail:
