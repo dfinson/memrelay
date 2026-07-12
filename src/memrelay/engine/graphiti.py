@@ -652,10 +652,13 @@ class MemoryEngine:
           are always shielded, so fresh notes stay. Floor and window are independent knobs.
         * **Deterministic + hermetic.** Selection, the summary key, and the extractive digest are
           pure and offline (no LLM/ML, no wall-clock, no network) — a re-run is byte-identical.
-        * **Idempotent / no thrash.** After a pass the eligible set is empty and the summary is
-          excluded from the working set, so an immediate re-run is a clean no-op; the deterministic
-          per-victim-set summary key plus a pre-existence check means a crash-retry never creates a
-          duplicate summary.
+        * **Idempotent / crash-safe.** After a pass the eligible set is empty and the summary is
+          excluded from the working set, so an immediate re-run is a clean no-op. Each summary is
+          written first and durably records its victim set (the ``members=`` token on its
+          ``source_description``), so a re-run interrupted *partway through the removal loop*
+          finishes removing that summary's still-present victims rather than minting a second,
+          overlapping one — converging to the same end state as an uninterrupted pass (exactly one
+          summary per victim set; all victims removed).
         * **Measured before/after (AC4).** Returns per-namespace and aggregate metrics — episode,
           edge and entity counts and the degradation fraction, before vs. after — that a caller/test
           can assert on, so the reclaim is measurable rather than merely claimed.
@@ -707,13 +710,21 @@ class MemoryEngine:
 
         All Cypher is filtered by ``group_id``, so a pass **never crosses a namespace**. Existing
         compaction summaries (recognized by their ``source_description`` marker) are kept out of the
-        working set, which is what makes a re-run a no-op.
+        working set, which is what makes a re-run a no-op. Episodes a prior (possibly crash-
+        interrupted) pass already summarized are *finished* — their still-present originals removed
+        — before any fresh selection, and are excluded from it, so a partial removal converges
+        without ever creating a second, overlapping summary.
         """
         cfg = self._cfg.compaction
-        episodes_before, stats, existing_summary_sds = await self._read_working_set(namespace)
-        episode_count = len(stats)
+        episodes_before, stats, existing = await self._read_working_set(namespace)
+        # Episodes belonging to an already-created summary are "in flight": a prior pass added
+        # their summary and was (perhaps) interrupted mid-removal. Keep them OUT of the fresh
+        # selection so they are never re-summarized, and finish removing any still present.
+        finish_uuids = [stat.uuid for stat in stats if stat.uuid in existing.victims]
+        working_stats = [stat for stat in stats if stat.uuid not in existing.victims]
+        episode_count = len(working_stats)
         eligible = select_eligible(
-            stats,
+            working_stats,
             low_reference_max=cfg.low_reference_max,
             protected_recent=cfg.protect_recent,
         )
@@ -740,33 +751,48 @@ class MemoryEngine:
             "degradation_fraction_before": fraction_before,
             "degradation_fraction_after": fraction_before,
         }
-        if dry_run or not triggered or not eligible:
+        # dry_run parity with forget(): report what WOULD compact, write nothing — not even
+        # finishing an interrupted prior pass.
+        if dry_run:
             return metrics
 
-        victim_uuids = [stat.uuid for stat in eligible]
-        source_description = compaction_source_description(summary_key(victim_uuids))
-        if source_description not in existing_summary_sds:
-            # Add the summary FIRST, so the gist is present before the originals are removed.
-            # ``reference_time`` is not part of the summary's identity (that is the deterministic
-            # victim-set key), and a re-run skips recreation, so ``now`` here never breaks the
-            # byte-identical-summary guarantee while avoiding any dependence on reading a Kuzu
-            # timestamp back out.
-            content = build_summary_content([stat.content for stat in eligible])
-            await self._graphiti.add_episode(
-                name=_episode_name(content),
-                episode_body=content,
-                source=EpisodeType.message,
-                source_description=source_description,
-                reference_time=datetime.now(UTC),
-                group_id=namespace,
-            )
-            metrics["summaries_added"] = 1
+        victim_uuids = [stat.uuid for stat in eligible] if (triggered and eligible) else []
+        if victim_uuids:
+            identity = compaction_source_description(summary_key(victim_uuids))
+            if identity not in existing.identities:
+                # Add the summary FIRST, so the gist is present before the originals are removed.
+                # Its ``source_description`` durably records the victim set (the ``members=``
+                # token), making the removal that follows resumable after a crash.
+                # ``reference_time`` is not part of the summary's identity (that is the
+                # deterministic victim-set key), and a re-run skips recreation, so ``now`` here
+                # never breaks the byte-identical-summary guarantee while avoiding any dependence
+                # on reading a Kuzu timestamp back.
+                content = build_summary_content([stat.content for stat in eligible])
+                await self._graphiti.add_episode(
+                    name=_episode_name(content),
+                    episode_body=content,
+                    source=EpisodeType.message,
+                    source_description=_summary_source_description(victim_uuids),
+                    reference_time=datetime.now(UTC),
+                    group_id=namespace,
+                )
+                metrics["summaries_added"] = 1
 
-        for uuid in victim_uuids:
-            # Shared-entity-preserving cascade: only edges/entities created solely by this
-            # episode are removed; entities another episode still mentions are preserved.
+        # Removal, shared-entity-preserving cascade (only edges/entities created solely by an
+        # episode are removed; entities another episode still mentions are preserved). FINISH any
+        # interrupted prior compaction first (still-present recorded victims), THEN remove this
+        # pass's fresh victims. This makes compact() crash-idempotent: a re-run after a partial-
+        # removal crash converges to the same end state as an uninterrupted run — exactly one
+        # summary over the original victim set, all victims removed — and never mints a second,
+        # overlapping summary.
+        removed = 0
+        for uuid in (*finish_uuids, *victim_uuids):
             await self._graphiti.remove_episode(uuid)
-        metrics["episodes_compacted"] = len(victim_uuids)
+            removed += 1
+        metrics["episodes_compacted"] = removed
+
+        if removed == 0:
+            return metrics
 
         # Re-measure from the graph so the after-metrics — including the degradation fraction — are
         # read back, not inferred: an honest before/after for AC4.
@@ -786,14 +812,16 @@ class MemoryEngine:
 
     async def _read_working_set(
         self, namespace: str
-    ) -> tuple[int, list[EpisodeStat], set[str | None]]:
+    ) -> tuple[int, list[EpisodeStat], _ExistingSummaries]:
         """Read ``namespace``'s episodics once, for use before AND after a pass.
 
-        Returns ``(episodes_total, working_set_stats, existing_summary_source_descriptions)``:
-        the total ``Episodic`` count (summaries included), the non-summary working set as
+        Returns ``(episodes_total, working_set_stats, existing_summaries)``: the total
+        ``Episodic`` count (summaries included), the non-summary working set as
         :class:`EpisodeStat` rows (each with its ``entity_edges`` reference count), and the
-        ``source_description`` markers of existing compaction summaries — which are kept out of the
-        working set, so a re-run over them selects nothing (idempotent no-op).
+        :class:`_ExistingSummaries` already present — their per-victim-set identities (matched to
+        skip re-creating a summary) and the union of their durably-recorded victim uuids (used to
+        finish an interrupted removal and to keep those in-flight victims out of a fresh pass).
+        Summaries are kept out of the working set, so a re-run over them selects nothing.
         """
         rows, _, _ = await self._driver.execute_query(
             "MATCH (e:Episodic) WHERE e.group_id = $group_id "
@@ -802,11 +830,13 @@ class MemoryEngine:
             group_id=namespace,
             routing_="r",
         )
-        existing_summary_sds = {
-            row.get("source_description")
-            for row in rows
-            if is_compaction_summary(row.get("source_description"))
-        }
+        identities: set[str] = set()
+        victims: set[str] = set()
+        for row in rows:
+            sd = row.get("source_description")
+            if is_compaction_summary(sd):
+                identities.add(_summary_identity(sd))
+                victims |= _summary_members(sd)
         stats = [
             EpisodeStat(
                 uuid=row["uuid"],
@@ -817,7 +847,7 @@ class MemoryEngine:
             for row in rows
             if not is_compaction_summary(row.get("source_description"))
         ]
-        return len(rows), stats, existing_summary_sds
+        return len(rows), stats, _ExistingSummaries(frozenset(identities), frozenset(victims))
 
     async def _namespace_entity_count(self, namespace: str) -> int:
         """Count every ``Entity`` node in ``namespace`` (the entity-reclaim metric)."""
@@ -978,6 +1008,65 @@ def _episode_sha(source_description: str | None) -> str | None:
         if sep and key == "sha":
             return value.strip() or None
     return None
+
+
+#: Token appended to a compaction summary's ``source_description`` recording the **victim uuid
+#: set** the summary stands in for. The summary is written *before* its originals are removed, so
+#: this makes it a durable, self-describing record of the intended removal: after a crash partway
+#: through the removal loop, a re-run reads the members back and *finishes* removing the
+#: still-present ones instead of computing a fresh (smaller) victim set and minting a second,
+#: overlapping summary. Deterministic (uuids sorted) so a clean re-run of the same set is
+#: byte-identical, and inert to every ``_episode_*`` parser above (all guard on the
+#: ``memrelay-compaction`` marker, and none recognizes a ``members=`` key).
+_MEMBERS_TOKEN = "members"
+
+
+def _summary_source_description(victim_uuids: list[str]) -> str:
+    """Return a compaction summary's ``source_description``: victim-set identity + ``members=``.
+
+    The leading ``memrelay-compaction key=<hash>`` identity is byte-identical to the pre-#F1 form
+    for a given victim set; the appended ``members=<sorted,csv>`` token durably records the victim
+    uuids so a crash-interrupted removal is resumable (see :data:`_MEMBERS_TOKEN`).
+    """
+    identity = compaction_source_description(summary_key(victim_uuids))
+    return f"{identity} {_MEMBERS_TOKEN}={','.join(sorted(victim_uuids))}"
+
+
+def _summary_identity(source_description: str) -> str:
+    """Return a compaction summary's identity — the deterministic per-victim-set key, ``members=``
+    stripped — used to detect (and skip re-creating) an already-present summary. A member-less
+    summary (pre-#F1 or a test fixture) is returned unchanged, so the pre-existence check still
+    matches it exactly.
+    """
+    return source_description.split(f" {_MEMBERS_TOKEN}=", 1)[0]
+
+
+def _summary_members(source_description: str) -> set[str]:
+    """Return the victim uuids a compaction summary durably records, or an empty set.
+
+    Inverse of the ``members=`` token :func:`_summary_source_description` appends. A summary with no
+    token (pre-#F1 or a test fixture) yields an empty set — it simply has no resumable victim set.
+    """
+    for token in source_description.split(" "):
+        key, sep, value = token.partition("=")
+        if sep and key == _MEMBERS_TOKEN:
+            return {uuid for uuid in value.split(",") if uuid}
+    return set()
+
+
+@dataclass(frozen=True)
+class _ExistingSummaries:
+    """The compaction summaries already present in a namespace's working set.
+
+    ``identities`` are their per-victim-set keys (``members=`` stripped), matched against a fresh
+    pass's computed identity so an already-created summary is never duplicated. ``victims`` is the
+    union of every summary's durably-recorded victim uuids, used both to finish removing
+    still-present members of an interrupted compaction and to keep those in-flight victims out of
+    the fresh selection so they are never re-summarized.
+    """
+
+    identities: frozenset[str]
+    victims: frozenset[str]
 
 
 def _entity_edge_count(value: Any) -> int:
