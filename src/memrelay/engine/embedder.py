@@ -21,6 +21,17 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_DIM = 384
 
 
+class LocalEmbedderError(RuntimeError):
+    """Raised when the on-device embedding model cannot be loaded.
+
+    fastembed downloads the quantized ONNX model on first use; if the machine is
+    offline and the model is not cached yet (or the cache is otherwise unusable),
+    the underlying constructor fails with an opaque, generic error. We surface a
+    clear, actionable message instead — never silently degrading the semantic
+    recall path, per the offline-safety invariant.
+    """
+
+
 def _as_text_list(input_data: str | Iterable[str]) -> list[str]:
     """Coerce graphiti's embedder input into a list of strings.
 
@@ -50,7 +61,26 @@ class LocalEmbedder(EmbedderClient):
 
         self.model_name = model_name
         self.cache_dir = str(cache_dir) if cache_dir is not None else None
-        self._model = TextEmbedding(model_name=model_name, cache_dir=self.cache_dir)
+        # Constructing ``TextEmbedding`` downloads the model on first use. fastembed
+        # retries the fetch internally and then collapses any network/cache failure into
+        # a single opaque ``ValueError("Could not load model ... from any source.")`` — so
+        # there is no stable typed fetch error to catch narrowly. Wrap broadly and re-raise
+        # a clear, actionable error (the original is preserved as the cause).
+        try:
+            self._model = TextEmbedding(model_name=model_name, cache_dir=self.cache_dir)
+        except Exception as exc:
+            cache_dir_display = (
+                self.cache_dir if self.cache_dir is not None else "the fastembed default cache"
+            )
+            raise LocalEmbedderError(
+                f"Could not load the local embedding model {model_name!r} (fastembed) from "
+                f"cache directory {cache_dir_display}. This on-device model is required for "
+                "semantic recall and could not be fetched (you are most likely offline and it "
+                "is not cached yet). To fix, either: (1) run `memrelay init` once while online "
+                'to download and cache the model, or (2) set embeddings.provider = "openai" '
+                "(with an API key in the configured api_key_env) to use hosted embeddings "
+                f"instead. Original error: {exc}"
+            ) from exc
 
     def _embed_sync(self, texts: list[str]) -> list[list[float]]:
         return [vector.tolist() for vector in self._model.embed(texts)]
