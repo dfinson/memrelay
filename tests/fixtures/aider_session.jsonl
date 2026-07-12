@@ -1,0 +1,4 @@
+{"event": "launched", "properties": {"version": "0.60.0"}, "time": 1735689600}
+{"event": "message_send_starting", "properties": {"main_model": "gpt-4o"}, "time": 1735689601}
+{"event": "message_send", "properties": {"main_model": "gpt-4o", "edit_format": "diff", "prompt_tokens": 512, "completion_tokens": 128}, "time": 1735689602}
+{"event": "exit", "properties": {"reason": "user quit"}, "time": 1735689603}

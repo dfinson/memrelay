@@ -1,0 +1,4 @@
+{"type": "session.created.1", "data": {"sessionID": "conformance-opencode", "timestamp": 1735689600000, "info": {"title": "Add a health check endpoint to the widget service", "directory": "/repo/widget-service"}}}
+{"type": "message.updated.1", "data": {"sessionID": "conformance-opencode", "timestamp": 1735689601000, "info": {"id": "msg-user-1", "role": "user"}}}
+{"type": "message.updated.1", "data": {"sessionID": "conformance-opencode", "timestamp": 1735689602000, "info": {"id": "msg-asst-1", "role": "assistant"}}}
+{"type": "message.part.updated.1", "data": {"sessionID": "conformance-opencode", "timestamp": 1735689603000, "part": {"id": "part-1", "messageID": "msg-asst-1", "callID": "call-1", "tool": "read", "type": "tool", "state": {"status": "completed", "output": "def register_routes(app): ..."}}}}

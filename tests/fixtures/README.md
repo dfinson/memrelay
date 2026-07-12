@@ -71,3 +71,47 @@ python scripts/capture_fixture.py
 # Full redacted session (every record) instead of the minimal excerpt:
 python scripts/capture_fixture.py --session-id <id> --full
 ```
+
+## E12-S5 coding-agent fixtures (`#71`)
+
+Ten **minimal synthetic** fixtures — one per coding agent added in E12-S5 — drive the
+per-agent unit tests (`tests/unit/test_providers_e12.py`) and the registry-driven
+conformance matrix (`tests/integration/test_agent_conformance.py`,
+`test_every_registered_provider_has_a_conformance_fixture`). Unlike `copilot_session.jsonl`
+(a redacted *real* capture), these are hand-authored around one illustrative micro-session
+so CI stays hermetic — no live agent install, no machine store, no network.
+
+Each fixture is fed through its provider's own `make_source(...)` iterator and
+`make_adapter(session_id)` (i.e. the real TraceForge mapping **and** preprocessor for that
+agent), and must replay to the exact canonical `SessionEvent` kinds below with the
+`session_id` stamped through. The **source shape** column is the on-disk layout the
+provider's `Source` knows how to read:
+
+| Fixture | Source shape | Canonical kinds it replays to |
+| --- | --- | --- |
+| `codex_session.jsonl` | JSONL rollout lines | `message.user`, `tool.call.started`, `tool.call.completed`, `message.assistant` |
+| `continue_session.jsonl` | one whole-file JSON object with `history[]` | `message.user`, `message.assistant`, `tool.call.started`, `tool.call.completed` |
+| `cline_session.jsonl` | one JSON **array** of `ui_messages` | `session.started`, `message.assistant`, `permission.requested`, `session.ended` |
+| `aider_session.jsonl` | JSONL analytics log lines | `session.started`, `llm.call.started`, `llm.call.completed`, `session.ended` |
+| `amazonq_session.jsonl` | normalized SQLite rows (one row/line) | `message.user`, `message.assistant`, `tool.call.started`, `tool.call.completed` |
+| `goose_session.jsonl` | normalized `messages`-table rows (one row/line) | `message.user`, `message.assistant`, `tool.call.started`, `tool.call.completed` |
+| `opencode_session.jsonl` | normalized `event`-table rows (one row/line) | `session.started`, `message.user`, `message.assistant`, `tool.call.completed` |
+| `openhands_session.jsonl` | JSONL event records | `message.user`, `message.assistant`, `command.started`, `command.completed` |
+| `sweagent_session.jsonl` | one whole-file JSON object with `history[]` | `message.system`, `message.user`, `message.assistant`, `tool.output` |
+| `antigravity_session.jsonl` | JSONL Step/line records | `message.user`, `message.assistant`, `reasoning.started`, `tool.call.started`, `task.completed` |
+
+### Notes
+
+- **SQLite-backed agents** (`amazonq`, `goose`, `opencode`) store sessions in a local
+  SQLite DB in production; live DB tailing is the daemon's seam, so the hermetic fixture is
+  the **normalized row JSON** each provider's mapping consumes (one JSON row per line),
+  which is exactly what the mapping's preprocessor sees.
+- **`goose` `toolResult.value`** must be an object with a `content` field — the mapping's
+  preprocessor does `(tool_result.get("value") or {}).get("content", "")`, so a bare
+  string/list value would be silently dropped. The fixture shapes it as
+  `{"content": ...}` accordingly.
+- **`opencode`** rows are `{"type": "<name>.<version>", "data": {...}}`; the preprocessor
+  strips the version suffix and routes on `data.info.role` / `data.part.type`, so each row
+  carries a `data.timestamp` for deterministic ordering.
+- These fixtures are **illustrative, not redacted real captures** — they contain no real
+  paths, usernames, or secrets, only placeholder ids and generic sample text.

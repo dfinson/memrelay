@@ -1,0 +1,1 @@
+{"history": [{"role": "system", "content": "You are SWE-agent. Solve the task using the provided tools."}, {"role": "user", "content": "Add a health check endpoint to the widget service."}, {"role": "assistant", "content": "I'll inspect routes.py and add a /health endpoint."}, {"role": "tool", "content": "def routes(): ..."}]}

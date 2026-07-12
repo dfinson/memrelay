@@ -250,12 +250,17 @@ assembled epic by epic, and the package is unpublished (v0.0.1). What works toda
 - **Copilot ingestion** — Copilot session → `SessionEvent` normalization into a durable
   SQLite spool; `memrelay observe` replays a discovered session through the pipeline.
 - **Provider framework (E12)** — the `AgentProvider` seam plus a registry with
-  auto-detection; Copilot ships as the reference provider.
+  auto-detection. **Twelve coding agents ship:** Copilot and Claude Code (reference
+  providers, borrow-host LLM) plus Codex, Cursor/Continue, Cline, Aider, Amazon Q, Goose,
+  OpenCode, OpenHands, SWE-agent, and Antigravity
+  ([#71](https://github.com/dfinson/memrelay/issues/71), byo-key LLM). memrelay serves its
+  MCP server to the JSON-registry agents (Copilot, Claude, Cline, Amazon Q, OpenCode) and
+  ingests the rest. See [SPEC.md](SPEC.md) for the coverage matrix.
 
 Still early: the `local` LLM strategy ([#64](https://github.com/dfinson/memrelay/issues/64))
-and additional agent providers such as Claude Code ([#70](https://github.com/dfinson/memrelay/issues/70))
-are planned. See [SPEC.md](SPEC.md) for the full plan and
-[docs/e0-spike.md](docs/e0-spike.md) for the original Copilot ingestion spike.
+and the framework-runtime providers (CrewAI, LangGraph, OpenAI Agents, …) are planned. See
+[SPEC.md](SPEC.md) for the full plan and [docs/e0-spike.md](docs/e0-spike.md) for the
+original Copilot ingestion spike.
 
 ## License
 

@@ -74,6 +74,20 @@ def copilot_home_with_session(
     monkeypatch.setenv("MEMRELAY_COPILOT_HOME", str(home))
     # Pin the Claude home away so auto-detect stays copilot-only regardless of this box.
     monkeypatch.setenv("MEMRELAY_CLAUDE_HOME", str(tmp_path / "_no_claude_home"))
+    # E12-S5: pin the ten new agent homes away too so ``resolve()`` stays copilot-only here.
+    for env_var in (
+        "MEMRELAY_CODEX_HOME",
+        "MEMRELAY_CONTINUE_HOME",
+        "MEMRELAY_CLINE_HOME",
+        "MEMRELAY_AIDER_HOME",
+        "MEMRELAY_AMAZONQ_HOME",
+        "MEMRELAY_GOOSE_HOME",
+        "MEMRELAY_OPENCODE_HOME",
+        "MEMRELAY_OPENHANDS_HOME",
+        "MEMRELAY_SWEAGENT_HOME",
+        "MEMRELAY_ANTIGRAVITY_HOME",
+    ):
+        monkeypatch.setenv(env_var, str(tmp_path / f"_no_home_{env_var.lower()}"))
     return home, session_id
 
 
