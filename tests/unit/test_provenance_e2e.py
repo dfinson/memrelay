@@ -28,7 +28,7 @@ from graphiti_core.prompts.models import Message
 from pydantic import BaseModel
 
 from memrelay.config import load_config
-from memrelay.engine.graphiti import MemoryEngine
+from memrelay.engine.graphiti import MemoryEngine, _episode_agent, _episode_repo
 
 EMBED_DIM = 384
 NAMESPACE = "team-ns"
@@ -149,6 +149,108 @@ def test_each_episode_carries_its_own_repo_and_agent(tmp_path) -> None:
                 tuple(token.split("=", 1)[1] for token in desc.split(" ")) for desc in descriptions
             }
             assert parsed == {("acme/widgets", "copilot"), ("globex/gadgets", "claude")}
+        finally:
+            await engine.close()
+
+    asyncio.run(scenario())
+
+
+def test_note_roundtrips_space_and_equals_in_repo_and_agent(tmp_path) -> None:
+    """A repo/agent carrying a space or ``=`` survives note() → stored sd → inverse parsers.
+
+    This is the data-correctness core of the fix: SPEC §5.3 names ``claude code`` (a
+    space-containing agent id) as a first-class actor, and a hostile/odd git origin can push a
+    space or ``=`` into ``repo``. Both must round-trip losslessly instead of forging/splitting
+    the token grammar.
+    """
+
+    async def scenario() -> None:
+        cfg = _make_config(tmp_path)
+        engine = await MemoryEngine.from_config(
+            cfg,
+            llm_client=_MockLLMClient(["postgres"]),
+            embedder=_HashingEmbedder(),
+        )
+        try:
+            await engine.note(
+                "The my-org service uses postgres.",
+                NAMESPACE,
+                "my org/name=v2",  # a space AND an '=' in the repo
+                source="claude code",  # a space in the agent id
+            )
+            episodes = await EpisodicNode.get_by_group_ids(engine._driver, [NAMESPACE])
+            assert len(episodes) == 1
+            sd = episodes[0].source_description
+            # Stored wire form is percent-escaped so it stays a clean two-token string.
+            assert sd == "repo=my%20org/name%3Dv2 agent=claude%20code"
+            # And it round-trips back through the inverse parsers the destructive ops rely on.
+            assert _episode_repo(sd) == "my org/name=v2"
+            assert _episode_agent(sd) == "claude code"
+        finally:
+            await engine.close()
+
+    asyncio.run(scenario())
+
+
+def test_note_forge_attempt_via_repo_does_not_hijack_agent(tmp_path) -> None:
+    """A repo value that tries to smuggle an ``agent=`` token cannot rewrite the real agent."""
+
+    async def scenario() -> None:
+        cfg = _make_config(tmp_path)
+        engine = await MemoryEngine.from_config(
+            cfg,
+            llm_client=_MockLLMClient(["postgres"]),
+            embedder=_HashingEmbedder(),
+        )
+        try:
+            await engine.note(
+                "The service uses postgres.",
+                NAMESPACE,
+                "owner/name agent=admin",  # hostile: tries to inject agent=admin
+                source="copilot",
+            )
+            episodes = await EpisodicNode.get_by_group_ids(engine._driver, [NAMESPACE])
+            sd = episodes[0].source_description
+            # The real agent survives; the injected token is inert (escaped into the repo).
+            assert _episode_agent(sd) == "copilot"
+            assert _episode_repo(sd) == "owner/name agent=admin"
+        finally:
+            await engine.close()
+
+    asyncio.run(scenario())
+
+
+def test_forget_repo_matches_space_containing_repo(tmp_path) -> None:
+    """``forget --repo`` (destructive) selects a space-containing repo — pre-fix it matched zero.
+
+    Drives the real selection path (``_forget_repo`` parses each episode's ``source_description``
+    via ``_episode_repo``) to prove the round-trip closes the data-retention hole end to end.
+    """
+
+    async def scenario() -> None:
+        cfg = _make_config(tmp_path)
+        engine = await MemoryEngine.from_config(
+            cfg,
+            llm_client=_MockLLMClient(["postgres", "redis"]),
+            embedder=_HashingEmbedder(),
+        )
+        try:
+            await engine.note("acme uses postgres.", NAMESPACE, "my org/name", source="copilot")
+            await engine.note("globex uses redis.", NAMESPACE, "other/clean", source="copilot")
+
+            # Dry-run selects exactly the space-containing repo's episode (pre-fix: zero),
+            # and matching stays case-insensitive after decoding.
+            assert await engine._forget_repo("my org/name", dry_run=True) == 1
+            assert await engine._forget_repo("MY ORG/NAME", dry_run=True) == 1
+            assert await engine._forget_repo("other/clean", dry_run=True) == 1
+
+            # Actually forget the space repo; only its episode is removed, the clean one stays.
+            assert await engine._forget_repo("my org/name", dry_run=False) == 1
+            remaining = {
+                _episode_repo(episode.source_description)
+                for episode in await EpisodicNode.get_by_group_ids(engine._driver, [NAMESPACE])
+            }
+            assert remaining == {"other/clean"}
         finally:
             await engine.close()
 

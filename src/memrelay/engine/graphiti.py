@@ -178,8 +178,11 @@ class MemoryEngine:
         that produced the memory (e.g. ``"copilot"`` / ``"claude"``). When it is
         given, the episode's ``source_description`` is a stable, greppable
         ``key=value`` string so a future ``prefer_repo`` tiebreaker can parse repo
-        and agent back out (SPEC §4.4): ``repo=<owner/name> agent=<agent>``, or just
-        ``agent=<agent>`` when ``repo`` is absent. When ``source`` is falsy the
+        and agent back out (SPEC §5.3): ``repo=<owner/name> agent=<agent>``, or just
+        ``agent=<agent>`` when ``repo`` is absent. Space, ``=`` and ``%`` inside ``repo`` /
+        ``source`` are percent-escaped (``%20`` / ``%3D`` / ``%25``) so a value can never
+        forge or split a token; ids with none of those chars serialize unchanged. When
+        ``source`` is falsy the
         description is **byte-identical to the pre-#40 behaviour** (``repo`` alone,
         falling back to ``"memrelay-note"``) so existing callers are unaffected.
 
@@ -196,8 +199,8 @@ class MemoryEngine:
         if source:
             tokens = []
             if repo:
-                tokens.append(f"repo={repo}")
-            tokens.append(f"agent={source}")
+                tokens.append(f"repo={_encode_provenance(repo)}")
+            tokens.append(f"agent={_encode_provenance(source)}")
             source_description = " ".join(tokens)
         else:
             source_description = repo or "memrelay-note"
@@ -838,26 +841,78 @@ class MemoryEngine:
         return len(edges)
 
 
+#: Recognized provenance token keys in a ``source_description`` (E5-S3 #40, E9-S3 #60). A
+#: description whose *leading* token has one of these keys is the tokenized form; any other
+#: leading token is a bare repo (the pre-#40 form). Used by the parsers below to tell a
+#: tokenized-but-repo-less description (e.g. ``agent=…``) from a bare repo that contains an
+#: ``=`` (e.g. ``owner/repo=v2``), and to strip appended ``file=``/``sha=`` provenance.
+_PROV_KEYS = frozenset({"repo", "agent", "file", "sha"})
+
+
+def _encode_provenance(value: str) -> str:
+    """Percent-escape the characters that would break the space-delimited token grammar.
+
+    ``source_description`` packs ``repo`` / ``agent`` into ``key=value`` tokens joined by
+    spaces (see :meth:`MemoryEngine.note`). A raw space would split one value into two
+    tokens — forging or truncating provenance — and a raw ``=`` would blur the key/value
+    split, so both are escaped here, along with ``%`` itself (escaped **first**) so the
+    transform is losslessly reversible by :func:`_decode_provenance`. A value containing
+    none of these three characters is returned unchanged, so every existing well-formed
+    repo/agent id serializes byte-for-byte as before.
+    """
+    return value.replace("%", "%25").replace(" ", "%20").replace("=", "%3D")
+
+
+def _decode_provenance(value: str) -> str:
+    """Inverse of :func:`_encode_provenance`.
+
+    ``%25`` (the escape for ``%``) is decoded **last** so a literal ``%20`` / ``%3D`` in the
+    original value — encoded as ``%2520`` / ``%253D`` — round-trips exactly instead of being
+    mistaken for an escaped space / ``=``.
+    """
+    return value.replace("%20", " ").replace("%3D", "=").replace("%25", "%")
+
+
 def _episode_repo(source_description: str | None) -> str | None:
     """Recover the repo an episode was tagged with, or ``None``.
 
     Inverse of :meth:`MemoryEngine.note`'s ``source_description`` encoding, which is one
     of: ``repo=<repo> agent=<agent>``, ``agent=<agent>``, a bare ``<repo>``, or the
-    ``memrelay-note`` sentinel. The two provenance-less forms (agent-only, sentinel)
-    yield ``None`` so they never match a ``forget --repo``.
+    ``memrelay-note`` sentinel (any of which may carry appended ``file=``/``sha=`` tokens).
+    The provenance-less forms (agent-only, the ``memrelay-note`` sentinel, and a
+    ``memrelay-compaction`` summary marker) yield ``None`` so they never match a
+    ``forget --repo``. In the tokenized form the ``repo=`` value is percent-decoded
+    (:func:`_decode_provenance`); the bare form is stored verbatim and returned as written.
     """
     text = (source_description or "").strip()
     if not text:
         return None
-    if "=" in text:
-        for token in text.split(" "):
-            key, sep, value = token.partition("=")
-            if sep and key == "repo":
-                return value.strip() or None
+    # A compaction summary is stamped with the memrelay-compaction marker (+ a key= token)
+    # and is, by contract (see engine.compaction), inert to this parser -- never a repo
+    # memory. Guard here so its trailing key= token is not mistaken for a bare repo below.
+    if is_compaction_summary(text):
         return None
-    if text == _NOTE_SENTINEL:
+    tokens = text.split(" ")
+    # Tokenized form: an explicit repo= token wins wherever it sits (order-independent).
+    for token in tokens:
+        key, sep, value = token.partition("=")
+        if sep and key == "repo":
+            return _decode_provenance(value.strip()) or None
+    # No repo= token. The bare repo (pre-#40 form) is the leading run of tokens up to the
+    # first appended file=/sha= provenance token; it is stored verbatim and MAY itself
+    # contain '=' (e.g. 'owner/repo=v2'). A tokenized-but-repo-less description (agent-only)
+    # leads with a recognized key, so its bare run is empty -> not a repo. The sentinel is
+    # likewise not a repo. Bare values are never encoded, so they are never decoded here.
+    bare_tokens: list[str] = []
+    for token in tokens:
+        key, sep, _ = token.partition("=")
+        if sep and key in _PROV_KEYS:
+            break
+        bare_tokens.append(token)
+    bare = " ".join(bare_tokens).strip()
+    if not bare or bare == _NOTE_SENTINEL:
         return None
-    return text
+    return bare
 
 
 def _episode_agent(source_description: str | None) -> str | None:
@@ -867,17 +922,23 @@ def _episode_agent(source_description: str | None) -> str | None:
     :meth:`MemoryEngine.note` writes: ``repo=<repo> agent=<agent>``, ``agent=<agent>``, a
     bare ``<repo>``, or the ``memrelay-note`` sentinel. Only the ``agent=`` token yields a
     value — the repo-only, bare-repo, and sentinel forms (and empty/absent/whitespace) all
-    yield ``None`` so an un-attributed episode is never mistaken for one agent's memory. The
-    scan is token-order-independent (``note`` writes repo first, but the parser must not rely
-    on that).
+    yield ``None`` so an un-attributed episode is never mistaken for one agent's memory. Only
+    a *tokenized* description (first token key is ``repo``/``agent``) is scanned, so a bare
+    repo that happens to contain a literal ``agent=`` substring can never mis-attribute. The
+    agent value is percent-decoded (:func:`_decode_provenance`). The scan is
+    token-order-independent (``note`` writes repo first, but the parser must not rely on that).
     """
     text = (source_description or "").strip()
-    if "=" not in text:
+    if not text:
         return None
-    for token in text.split(" "):
+    tokens = text.split(" ")
+    lead_key, lead_sep, _ = tokens[0].partition("=")
+    if not (lead_sep and lead_key in ("repo", "agent")):
+        return None
+    for token in tokens:
         key, sep, value = token.partition("=")
         if sep and key == "agent":
-            return value.strip() or None
+            return _decode_provenance(value.strip()) or None
     return None
 
 
