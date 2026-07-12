@@ -143,3 +143,67 @@ def test_shutdown_control_message_stops_run(tmp_path: Path) -> None:
 
     reply = asyncio.run(scenario())
     assert reply == {"status": "stopping"}
+
+
+def test_large_note_roundtrips_ok(tmp_path: Path) -> None:
+    # A note whose JSON line far exceeds asyncio's default 64 KiB StreamReader
+    # buffer must now round-trip cleanly — the regression proof for the 64 KiB
+    # cliff that used to mislabel a big valid note as bad_json.
+    endpoint = resolve_endpoint(tmp_path)
+    big = "x" * (200 * 1024)  # 200 KiB of content → line well over the old 64 KiB cap
+
+    async def scenario() -> dict | None:
+        return await _serve_and(
+            endpoint,
+            lambda: _roundtrip(endpoint, {"method": "note", "content": big, "namespace": "ns"}),
+        )
+
+    result = asyncio.run(scenario())
+    assert result == {"status": "ok"}
+
+
+def test_oversize_frame_returns_payload_too_large(tmp_path: Path) -> None:
+    # With a small read limit, an over-limit request line gets a clean
+    # payload_too_large envelope — not bad_json, and not a dropped/hung connection.
+    endpoint = resolve_endpoint(tmp_path)
+    oversize = "x" * 8192  # comfortably past the 4 KiB read_limit below
+
+    async def scenario() -> dict | None:
+        server = DaemonServer(StubBackend(), endpoint, read_limit=4096)
+        await server.start()
+        try:
+            return await _roundtrip(
+                endpoint, {"method": "note", "content": oversize, "namespace": "ns"}
+            )
+        finally:
+            await server.stop()
+
+    result = asyncio.run(scenario())
+    assert result["error"]["type"] == "payload_too_large"
+
+
+def test_idle_connection_is_closed_without_crashing(tmp_path: Path) -> None:
+    # A client that connects but never sends a full line is reclaimed after the
+    # idle timeout; the server neither crashes nor stops serving other clients.
+    endpoint = resolve_endpoint(tmp_path)
+
+    async def scenario() -> tuple:
+        server = DaemonServer(StubBackend(), endpoint, idle_timeout=0.2)
+        await server.start()
+        try:
+            # Stalled connection: connect and send nothing at all.
+            reader, writer = await transport.connect(endpoint, timeout=5.0)
+            try:
+                # The server closes it after idle_timeout, so our read hits EOF.
+                idle_eof = await asyncio.wait_for(transport.read_message(reader), timeout=5.0)
+            finally:
+                writer.close()
+            # A fresh connection is still served normally after the idle reclaim.
+            health = await _roundtrip(endpoint, {"method": "health"})
+            return idle_eof, health
+        finally:
+            await server.stop()
+
+    idle_eof, health = asyncio.run(scenario())
+    assert idle_eof is None  # server closed the idle connection cleanly (EOF)
+    assert health["status"] == "running"

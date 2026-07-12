@@ -69,3 +69,42 @@ def test_memory_note_returns_noted(tmp_path: Path) -> None:
 
     text = asyncio.run(_with_tools(tmp_path, use))
     assert text == "Noted."
+
+
+class _NoteSpyClient:
+    """Duck-typed :class:`~memrelay.mcp.client.DaemonClient` that records ``note`` args.
+
+    The note-size guard lives in the tool itself, so these tests need no daemon: a spy
+    proves the tool short-circuits an oversized note *before* the client is touched, and
+    still forwards a normal note verbatim.
+    """
+
+    def __init__(self) -> None:
+        self.note_calls: list[tuple[str, str, str | None]] = []
+
+    async def note(self, content: str, namespace: str, repo: str | None = None) -> str:
+        self.note_calls.append((content, namespace, repo))
+        return "ok"
+
+
+def test_memory_note_rejects_oversized_content_without_calling_daemon() -> None:
+    from memrelay.mcp.tools import MAX_NOTE_BYTES
+
+    client = _NoteSpyClient()
+    mcp = build_mcp_server(client, context_resolver=lambda: ("dfinson", "owner/repo"))
+    oversized = "x" * (MAX_NOTE_BYTES + 1)
+
+    text = _tool_text(asyncio.run(mcp.call_tool("memory_note", {"content": oversized})))
+
+    assert "exceeds" in text  # actionable guard message, not an opaque transport error
+    assert client.note_calls == []  # guard short-circuited before the daemon
+
+
+def test_memory_note_normal_content_still_reaches_daemon() -> None:
+    client = _NoteSpyClient()
+    mcp = build_mcp_server(client, context_resolver=lambda: ("dfinson", "owner/repo"))
+
+    text = _tool_text(asyncio.run(mcp.call_tool("memory_note", {"content": "small note"})))
+
+    assert text == "Noted."
+    assert client.note_calls == [("small note", "dfinson", "owner/repo")]

@@ -24,13 +24,27 @@ from memrelay.daemon import transport
 from memrelay.daemon.protocol import SHUTDOWN, Backend, dispatch, error_response
 from memrelay.daemon.transport import Endpoint
 
+#: How long one connection may sit without sending a complete request line before
+#: the server reclaims it. Bounds the per-connection coroutine + read buffer so a
+#: stalled (or hostile) client cannot pin daemon resources indefinitely.
+IDLE_TIMEOUT = 30.0
+
 
 class DaemonServer:
     """Serves the JSON query API for one :class:`Backend` over one endpoint."""
 
-    def __init__(self, backend: Backend, endpoint: Endpoint) -> None:
+    def __init__(
+        self,
+        backend: Backend,
+        endpoint: Endpoint,
+        *,
+        idle_timeout: float = IDLE_TIMEOUT,
+        read_limit: int = transport.MAX_LINE_BYTES,
+    ) -> None:
         self._backend = backend
         self._endpoint = endpoint
+        self._idle_timeout = idle_timeout
+        self._read_limit = read_limit
         self._server: asyncio.AbstractServer | None = None
         self._shutdown: asyncio.Event | None = None
 
@@ -43,7 +57,7 @@ class DaemonServer:
         if self._server is not None:
             return
         self._shutdown = asyncio.Event()
-        self._server = await transport.serve(self._endpoint, self._handle)
+        self._server = await transport.serve(self._endpoint, self._handle, limit=self._read_limit)
 
     async def run(self) -> None:
         """Serve until a graceful shutdown is requested, then clean up."""
@@ -75,7 +89,20 @@ class DaemonServer:
         try:
             while True:
                 try:
-                    request = await transport.read_message(reader)
+                    request = await asyncio.wait_for(
+                        transport.read_message(reader), timeout=self._idle_timeout
+                    )
+                except TimeoutError:
+                    break  # idle client — reclaim the coroutine + read buffer (Bug B)
+                except transport.MessageTooLarge as exc:
+                    # Precise handling (must precede the ValueError clause, since
+                    # MessageTooLarge subclasses ValueError): a too-large frame
+                    # leaves the stream mid-line, so report and reset the (short-
+                    # lived) connection rather than mislabel it as bad JSON.
+                    await transport.write_message(
+                        writer, error_response("payload_too_large", str(exc))
+                    )
+                    break
                 except ValueError as exc:
                     await transport.write_message(writer, error_response("bad_json", str(exc)))
                     continue
