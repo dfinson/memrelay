@@ -530,7 +530,9 @@ class GraphitiSink(StorageSink):
     boundary (:data:`BOUNDARY_KINDS`, plus ``metadata.boundary``/``activity_id`` when
     present). Each relevant kind is rendered into content (#26); on ``session.ended`` an
     additional deterministic summary episode is emitted (#27). The trailing partial
-    work-unit is drained by :meth:`flush`/:meth:`close` at end-of-stream.
+    work-unit is drained by :meth:`flush`/:meth:`close` at end-of-stream — unless
+    ``defer_open_partial`` is set, in which case a still-open work-unit is left for a later
+    boundary or terminal pass to avoid spooling partial-prefix snapshots (rt-ingest F1).
 
     Args:
         spool: session B's ``Spool`` (or a duck-typed fake) — ``append(record)`` is
@@ -554,6 +556,12 @@ class GraphitiSink(StorageSink):
             engine can temporally supersede a file's prior facts on a big refactor.
         popen: injectable ``subprocess.Popen``-alike for the git provenance helpers
             (defaults to :class:`subprocess.Popen`), so tests drive a fake process.
+        defer_open_partial: when ``True``, :meth:`flush`/:meth:`close` do **not** drain the
+            still-open trailing work-unit (only work-units already closed on a boundary are
+            spooled). Used by periodic replay so a mid-work-unit prefix is never spooled under
+            a novel partial key on every poll; the work-unit is captured once when it closes on
+            a real boundary or when a terminal pass runs with ``final=True``. Defaults to
+            ``False`` (the historical end-of-stream drain).
     """
 
     def __init__(
@@ -570,6 +578,7 @@ class GraphitiSink(StorageSink):
         cwd: str | None = None,
         refactor_lines: int = 0,
         popen: PopenFactory | None = None,
+        defer_open_partial: bool = False,
     ) -> None:
         self._spool = spool
         self._namespace = namespace
@@ -588,6 +597,12 @@ class GraphitiSink(StorageSink):
         self._cwd = cwd
         self._refactor_lines = refactor_lines
         self._popen = popen
+        # rt-ingest F1: when True, flush()/close() do NOT drain the still-open trailing
+        # work-unit. Periodic replay sets this so a mid-work-unit prefix is never spooled
+        # under a novel partial key on every poll; the work-unit is captured once when it
+        # closes on a real boundary (flushed by on_event with the stable complete key) or a
+        # terminal pass drains it via flush(final=True). Default False = historical drain.
+        self._defer_open_partial = defer_open_partial
         self._head_sha_resolved = False
         self._head_sha: str | None = None
         self._churn_cache: dict[str, int] = {}
@@ -817,12 +832,20 @@ class GraphitiSink(StorageSink):
             return ""
         return "Session summary\n\n" + "\n\n".join(sections)
 
-    async def flush(self) -> None:
+    async def flush(self, *, final: bool | None = None) -> None:
         # Drain the trailing partial work-unit; idempotent (second call sees empty buffer).
-        self._flush_segment()
+        # ``final`` overrides the per-sink default: an argless flush (the pipeline's per-pass
+        # flush, and direct unit tests) honors ``self._defer_open_partial``; an explicit
+        # ``final`` forces (True) or suppresses (False) the drain. Deferring leaves a still-
+        # open, content-bearing work-unit unspooled until a boundary closes it (flushed by
+        # on_event with the stable complete key) or a terminal pass drains it — never a
+        # partial-prefix snapshot under a novel key (rt-ingest F1).
+        drain = (not self._defer_open_partial) if final is None else final
+        if drain:
+            self._flush_segment()
 
-    async def close(self) -> None:
-        await self.flush()
+    async def close(self, *, final: bool | None = None) -> None:
+        await self.flush(final=final)
 
 
 def resolve_session_cwd(events_path: str | Path) -> str | None:
@@ -891,6 +914,7 @@ async def run_observe(
     record_factory: RecordFactory | None = None,
     provider: Any | None = None,
     phase_resolver: Callable[[Any], tuple[bool, Any]] | None = None,
+    final: bool = True,
 ) -> ObserveResult:
     """Observe one session: adapter → ``EventPipeline`` → :class:`GraphitiSink` → spool.
 
@@ -912,6 +936,14 @@ async def run_observe(
     **already** guaranteed downstream by the spool's unique ``idempotency_key`` (re-observing
     re-reads the whole file and appends zero duplicate episodes), so no durable source
     read-offset is needed for correctness; one is deferred as a pure re-parse optimization.
+
+    **``final`` (rt-ingest F1).** ``True`` (default, and every one-shot caller: CLI, tests,
+    parity helpers) drains the trailing still-open work-unit at end-of-pass, exactly as
+    before. ``False`` — passed by periodic replay for its intermediate polls — builds the
+    sink with ``defer_open_partial`` so this pass spools only work-units already closed on a
+    boundary and leaves the open trailing prefix for a later boundary or the terminal
+    ``final=True`` pass, so a growing file no longer emits a fresh partial-prefix episode per
+    poll.
     """
     provider, pipeline, adapter, sink, result = _prepare_observe(
         events_path,
@@ -927,6 +959,7 @@ async def run_observe(
         record_factory=record_factory,
         provider=provider,
         phase_resolver=phase_resolver,
+        final=final,
     )
     try:
         try:
@@ -962,6 +995,7 @@ def _prepare_observe(
     record_factory: RecordFactory | None,
     provider: Any | None,
     phase_resolver: Callable[[Any], tuple[bool, Any]] | None,
+    final: bool = True,
 ) -> tuple[Any, Any, Any, GraphitiSink, ObserveResult]:
     """Build the ``(provider, pipeline, adapter, sink, result)`` shared by both intakes.
 
@@ -970,6 +1004,11 @@ def _prepare_observe(
     + adapter. That shared construction is the single composition backbone that makes their
     episodes — and therefore their ``idempotency_key``s — byte-identical, so the two paths
     dedupe against the one spool (exactly-once) and pass the parity bar.
+
+    ``final`` maps straight onto the sink's ``defer_open_partial`` (``defer = not final``):
+    ``run_tail`` and one-shot ``run_observe`` leave it ``True`` (drain the trailing partial),
+    while periodic replay passes ``final=False`` on intermediate polls to defer the open
+    work-unit (rt-ingest F1).
     """
     from traceforge import Enricher, EventPipeline
 
@@ -1003,6 +1042,7 @@ def _prepare_observe(
         record_factory=record_factory,
         cwd=resolved_cwd,
         refactor_lines=cfg.ingest.refactor_invalidation_lines,
+        defer_open_partial=not final,
     )
     pipeline = EventPipeline(
         sinks=[sink],
