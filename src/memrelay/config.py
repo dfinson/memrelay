@@ -182,6 +182,45 @@ class IngestConfig:
 
 
 @dataclass
+class CompactionConfig:
+    """Graph-compaction policy for the engine's degradation-driven compaction pass (E9-S2 #59).
+
+    SPEC §5.5: as a namespace accumulates old, rarely-referenced episodes, recall must scan and
+    rank ever more low-signal nodes — degrading ``memory_recall`` latency and precision. A
+    compaction pass folds a namespace's *oldest, lowest-reference-frequency* episodes into one
+    deterministic extractive summary and removes the originals via the shared-entity-preserving
+    cascade (#58), so the graph shrinks while the gist stays recallable. Busier namespaces compact
+    more aggressively.
+
+    Every knob defaults to the **off** position: ``enabled`` is ``False``, so
+    :meth:`memrelay.engine.graphiti.MemoryEngine.compact` is a byte-identical inert no-op (it issues
+    no graph query) and the zero-config first-run is unchanged. Nothing here alters ``note`` /
+    ``search`` / ``detail`` / ``health`` — compaction runs only when a caller explicitly invokes the
+    self-gating ``compact`` pass.
+
+    * ``low_reference_max`` — an episode counts as *low reference frequency* when the number of
+      entity edges (facts) it produced (``EpisodicNode.entity_edges``) is ``<=`` this. ``1`` treats
+      episodes that yielded at most one fact as low-value; a well-connected episode is never a
+      candidate.
+    * ``degradation_ratio`` — the **activity-scaled** trigger: a namespace is *degraded* (and a pass
+      runs) only when its eligible (old + low-frequency) episodes number at least
+      ``ceil(degradation_ratio * episodes_in_namespace)``. Because the bar scales with the namespace
+      size, a busier namespace needs proportionally more stale mass to trigger — and, when it does,
+      has more episodes to compact (SPEC §5.5 "busier namespaces compact more aggressively"). This
+      is degradation-driven, **not** a fixed cap.
+    * ``min_episodes`` — the activity floor and the protected-recency window. A namespace with fewer
+      than this many episodes is never compacted (too quiet to bother), and within any namespace the
+      newest ``min_episodes`` episodes are always protected — so a freshly-noted episode that has
+      not yet accrued edges is never mistaken for stale low-value mass.
+    """
+
+    enabled: bool = False
+    low_reference_max: int = 1
+    degradation_ratio: float = 0.5
+    min_episodes: int = 8
+
+
+@dataclass
 class LoggingConfig:
     """Structured-logging settings (E11-S6, #22).
 
@@ -254,6 +293,8 @@ class Config:
     embeddings: EmbeddingsConfig = field(default_factory=EmbeddingsConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    #: Graph-compaction policy (E9-S2 #59); disabled by default (see :class:`CompactionConfig`).
+    compaction: CompactionConfig = field(default_factory=CompactionConfig)
     #: Optional repo-grouping map from ``[namespaces.*]``; empty unless configured.
     namespaces: NamespacesConfig = field(default_factory=NamespacesConfig)
 
@@ -418,6 +459,7 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
     embeddings = EmbeddingsConfig(**_known(EmbeddingsConfig, data.get("embeddings")))
     ingest = IngestConfig(**_known(IngestConfig, data.get("ingest")))
     logging_cfg = LoggingConfig(**_known(LoggingConfig, data.get("logging")))
+    compaction = CompactionConfig(**_known(CompactionConfig, data.get("compaction")))
     namespaces = _namespaces_from_dict(data.get("namespaces"))
     home = data.get("home", Config.home)
     return Config(
@@ -427,6 +469,7 @@ def _config_from_dict(data: dict[str, Any]) -> Config:
         embeddings=embeddings,
         ingest=ingest,
         logging=logging_cfg,
+        compaction=compaction,
         namespaces=namespaces,
     )
 
