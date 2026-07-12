@@ -13,11 +13,13 @@ monkeypatch so they never launch a real background process.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,13 +35,23 @@ from memrelay.daemon.runtime import (
 )
 from memrelay.daemon.transport import resolve_endpoint
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 PID_FILENAME = "daemon.pid"
+LOCK_FILENAME = "daemon.lock"
 
 #: Default timeouts (seconds).
 PROBE_TIMEOUT = 0.5
 READY_TIMEOUT = 10.0
 STOP_TIMEOUT = 5.0
 POLL_INTERVAL = 0.1
+
+#: Extra grace a *waiting* start allows for the start lock beyond a peer's
+#: readiness wait, so a legitimately slow (not stuck) peer is never pre-empted.
+LOCK_TIMEOUT_MARGIN = 5.0
 
 
 class DaemonStartError(RuntimeError):
@@ -60,6 +72,10 @@ class DaemonStatus:
 
 def pid_path(home: Path) -> Path:
     return home / PID_FILENAME
+
+
+def lock_path(home: Path) -> Path:
+    return home / LOCK_FILENAME
 
 
 def read_pid(home: Path) -> int | None:
@@ -148,6 +164,67 @@ def spawn_detached(home: Path) -> int:
     return proc.pid
 
 
+# ─── Start lock (advisory, cross-platform — closes the start TOCTOU) ──────────
+#
+# Between the health probe and ``spawn_detached``, two concurrent ``memrelay
+# start`` calls could both see "not running" and both spawn a daemon (rt-serve
+# F1). We serialize that check→spawn critical section with an OS-level advisory
+# exclusive lock on ``daemon.lock``. Advisory locks release automatically when
+# the holder dies, so a stale lock file from a crash never wedges start; the
+# health probe stays the sole authority on whether a daemon is actually alive.
+
+
+def _try_exclusive_lock(fd: int) -> bool:
+    """Non-blocking attempt at an exclusive lock on ``fd``; ``True`` on success."""
+    try:
+        if os.name == "nt":
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _release_lock(fd: int) -> None:
+    """Release the advisory lock held on ``fd`` (best effort)."""
+    try:
+        if os.name == "nt":
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _hold_start_lock(
+    home: Path, *, timeout: float, poll_interval: float = POLL_INTERVAL
+) -> Iterator[None]:
+    """Hold the exclusive start lock for the duration of the ``with`` block.
+
+    Spins on a non-blocking acquire until the lock is granted or ``timeout``
+    elapses (raising :class:`DaemonStartError` so a wedged peer can never hang
+    start forever). The lock file is left on disk — only the OS lock matters,
+    and it is released here on exit (and by the OS if this process dies).
+    """
+    fd = os.open(lock_path(home), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + timeout
+        while not _try_exclusive_lock(fd):
+            if time.monotonic() >= deadline:
+                raise DaemonStartError(
+                    "timed out acquiring the daemon start lock; another start may be stuck"
+                )
+            time.sleep(poll_interval)
+        try:
+            yield
+        finally:
+            _release_lock(fd)
+    finally:
+        os.close(fd)
+
+
 # ─── start / stop / status ───────────────────────────────────────────────────
 
 
@@ -156,31 +233,50 @@ def start_daemon(
     *,
     ready_timeout: float = READY_TIMEOUT,
     poll_interval: float = POLL_INTERVAL,
+    lock_timeout: float | None = None,
 ) -> DaemonStatus:
     """Start the daemon if not already running; wait until it answers health.
 
     Returns the resulting :class:`DaemonStatus`; ``running`` is always true on
     success. Raises :class:`DaemonStartError` if the spawned process never
-    becomes healthy within ``ready_timeout``.
+    becomes healthy within ``ready_timeout``, or if the start lock cannot be
+    acquired within ``lock_timeout`` (defaults to ``ready_timeout`` plus a
+    margin so a waiter always outlasts a legitimately slow peer).
+
+    An OS-level advisory lock serializes the health-check→spawn critical section
+    so two concurrent ``start`` invocations can never spawn two daemons: the
+    loser blocks on the lock, then re-probes and finds the winner's healthy
+    daemon (closing the TOCTOU while preserving sequential double-start).
     """
     home = ensure_home(config)
+
     existing = probe_health(home)
     if existing is not None:
         return DaemonStatus(running=True, pid=read_pid(home), health=existing)
 
-    # Clear any stale lock/endpoint from a previous crash before (re)starting.
-    clear_pid(home)
-    transport.cleanup(resolve_endpoint(home))
+    if lock_timeout is None:
+        lock_timeout = ready_timeout + LOCK_TIMEOUT_MARGIN
 
-    pid = spawn_detached(home)
-    write_pid(home, pid)
+    with _hold_start_lock(home, timeout=lock_timeout, poll_interval=poll_interval):
+        # Re-probe under the lock: a start that raced us may have already brought
+        # up a healthy daemon while we blocked acquiring the lock.
+        existing = probe_health(home)
+        if existing is not None:
+            return DaemonStatus(running=True, pid=read_pid(home), health=existing)
 
-    deadline = time.monotonic() + ready_timeout
-    while time.monotonic() < deadline:
-        health = probe_health(home)
-        if health is not None:
-            return DaemonStatus(running=True, pid=pid, health=health)
-        time.sleep(poll_interval)
+        # Clear any stale lock/endpoint from a previous crash before (re)starting.
+        clear_pid(home)
+        transport.cleanup(resolve_endpoint(home))
+
+        pid = spawn_detached(home)
+        write_pid(home, pid)
+
+        deadline = time.monotonic() + ready_timeout
+        while time.monotonic() < deadline:
+            health = probe_health(home)
+            if health is not None:
+                return DaemonStatus(running=True, pid=pid, health=health)
+            time.sleep(poll_interval)
 
     raise DaemonStartError("daemon did not become healthy within the timeout")
 
