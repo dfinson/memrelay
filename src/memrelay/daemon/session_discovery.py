@@ -116,12 +116,15 @@ class RunObserveCapture:
     """Live per-session capture: replay a session into the shared spool on a cadence.
 
     Launches one asyncio task that loops :func:`~memrelay.ingest.graphiti_sink.run_observe`
-    over the session's trace every ``interval`` seconds. Each pass re-reads the (growing)
-    ``events.jsonl`` and appends only new episodes — idempotent by the spool's unique
-    ``idempotency_key`` — so the task is safe to run repeatedly and safe to cancel at any
+    over the session's trace every ``interval`` seconds. Each intermediate pass runs with
+    ``final=False``: it re-reads the (growing) ``events.jsonl`` and spools only work-units
+    already **closed** on a boundary, deferring the still-open trailing work-unit so a
+    content-bearing work-unit that spans polls is not re-emitted under a fresh partial-prefix
+    ``idempotency_key`` every pass (rt-ingest F1). Appends are idempotent by the spool's
+    unique ``idempotency_key``, so the task is safe to run repeatedly and to cancel at any
     point. A failed pass is logged and never crashes the daemon; on :meth:`stop` a final
-    pass drains the trailing work-unit and the ``session.ended`` summary before the task is
-    cancelled and awaited, so nothing is lost and nothing leaks.
+    ``final=True`` pass drains the trailing work-unit and the ``session.ended`` summary before
+    the task is cancelled and awaited, so nothing is lost and nothing leaks.
     """
 
     def __init__(
@@ -160,7 +163,7 @@ class RunObserveCapture:
         except Exception:  # noqa: BLE001 - a capture must never crash the poller/daemon
             logger.debug("session %s: capture loop errored", self._ref.session_id, exc_info=True)
 
-    async def _observe_once(self) -> None:
+    async def _observe_once(self, *, final: bool = False) -> None:
         from memrelay.ingest.graphiti_sink import run_observe
 
         try:
@@ -171,6 +174,7 @@ class RunObserveCapture:
                 provider=self._provider,
                 config=self._config,
                 namespace_map=self._namespace_map,
+                final=final,
             )
         except Exception:  # noqa: BLE001 - one bad pass must not stop live capture
             logger.warning("session %s: observe pass failed", self._ref.session_id, exc_info=True)
@@ -185,9 +189,11 @@ class RunObserveCapture:
                 await task
             except asyncio.CancelledError:
                 pass
-        # Final pass *after* the loop is fully stopped: capture the trailing work-unit and
-        # the session.ended summary. Idempotent, so a race with the cancelled loop is safe.
-        await self._observe_once()
+        # Final pass *after* the loop is fully stopped: the authoritative terminal drain
+        # (``final=True``) captures the still-open trailing work-unit — the one the cadence
+        # passes deliberately deferred — plus the ``session.ended`` summary. Idempotent, so a
+        # race with the cancelled loop is safe (rt-ingest F1).
+        await self._observe_once(final=True)
 
     async def _wait(self) -> None:
         if self._injected_wait is not None:
