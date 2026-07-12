@@ -48,3 +48,30 @@ def test_episode_agent_ignores_empty_agent_value():
     # A dangling ``agent=`` (no value) is not a real agent tag; it must not match everything.
     assert _episode_agent("repo=owner/name agent=") is None
     assert _episode_agent("agent=") is None
+
+
+@pytest.mark.parametrize(
+    ("source_description", "expected"),
+    [
+        ("agent=github%20copilot", "github copilot"),  # embedded space in agent
+        ("repo=r agent=claude%20code", "claude code"),  # SPEC §5.3 first-class 'claude code'
+        ("agent=a%3Db", "a=b"),  # embedded '=' in agent
+        ("agent=re%2520po", "re%20po"),  # literal '%20' survives (not decoded to a space)
+        ("repo=my%20org/name agent=copilot", "copilot"),  # a space in repo can't break agent
+    ],
+)
+def test_episode_agent_roundtrips_escaped_values(source_description, expected):
+    assert _episode_agent(source_description) == expected
+
+
+def test_episode_agent_rejects_forged_agent_token_in_repo_value():
+    # The real agent survives; the ``agent=admin`` the caller tried to smuggle through the
+    # repo value is escaped into the ``repo=`` token and never parsed as the agent.
+    forged = "repo=owner/name%20agent%3Dadmin agent=copilot"
+    assert _episode_agent(forged) == "copilot"
+
+
+def test_episode_agent_ignores_agent_like_substring_in_bare_repo():
+    # A bare repo (source falsy) is not a tokenized description, so a literal ``agent=``
+    # sitting inside it must never be mistaken for an agent tag.
+    assert _episode_agent("weird agent=notme") is None

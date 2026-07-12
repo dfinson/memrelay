@@ -298,7 +298,7 @@ Enriched events become Graphiti episodes. One episode per semantic unit:
 await graphiti.add_episode(
     name=f"tool_{tool_name}_{timestamp}",
     episode_body=f"{tool_name}: {tool_intent} → ✓. Files: src/auth.py",
-    source_description=f"{agent}:{repo}:{session_id}",   # agent = provider id
+    source_description=f"repo={repo} agent={agent}",   # space-delimited key=value tokens (§5.3)
     reference_time=timestamp,
     source=EpisodeType.text,
     group_id=GROUP_ID,
@@ -395,7 +395,7 @@ results = await graphiti.search_(
 await graphiti.add_episode(
     name=f"note_{now_iso()}",
     episode_body=content,
-    source_description=f"explicit_note:{repo}",
+    source_description=f"repo={repo} agent={agent}",   # note provenance — see §5.3
     reference_time=datetime.now(UTC),
     source=EpisodeType.message,
     group_id=namespace,
@@ -517,9 +517,28 @@ Episodes are tagged with both their source repo and the **agent that produced th
 await graphiti.add_episode(
     ...
     group_id=namespace,
-    source_description=f"{agent}:{repo}:{session_id}",   # agent = provider id
+    source_description=f"repo={repo} agent={agent}",   # space-delimited key=value tokens
 )
 ```
+
+**Wire grammar.** `source_description` is a space-delimited sequence of `key=value` tokens.
+When an agent (provider id) is present it is `repo=<owner/name> agent=<provider-id>` (the
+`repo=` token is omitted if the repo is unknown). When no agent is present the description
+falls back to the **bare** repo `<owner/name>`, or the `memrelay-note` sentinel when the repo
+is also absent. Optional file-refactor provenance appends one `file=<path>` token per touched
+file plus a single `sha=<commit>` token (paths containing a space are skipped). Compaction
+summaries instead carry a distinct `memrelay-compaction key=<hash>` marker that is deliberately
+**inert** to the repo/agent parsers — it is never matched by `forget --repo` or agent boosting.
+
+**Escaping.** Inside a `repo=`/`agent=` token *value*, the three characters that would break or
+forge the token grammar are percent-escaped: space → `%20`, `=` → `%3D`, and `%` itself → `%25`
+(escaped first, so the transform is losslessly reversible); the parsers percent-decode on read.
+So the agent `claude code` (a space-containing provider id — cf. Claude Code above) serializes as
+`agent=claude%20code`, a repo `my org/name` as `repo=my%20org/name`, and a repo value literally
+containing `owner/name agent=admin` as the single token `repo=owner/name%20agent%3Dadmin` — its
+embedded `agent=` cannot forge a second token. Clean identifiers (no space, `=`, or `%`)
+serialize byte-for-byte unchanged, so `forget --repo` and agent-boost matching stay exact; the
+bare-repo fallback is stored and read back verbatim (never escaped).
 
 ### 5.4 Context Initialization
 
@@ -838,7 +857,7 @@ These are the verified Graphiti APIs used by memrelay. All verified against [get
 await graphiti.add_episode(
     name: str,                    # Unique episode identifier
     episode_body: str,            # Content to extract entities/relations from
-    source_description: str,      # Provenance: "{agent}:{repo}:{session_id}"
+    source_description: str,      # Provenance: "repo=<owner/name> agent=<id>" (§5.3)
     reference_time: datetime,     # When this happened
     source: EpisodeType,          # EpisodeType.message or EpisodeType.text
     group_id: str,                # Namespace (Graphiti's grouping unit)
