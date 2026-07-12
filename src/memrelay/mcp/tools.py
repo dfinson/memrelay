@@ -31,10 +31,13 @@ def register_tools(
     async def memory_recall(query: str, prefer_repo: str | None = None) -> str:
         """Retrieve relevant context from previous sessions.
 
-        Returns a structured graph map + key facts, not flat text.
+        Returns a structured graph map + key facts, not flat text. When ``prefer_repo``
+        is omitted, the caller's resolved current repo is preferred on score ties (a
+        stable tiebreaker, SPEC §4.4 / #57); pass ``prefer_repo`` explicitly to override.
+        Outside a git repo the resolved repo is ``None``, so recall is unchanged.
         """
-        namespace, _repo = context_resolver()
-        results = await client.search(query, namespace, prefer_repo)
+        namespace, repo = context_resolver()
+        results = await client.search(query, namespace, prefer_repo or repo)
         return format_as_map(results)
 
     @server.tool()

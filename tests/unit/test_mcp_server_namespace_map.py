@@ -88,8 +88,9 @@ def test_recall_and_note_resolve_config_mapped_namespace(monkeypatch) -> None:
     asyncio.run(mcp.call_tool("memory_recall", {"query": "auth system"}))
     asyncio.run(mcp.call_tool("memory_note", {"content": "remember me"}))
 
-    # recall + note both forwarded the config-mapped namespace, repo verbatim on note.
-    assert client.search_calls == [("auth system", "acme", None)]
+    # recall + note both forwarded the config-mapped namespace. Recall now also carries the
+    # resolved current repo as its prefer_repo tiebreaker default (#57); note carries it verbatim.
+    assert client.search_calls == [("auth system", "acme", MIXED_CASE_REPO)]
     assert client.note_calls == [("remember me", "acme", MIXED_CASE_REPO)]
 
     # Symmetry: that is exactly what the observe/capture path resolves for this repo,
