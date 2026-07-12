@@ -36,6 +36,7 @@ from memrelay.engine.compaction import (
     build_digest,
     build_summary_content,
     compaction_source_description,
+    degradation_fraction,
     is_compaction_summary,
     is_degraded,
     select_eligible,
@@ -185,8 +186,8 @@ def test_is_degraded_uses_ceil_of_ratio() -> None:
 
 
 def test_busier_namespace_has_more_eligible_at_same_saturation() -> None:
-    # Both namespaces are fully low-ref; protecting the newest `min_episodes` leaves the busier one
-    # with strictly more eligible episodes — the mechanism behind "busier compacts more".
+    # Both namespaces are fully low-ref; protecting the newest `protect_recent` leaves the busier
+    # one with strictly more eligible episodes — the mechanism behind "busier compacts more".
     busy = [_stat(f"b{i}", i, 0) for i in range(1, 17)]  # E=16
     quiet = [_stat(f"q{i}", i, 0) for i in range(1, 9)]  # E=8
     busy_eligible = select_eligible(busy, low_reference_max=1, protected_recent=4)
@@ -196,6 +197,32 @@ def test_busier_namespace_has_more_eligible_at_same_saturation() -> None:
     assert len(busy_eligible) > len(quiet_eligible)
     assert is_degraded(len(busy_eligible), 16, degradation_ratio=0.5, min_episodes=4)
     assert is_degraded(len(quiet_eligible), 8, degradation_ratio=0.5, min_episodes=4)
+
+
+def test_protect_recent_shields_independently_of_the_activity_floor() -> None:
+    # min_episodes (the floor) and protect_recent (the window) are independent knobs: widening the
+    # protection window shrinks the eligible set while the floor stays put (manager ruling Q2).
+    stats = [_stat(f"u{i}", i, 0) for i in range(1, 9)]  # E=8, all low-ref
+    # A wide window of 6 shields the newest 6 -> only 2 eligible, below the ceil(0.5*8)=4 bar, so
+    # the pass would NOT fire ...
+    eligible_wide = select_eligible(stats, low_reference_max=1, protected_recent=6)
+    assert len(eligible_wide) == 2
+    assert is_degraded(len(eligible_wide), 8, degradation_ratio=0.5, min_episodes=4) is False
+    # ... whereas a narrower window of 4 leaves 4 eligible and the pass fires (same floor both).
+    eligible_narrow = select_eligible(stats, low_reference_max=1, protected_recent=4)
+    assert len(eligible_narrow) == 4
+    assert is_degraded(len(eligible_narrow), 8, degradation_ratio=0.5, min_episodes=4) is True
+
+
+def test_degradation_fraction_is_eligible_over_episodes() -> None:
+    # The deterministic graph-derived proxy is_degraded thresholds and compact() reports
+    # before/after. An empty working set is 0.0, never a divide-by-zero.
+    assert degradation_fraction(4, 8) == 0.5
+    assert degradation_fraction(3, 8) == 0.375
+    assert degradation_fraction(16, 16) == 1.0
+    assert degradation_fraction(0, 5) == 0.0
+    assert degradation_fraction(0, 0) == 0.0
+    assert degradation_fraction(1, 0) == 0.0
 
 
 # --------------------------------------------------------------------------- ref-count parsing
@@ -296,6 +323,39 @@ def _patch_edges(monkeypatch, edges: list[Any] | Exception) -> None:
     monkeypatch.setattr(EntityEdge, "get_by_group_ids", _fake)
 
 
+# --------------------------------------------------------------------------- config knobs
+
+
+def test_compaction_config_defaults_are_all_off() -> None:
+    # Opt-in / default-off: the five knobs ship in the inert position, so compact() is a
+    # byte-identical no-op until a caller explicitly enables it.
+    cfg = CompactionConfig()
+    assert cfg.enabled is False
+    assert cfg.low_reference_max == 1
+    assert cfg.degradation_ratio == 0.5
+    assert cfg.min_episodes == 8
+    assert cfg.protect_recent == 4
+    # Config always carries a compaction section, defaulted off.
+    assert Config().compaction == CompactionConfig()
+
+
+def test_compaction_config_knobs_are_independent() -> None:
+    # The activity floor (min_episodes) and the protected-recency window (protect_recent) are
+    # separate knobs (manager ruling Q2): setting one must not move the other.
+    cfg = CompactionConfig(
+        enabled=True,
+        low_reference_max=2,
+        degradation_ratio=0.25,
+        min_episodes=10,
+        protect_recent=3,
+    )
+    assert cfg.enabled is True
+    assert cfg.low_reference_max == 2
+    assert cfg.degradation_ratio == 0.25
+    assert cfg.min_episodes == 10
+    assert cfg.protect_recent == 3
+
+
 # --------------------------------------------------------------------------- gating (off)
 
 
@@ -353,6 +413,8 @@ def test_dry_run_reads_but_never_writes(monkeypatch) -> None:
     assert ns_metrics["triggered"] is True
     assert ns_metrics["eligible"] == 4  # newest 4 protected, oldest 4 eligible
     assert ns_metrics["episodes_compacted"] == 0
+    assert ns_metrics["degradation_fraction_before"] == 0.5  # eligible 4 / E 8
+    assert ns_metrics["degradation_fraction_after"] == 0.5  # dry_run leaves the graph untouched
     assert graphiti.added == [] and graphiti.removed == []
 
 
@@ -391,6 +453,10 @@ def test_fired_pass_adds_one_summary_then_removes_eligible(monkeypatch) -> None:
     assert ns_metrics["summaries_added"] == 1
     assert ns_metrics["episodes_compacted"] == 3
     assert result["episodes_compacted"] == 3 and result["summaries_added"] == 1
+    assert ns_metrics["degradation_fraction_before"] == 0.375  # eligible 3 / E 8
+    # The FakeDriver is stateless, so the re-read sees the same rows; the real fraction DROP after
+    # removal is proven end-to-end in tests/integration/test_compaction.py.
+    assert isinstance(ns_metrics["degradation_fraction_after"], float)
     # exactly one summary added, carrying the compaction marker over the eligible set
     assert len(graphiti.added) == 1
     assert is_compaction_summary(graphiti.added[0]["source_description"])

@@ -182,45 +182,6 @@ class IngestConfig:
 
 
 @dataclass
-class CompactionConfig:
-    """Graph-compaction policy for the engine's degradation-driven compaction pass (E9-S2 #59).
-
-    SPEC §5.5: as a namespace accumulates old, rarely-referenced episodes, recall must scan and
-    rank ever more low-signal nodes — degrading ``memory_recall`` latency and precision. A
-    compaction pass folds a namespace's *oldest, lowest-reference-frequency* episodes into one
-    deterministic extractive summary and removes the originals via the shared-entity-preserving
-    cascade (#58), so the graph shrinks while the gist stays recallable. Busier namespaces compact
-    more aggressively.
-
-    Every knob defaults to the **off** position: ``enabled`` is ``False``, so
-    :meth:`memrelay.engine.graphiti.MemoryEngine.compact` is a byte-identical inert no-op (it issues
-    no graph query) and the zero-config first-run is unchanged. Nothing here alters ``note`` /
-    ``search`` / ``detail`` / ``health`` — compaction runs only when a caller explicitly invokes the
-    self-gating ``compact`` pass.
-
-    * ``low_reference_max`` — an episode counts as *low reference frequency* when the number of
-      entity edges (facts) it produced (``EpisodicNode.entity_edges``) is ``<=`` this. ``1`` treats
-      episodes that yielded at most one fact as low-value; a well-connected episode is never a
-      candidate.
-    * ``degradation_ratio`` — the **activity-scaled** trigger: a namespace is *degraded* (and a pass
-      runs) only when its eligible (old + low-frequency) episodes number at least
-      ``ceil(degradation_ratio * episodes_in_namespace)``. Because the bar scales with the namespace
-      size, a busier namespace needs proportionally more stale mass to trigger — and, when it does,
-      has more episodes to compact (SPEC §5.5 "busier namespaces compact more aggressively"). This
-      is degradation-driven, **not** a fixed cap.
-    * ``min_episodes`` — the activity floor and the protected-recency window. A namespace with fewer
-      than this many episodes is never compacted (too quiet to bother), and within any namespace the
-      newest ``min_episodes`` episodes are always protected — so a freshly-noted episode that has
-      not yet accrued edges is never mistaken for stale low-value mass.
-    """
-
-    enabled: bool = False
-    low_reference_max: int = 1
-    degradation_ratio: float = 0.5
-    min_episodes: int = 8
-
-
-@dataclass
 class LoggingConfig:
     """Structured-logging settings (E11-S6, #22).
 
@@ -281,6 +242,56 @@ class NamespacesConfig:
         does not resolve to a declared repo simply returns ``None``.
         """
         return self.repo_map.get(_normalize_repo(repo))
+
+
+@dataclass
+class CompactionConfig:
+    """Graph-compaction policy for the engine's degradation-driven compaction pass (E9-S2 #59).
+
+    SPEC §5.5: as a namespace accumulates old, rarely-referenced episodes, recall must scan and
+    rank ever more low-signal nodes — degrading ``memory_recall`` latency and precision. A
+    compaction pass folds a namespace's *oldest, lowest-reference-frequency* episodes into one
+    deterministic extractive summary and removes the originals via the shared-entity-preserving
+    cascade (#58), so the graph shrinks while the gist stays recallable. Busier namespaces compact
+    more aggressively.
+
+    The degradation trigger is a **deterministic, graph-derived proxy** for §5.5's recall
+    latency/precision degradation — the fraction of a namespace that is stale, low-value mass — and
+    deliberately **not** a real wall-clock latency or precision measurement. A real measurement
+    would be non-deterministic (timing-flaky), would have to run on the recall hot path, and could
+    not be driven in a hermetic offline test; the graph-derived proxy is deterministic, hermetic,
+    and knob-driven (see :func:`memrelay.engine.compaction.is_degraded`).
+
+    Every knob defaults to the **off** position: ``enabled`` is ``False``, so
+    :meth:`memrelay.engine.graphiti.MemoryEngine.compact` is a byte-identical inert no-op (it issues
+    no graph query) and the zero-config first-run is unchanged. Nothing here alters ``note`` /
+    ``search`` / ``detail`` / ``health`` — compaction runs only when a caller explicitly invokes the
+    self-gating ``compact`` pass.
+
+    * ``low_reference_max`` — an episode counts as *low reference frequency* when the number of
+      entity edges (facts) it produced (``EpisodicNode.entity_edges``) is ``<=`` this. ``1`` treats
+      episodes that yielded at most one fact as low-value; a well-connected episode is never a
+      candidate.
+    * ``degradation_ratio`` — the **activity-scaled** trigger: a namespace is *degraded* (and a pass
+      runs) only when its eligible (old + low-frequency) episodes number at least
+      ``ceil(degradation_ratio * episodes_in_namespace)``. Because the bar scales with the namespace
+      size, a busier namespace needs proportionally more stale mass to trigger — and, when it does,
+      has more episodes to compact (SPEC §5.5 "busier namespaces compact more aggressively"). This
+      is degradation-driven, **not** a fixed cap.
+    * ``min_episodes`` — the **activity floor**: a namespace holding fewer than this many episodes
+      is never compacted (too quiet to bother). This gates *whether* a pass runs and is independent
+      of the protected window below.
+    * ``protect_recent`` — the **protected-recency window**: the newest ``protect_recent`` episodes
+      in a namespace are always shielded from compaction, so a freshly-noted episode that has not
+      yet accrued edges is never mistaken for stale low-value mass. Independent of ``min_episodes``
+      (the floor and the window need not be equal).
+    """
+
+    enabled: bool = False
+    low_reference_max: int = 1
+    degradation_ratio: float = 0.5
+    min_episodes: int = 8
+    protect_recent: int = 4
 
 
 @dataclass

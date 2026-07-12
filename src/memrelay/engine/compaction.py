@@ -6,6 +6,14 @@ namespace's **oldest, lowest-reference-frequency** episodes into **one determini
 summary** and removes the originals via the shared-entity-preserving cascade (#58), so the graph
 shrinks while the gist stays recallable. Busier namespaces compact more aggressively.
 
+The degradation trigger (:func:`is_degraded`) is a **deterministic, graph-derived proxy** for
+§5.5's recall latency/precision degradation: the fraction of a namespace that is stale, low-value
+mass (old + low-reference-frequency episodes). It is deliberately **not** a real wall-clock latency
+or precision measurement — that would be non-deterministic (timing-flaky), would run on the recall
+hot path, and could not be exercised in a hermetic offline test. The proxy is deterministic,
+hermetic, and knob-driven; :func:`degradation_fraction` exposes it so a caller can report the
+before/after effect.
+
 This module is the **pure decision + summary-construction seam** of that pass. Like
 :mod:`memrelay.ingest.summarizer` (the #33 spool summarizer this mirrors) it is deliberately
 **offline and stdlib-only** — no asyncio, no engine, no graph, no network, no LLM/ML, no API key —
@@ -144,7 +152,7 @@ def is_degraded(
 ) -> bool:
     """Return ``True`` when a namespace is degraded enough to warrant a compaction pass.
 
-    The trigger is **activity-scaled, not a fixed count** (SPEC §871): a namespace is degraded only
+    The trigger is **activity-scaled, not a fixed count** (SPEC §5.5): a namespace is degraded only
     when it holds at least ``min_episodes`` episodes *and* its eligible (old + low-frequency)
     episodes number at least ``ceil(degradation_ratio * episode_count)``. Because the bar scales
     with namespace size, a busier namespace needs proportionally more stale mass to trigger — and,
@@ -155,3 +163,17 @@ def is_degraded(
         return False
     bar = math.ceil(degradation_ratio * episode_count)
     return eligible_count >= bar
+
+
+def degradation_fraction(eligible_count: int, episode_count: int) -> float:
+    """Return the stale-low-value-mass fraction of a namespace's working set.
+
+    This is the deterministic, graph-derived **proxy** for SPEC §5.5's recall latency/precision
+    degradation — ``eligible_count / episode_count`` (0.0 for an empty working set) — that
+    :func:`is_degraded` thresholds against ``degradation_ratio``. Exposed separately so a caller can
+    report it **before vs. after** a pass and make the reclaim measurable (AC4), not merely
+    asserted. It is NOT a wall-clock latency or precision measurement (see the module docstring).
+    """
+    if episode_count <= 0:
+        return 0.0
+    return round(eligible_count / episode_count, 6)
