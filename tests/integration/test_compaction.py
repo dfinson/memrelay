@@ -112,7 +112,9 @@ def test_degraded_namespace_compacts_and_preserves_gist(tmp_path, gate_embedder,
     other = "other"
 
     async def scenario() -> None:
-        cfg = _make_config(tmp_path, enabled=True, min_episodes=4, degradation_ratio=0.5)
+        cfg = _make_config(
+            tmp_path, enabled=True, min_episodes=4, protect_recent=4, degradation_ratio=0.5
+        )
         engine = await MemoryEngine.from_config(
             cfg, llm_client=mock_llm_factory(_PROJ_VOCAB), embedder=gate_embedder
         )
@@ -149,6 +151,10 @@ def test_degraded_namespace_compacts_and_preserves_gist(tmp_path, gate_embedder,
             assert metrics["episodes_after"] == 5
             assert metrics["entities_after"] <= metrics["entities_before"]
             assert metrics["edges_after"] <= metrics["edges_before"]
+            # The degradation proxy (eligible/episodes) is measurably reclaimed: 4/8 -> 0.0 once the
+            # stale mass is folded away (the surviving 4 are all inside the protected window).
+            assert metrics["degradation_fraction_before"] == 0.5
+            assert metrics["degradation_fraction_after"] == 0.0
 
             # Exactly one summary episode now exists; the four oldest originals are gone; the four
             # protected originals survive.
@@ -228,7 +234,9 @@ def test_busier_namespace_compacts_more(tmp_path, gate_embedder, mock_llm_factor
     strictly more, the graph self-regulating by namespace size (AC3)."""
 
     async def scenario() -> None:
-        cfg = _make_config(tmp_path, enabled=True, min_episodes=4, degradation_ratio=0.5)
+        cfg = _make_config(
+            tmp_path, enabled=True, min_episodes=4, protect_recent=4, degradation_ratio=0.5
+        )
         vocab = [f"E{i}" for i in range(16)]
         engine = await MemoryEngine.from_config(
             cfg, llm_client=mock_llm_factory(vocab), embedder=gate_embedder
@@ -250,6 +258,13 @@ def test_busier_namespace_compacts_more(tmp_path, gate_embedder, mock_llm_factor
             # before/after metrics per namespace (AC4): each shrank by its own compacted count.
             assert busy["episodes_before"] == 16 and busy["episodes_after"] == 16 - 12 + 1
             assert quiet["episodes_before"] == 8 and quiet["episodes_after"] == 8 - 4 + 1
+            # The busier namespace starts more degraded by the proxy (12/16 vs 4/8) and both are
+            # fully reclaimed to 0.0 — the effect is measured, not merely asserted (AC4).
+            assert busy["degradation_fraction_before"] == 0.75
+            assert quiet["degradation_fraction_before"] == 0.5
+            assert busy["degradation_fraction_after"] == 0.0
+            assert quiet["degradation_fraction_after"] == 0.0
+            assert busy["degradation_fraction_before"] > quiet["degradation_fraction_before"]
             assert result["episodes_compacted"] == 16 and result["summaries_added"] == 2
             assert await _summary_count(engine, "busy") == 1
             assert await _summary_count(engine, "quiet") == 1

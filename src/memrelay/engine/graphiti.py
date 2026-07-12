@@ -38,6 +38,7 @@ from .compaction import (
     EpisodeStat,
     build_summary_content,
     compaction_source_description,
+    degradation_fraction,
     is_compaction_summary,
     is_degraded,
     select_eligible,
@@ -627,6 +628,14 @@ class MemoryEngine:
         aggressively (the bar scales with namespace size). ``namespace=None`` sweeps every
         namespace; otherwise only the one given is considered.
 
+        The trigger is a **deterministic, graph-derived proxy** for SPEC §5.5's recall
+        latency/precision degradation — the fraction of a namespace that is stale, low-value mass
+        (see :func:`memrelay.engine.compaction.degradation_fraction`) — and **not** a real
+        wall-clock latency or precision measurement. Measuring real recall latency would be
+        non-deterministic (timing-flaky), would run on the recall hot path, and could not be
+        exercised hermetically; the proxy is deterministic, hermetic, and knob-driven (mirroring how
+        #60's refactor invalidation triggers on change magnitude, not on "detecting a refactor").
+
         Guarantees, by construction (see :class:`memrelay.config.CompactionConfig`):
 
         * **Opt-in / byte-identical when off.** With ``compaction.enabled`` at its ``False`` default
@@ -634,17 +643,19 @@ class MemoryEngine:
           ``note`` / ``search`` / ``detail`` / ``health`` are unmodified, so the zero-config
           first-run is unchanged. Compaction only ever happens through an explicit ``compact`` call.
         * **Degradation-driven, not a fixed count.** A namespace is compacted only when it holds at
-          least ``min_episodes`` episodes and its eligible (old + low-frequency) episodes reach
-          ``ceil(degradation_ratio * episodes)`` (:func:`memrelay.engine.compaction.is_degraded`);
-          the newest ``min_episodes`` episodes are always protected, so fresh notes stay.
+          least ``min_episodes`` episodes (the activity floor) and its eligible (old + low-freq)
+          episodes reach ``ceil(degradation_ratio * episodes)``
+          (:func:`memrelay.engine.compaction.is_degraded`); the newest ``protect_recent`` episodes
+          are always shielded, so fresh notes stay. Floor and window are independent knobs.
         * **Deterministic + hermetic.** Selection, the summary key, and the extractive digest are
           pure and offline (no LLM/ML, no wall-clock, no network) — a re-run is byte-identical.
         * **Idempotent / no thrash.** After a pass the eligible set is empty and the summary is
           excluded from the working set, so an immediate re-run is a clean no-op; the deterministic
           per-victim-set summary key plus a pre-existence check means a crash-retry never creates a
           duplicate summary.
-        * **Measured before/after (AC4).** Returns per-namespace and aggregate before/after episode,
-          edge and entity counts a caller/test can assert on.
+        * **Measured before/after (AC4).** Returns per-namespace and aggregate metrics — episode,
+          edge and entity counts and the degradation fraction, before vs. after — that a caller/test
+          can assert on, so the reclaim is measurable rather than merely claimed.
 
         ``dry_run`` computes and reports what *would* be compacted (``eligible``) without writing —
         parity with :meth:`forget`. Returns a structured metrics dict; it never raises for an empty
@@ -696,34 +707,12 @@ class MemoryEngine:
         working set, which is what makes a re-run a no-op.
         """
         cfg = self._cfg.compaction
-        rows, _, _ = await self._driver.execute_query(
-            "MATCH (e:Episodic) WHERE e.group_id = $group_id "
-            "RETURN e.uuid AS uuid, e.valid_at AS valid_at, e.content AS content, "
-            "e.source_description AS source_description, e.entity_edges AS entity_edges",
-            group_id=namespace,
-            routing_="r",
-        )
-        episodes_before = len(rows)
-        existing_summary_sds = {
-            row.get("source_description")
-            for row in rows
-            if is_compaction_summary(row.get("source_description"))
-        }
-        stats = [
-            EpisodeStat(
-                uuid=row["uuid"],
-                valid_at=row["valid_at"],
-                ref_count=_entity_edge_count(row.get("entity_edges")),
-                content=row.get("content") or "",
-            )
-            for row in rows
-            if not is_compaction_summary(row.get("source_description"))
-        ]
+        episodes_before, stats, existing_summary_sds = await self._read_working_set(namespace)
         episode_count = len(stats)
         eligible = select_eligible(
             stats,
             low_reference_max=cfg.low_reference_max,
-            protected_recent=cfg.min_episodes,
+            protected_recent=cfg.protect_recent,
         )
         triggered = is_degraded(
             len(eligible),
@@ -731,6 +720,7 @@ class MemoryEngine:
             degradation_ratio=cfg.degradation_ratio,
             min_episodes=cfg.min_episodes,
         )
+        fraction_before = degradation_fraction(len(eligible), episode_count)
         edges_before = await self._namespace_edge_count(namespace)
         entities_before = await self._namespace_entity_count(namespace)
         metrics: dict[str, Any] = {
@@ -744,6 +734,8 @@ class MemoryEngine:
             "edges_after": edges_before,
             "entities_before": entities_before,
             "entities_after": entities_before,
+            "degradation_fraction_before": fraction_before,
+            "degradation_fraction_after": fraction_before,
         }
         if dry_run or not triggered or not eligible:
             return metrics
@@ -773,19 +765,56 @@ class MemoryEngine:
             await self._graphiti.remove_episode(uuid)
         metrics["episodes_compacted"] = len(victim_uuids)
 
-        metrics["episodes_after"] = await self._namespace_episode_count(namespace)
+        # Re-measure from the graph so the after-metrics — including the degradation fraction — are
+        # read back, not inferred: an honest before/after for AC4.
+        episodes_after, stats_after, _ = await self._read_working_set(namespace)
+        eligible_after = select_eligible(
+            stats_after,
+            low_reference_max=cfg.low_reference_max,
+            protected_recent=cfg.protect_recent,
+        )
+        metrics["episodes_after"] = episodes_after
+        metrics["degradation_fraction_after"] = degradation_fraction(
+            len(eligible_after), len(stats_after)
+        )
         metrics["edges_after"] = await self._namespace_edge_count(namespace)
         metrics["entities_after"] = await self._namespace_entity_count(namespace)
         return metrics
 
-    async def _namespace_episode_count(self, namespace: str) -> int:
-        """Count every ``Episodic`` node in ``namespace`` (summaries included)."""
-        records, _, _ = await self._driver.execute_query(
-            "MATCH (e:Episodic) WHERE e.group_id = $group_id RETURN count(e) AS episode_count",
+    async def _read_working_set(
+        self, namespace: str
+    ) -> tuple[int, list[EpisodeStat], set[str | None]]:
+        """Read ``namespace``'s episodics once, for use before AND after a pass.
+
+        Returns ``(episodes_total, working_set_stats, existing_summary_source_descriptions)``:
+        the total ``Episodic`` count (summaries included), the non-summary working set as
+        :class:`EpisodeStat` rows (each with its ``entity_edges`` reference count), and the
+        ``source_description`` markers of existing compaction summaries — which are kept out of the
+        working set, so a re-run over them selects nothing (idempotent no-op).
+        """
+        rows, _, _ = await self._driver.execute_query(
+            "MATCH (e:Episodic) WHERE e.group_id = $group_id "
+            "RETURN e.uuid AS uuid, e.valid_at AS valid_at, e.content AS content, "
+            "e.source_description AS source_description, e.entity_edges AS entity_edges",
             group_id=namespace,
             routing_="r",
         )
-        return int(records[0]["episode_count"]) if records else 0
+        existing_summary_sds = {
+            row.get("source_description")
+            for row in rows
+            if is_compaction_summary(row.get("source_description"))
+        }
+        stats = [
+            EpisodeStat(
+                uuid=row["uuid"],
+                valid_at=row["valid_at"],
+                ref_count=_entity_edge_count(row.get("entity_edges")),
+                content=row.get("content") or "",
+            )
+            for row in rows
+            if not is_compaction_summary(row.get("source_description"))
+        ]
+        return len(rows), stats, existing_summary_sds
 
     async def _namespace_entity_count(self, namespace: str) -> int:
         """Count every ``Entity`` node in ``namespace`` (the entity-reclaim metric)."""
