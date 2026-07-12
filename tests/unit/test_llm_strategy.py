@@ -15,7 +15,6 @@ from memrelay.engine.llm.borrow_host import (
     HostProcessError,
 )
 from memrelay.engine.llm.byo_key import ByoKeyConfigError, ByoKeyLLMClient
-from memrelay.engine.llm.local import LocalLLMClient
 from memrelay.engine.llm.strategy import (
     STRATEGY_BORROW_HOST,
     STRATEGY_BYO_KEY,
@@ -102,12 +101,6 @@ def test_byokey_client_is_lazy_and_needs_key(monkeypatch):
     # Building the delegate without a key raises a clear config error (no network).
     with pytest.raises(ByoKeyConfigError):
         client._build_delegate()
-
-
-def test_local_stub_raises_not_implemented():
-    client = LocalLLMClient(config=None)
-    with pytest.raises(NotImplementedError):
-        asyncio.run(client._generate_response([]))
 
 
 # ── BorrowHostStrategy host→process registry (E4 / #87) ──────────────────────────

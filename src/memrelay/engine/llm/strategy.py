@@ -92,13 +92,19 @@ class LocalStrategy(LLMStrategy):
     name = STRATEGY_LOCAL
 
     def is_available(self, cfg: Config) -> bool:
-        # Deferred (E4-S7 / #64): never selected automatically.
-        return False
+        # Opt-in only (E4-S7 / #64): the local model is selected automatically only
+        # when the user explicitly asks for it — ``strategy == "local"`` — or has
+        # pointed at a local endpoint via ``local_base_url``. ``local_base_url``
+        # defaults to None, so the zero-config default stays borrow-host and the
+        # fallback chain / "no LLM present still builds" guarantee are unchanged.
+        return cfg.llm.strategy == STRATEGY_LOCAL or bool(cfg.llm.local_base_url)
 
     def build_client(self, cfg: Config) -> LLMClient:
         from .local import LocalLLMClient
 
-        return LocalLLMClient(config=None)
+        # Cheap: records base_url/model and constructs the backend (a bare URL
+        # holder). No socket is opened until an actual extraction call.
+        return LocalLLMClient(base_url=cfg.llm.local_base_url, model=cfg.llm.local_model)
 
 
 def default_registry() -> dict[str, LLMStrategy]:
