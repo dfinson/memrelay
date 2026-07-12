@@ -33,6 +33,23 @@ SOCKET_FILENAME = "daemon.sock"
 PORT_FILENAME = "daemon.port"
 LOOPBACK_HOST = "127.0.0.1"
 
+#: Max framed-line size the daemon will buffer while reading one request. asyncio's
+#: StreamReader defaults to 64 KiB (2**16), which silently caps a ``memory_note``
+#: carrying a large diff/file; we raise it to a generous ceiling so legitimate notes
+#: parse cleanly while an abusive/oversized frame is still bounded and reported.
+MAX_LINE_BYTES = 4 * 1024 * 1024
+
+
+class MessageTooLarge(ValueError):
+    """A framed request line exceeded the transport read limit.
+
+    Subclasses :class:`ValueError` so existing ``read_message`` consumers that
+    broadly catch ``ValueError`` stay backward-compatible, while callers that want
+    to answer distinctly (a ``payload_too_large`` envelope rather than
+    ``bad_json``) can catch this precise type *first*.
+    """
+
+
 #: asyncio stream handler signature.
 Handler = Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]
 
@@ -77,9 +94,18 @@ async def read_message(reader: asyncio.StreamReader) -> dict[str, Any] | None:
     """Read one newline-delimited JSON object, or ``None`` at end of stream.
 
     Raises :class:`ValueError` on a malformed (non-JSON, or non-object) line so
-    callers can answer with an error envelope rather than crash.
+    callers can answer with an error envelope rather than crash. A line longer
+    than the reader's buffer limit raises :class:`MessageTooLarge` (a
+    ``ValueError`` subclass) so callers can distinguish "too big" from "bad JSON".
     """
-    line = await reader.readline()
+    try:
+        line = await reader.readline()
+    except ValueError as exc:
+        # StreamReader.readline() collapses an asyncio.LimitOverrunError (a line
+        # longer than the buffer limit) into a plain ValueError. Re-raise it as a
+        # precise type so the server answers payload_too_large instead of
+        # mislabeling an oversized-but-valid line as bad JSON.
+        raise MessageTooLarge(str(exc)) from exc
     if not line:
         return None
     obj = json.loads(line.decode("utf-8"))
@@ -91,25 +117,28 @@ async def read_message(reader: asyncio.StreamReader) -> dict[str, Any] | None:
 # ─── Listen / connect ────────────────────────────────────────────────────────
 
 
-async def serve(endpoint: Endpoint, handler: Handler) -> asyncio.AbstractServer:
+async def serve(
+    endpoint: Endpoint, handler: Handler, *, limit: int = MAX_LINE_BYTES
+) -> asyncio.AbstractServer:
     """Start a listener for ``endpoint`` and return the asyncio server.
 
     Callers are responsible for single-instance enforcement *before* calling
     this; a stale Unix socket file from a crashed daemon is removed first so the
     bind can succeed. On loopback, the chosen port is written to
-    :attr:`Endpoint.port_path`.
+    :attr:`Endpoint.port_path`. ``limit`` sets each connection's read-buffer
+    ceiling (see :data:`MAX_LINE_BYTES`).
     """
     endpoint.home.mkdir(parents=True, exist_ok=True)
 
     if endpoint.use_loopback:
-        server = await asyncio.start_server(handler, LOOPBACK_HOST, 0)
+        server = await asyncio.start_server(handler, LOOPBACK_HOST, 0, limit=limit)
         port = server.sockets[0].getsockname()[1]
         _atomic_write(endpoint.port_path, str(port))
         return server
 
     # POSIX Unix domain socket. Remove a stale file so start_unix_server can bind.
     _unlink_quietly(endpoint.socket_path)
-    server = await asyncio.start_unix_server(handler, path=str(endpoint.socket_path))
+    server = await asyncio.start_unix_server(handler, path=str(endpoint.socket_path), limit=limit)
     try:
         os.chmod(endpoint.socket_path, 0o600)  # owner-only, defense in depth
     except OSError:

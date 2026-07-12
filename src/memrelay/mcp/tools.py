@@ -21,6 +21,13 @@ from memrelay.mcp.format import format_as_map, format_detail
 #: the same namespace the capture/observe path writes (#106).
 ContextResolver = Callable[[], tuple[str, str | None]]
 
+#: Max size of a single ``memory_note`` payload. A note carrying a large diff/file can
+#: grow unbounded; we reject oversized content at the tool boundary with a clear message
+#: rather than let it hit the daemon socket, so the agent gets an actionable answer
+#: instead of an opaque transport error. Kept well under the daemon's framing ceiling
+#: (:data:`memrelay.daemon.transport.MAX_LINE_BYTES`).
+MAX_NOTE_BYTES = 512 * 1024
+
 
 def register_tools(
     server: FastMCP, client: DaemonClient, context_resolver: ContextResolver
@@ -50,6 +57,13 @@ def register_tools(
     @server.tool()
     async def memory_note(content: str) -> str:
         """Explicitly store a fact for future recall."""
+        size = len(content.encode("utf-8"))
+        if size > MAX_NOTE_BYTES:
+            return (
+                f"Note not stored: {size} bytes exceeds the "
+                f"{MAX_NOTE_BYTES // 1024} KiB per-note limit. "
+                "Split it into smaller notes or store only the essential facts."
+            )
         namespace, repo = context_resolver()
         await client.note(content, namespace, repo)
         return "Noted."
