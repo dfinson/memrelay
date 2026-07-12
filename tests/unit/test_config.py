@@ -220,3 +220,39 @@ def test_spool_budget_via_file_and_env_precedence(tmp_path: Path) -> None:
     cfg2 = load_config(path=cfg_file, environ={"MEMRELAY_INGEST__SPOOL_MAX_BYTES": "999"})
     assert cfg2.ingest.spool_max_bytes == 999  # env beats file
     assert cfg2.ingest.spool_compaction_pct == 0.6  # untouched file value survives
+
+
+def test_refactor_invalidation_lines_defaults_disabled() -> None:
+    """Zero-config: file-refactor invalidation is off (E9-S3 #60) — byte-identical default."""
+    cfg = load_config(environ={})
+    assert cfg.ingest.refactor_invalidation_lines == 0
+
+
+def test_refactor_invalidation_lines_via_kwargs() -> None:
+    """An explicit threshold opts into big-refactor invalidation (E9-S3 #60)."""
+    cfg = load_config(environ={}, ingest={"refactor_invalidation_lines": 150})
+    assert cfg.ingest.refactor_invalidation_lines == 150
+
+
+def test_refactor_invalidation_lines_via_env_coerce() -> None:
+    """``MEMRELAY_INGEST__REFACTOR_INVALIDATION_LINES`` nests and coerces to int."""
+    cfg = load_config(environ={"MEMRELAY_INGEST__REFACTOR_INVALIDATION_LINES": "80"})
+    assert cfg.ingest.refactor_invalidation_lines == 80
+    assert isinstance(cfg.ingest.refactor_invalidation_lines, int)
+
+
+def test_refactor_invalidation_lines_via_file_and_env_precedence(tmp_path: Path) -> None:
+    """An ``[ingest]`` TOML threshold loads; env still beats file (E9-S3 #60)."""
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(
+        """
+        [ingest]
+        refactor_invalidation_lines = 120
+        """,
+        encoding="utf-8",
+    )
+    cfg = load_config(path=cfg_file, environ={})
+    assert cfg.ingest.refactor_invalidation_lines == 120
+
+    cfg2 = load_config(path=cfg_file, environ={"MEMRELAY_INGEST__REFACTOR_INVALIDATION_LINES": "5"})
+    assert cfg2.ingest.refactor_invalidation_lines == 5  # env beats file

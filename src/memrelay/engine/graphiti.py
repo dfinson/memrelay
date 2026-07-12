@@ -23,6 +23,9 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from graphiti_core.cross_encoder.client import CrossEncoderClient
+from graphiti_core.driver.driver import GraphProvider
+from graphiti_core.edges import EntityEdge
+from graphiti_core.errors import GroupsEdgesNotFoundError
 from graphiti_core.graphiti import Graphiti
 from graphiti_core.nodes import EntityNode, EpisodeType
 from graphiti_core.search.search_config_recipes import COMBINED_HYBRID_SEARCH_RRF
@@ -155,6 +158,9 @@ class MemoryEngine:
         namespace: str,
         repo: str | None = None,
         source: str | None = None,
+        *,
+        last_commit_sha: str | None = None,
+        file_change_lines: dict[str, int] | None = None,
     ) -> str:
         """Store a fact as an episode; returns the episode uuid (or 'Noted.').
 
@@ -166,6 +172,16 @@ class MemoryEngine:
         ``agent=<agent>`` when ``repo`` is absent. When ``source`` is falsy the
         description is **byte-identical to the pre-#40 behaviour** (``repo`` alone,
         falling back to ``"memrelay-note"``) so existing callers are unaffected.
+
+        ``last_commit_sha`` / ``file_change_lines`` are optional file-refactor provenance
+        (E9-S3 #60), populated by the sink only when ``ingest.refactor_invalidation_lines``
+        is enabled. When present, ``file=<path>`` tokens (one per touched file) plus a single
+        ``sha=<last_commit_sha>`` token are appended to ``source_description`` — making this
+        episode's file facts recoverable — and, **before** the new episode is added,
+        :meth:`invalidate_file_facts` is called per file so a big-enough refactor supersedes
+        that file's prior facts (via temporal edges, never a delete) without the incoming
+        fact catching its own invalidation. When both are ``None`` (the zero-config default)
+        nothing is appended and no invalidation runs, so behaviour is byte-identical.
         """
         if source:
             tokens = []
@@ -175,12 +191,31 @@ class MemoryEngine:
             source_description = " ".join(tokens)
         else:
             source_description = repo or "memrelay-note"
+        # E9-S3 #60: file-refactor provenance. A path containing a space is skipped — it would
+        # break the space-delimited ``key=value`` token grammar the inverse parsers rely on.
+        refactor_files = sorted(path for path in (file_change_lines or {}) if " " not in path)
+        if refactor_files and last_commit_sha:
+            file_tokens = " ".join(f"file={path}" for path in refactor_files)
+            source_description = f"{source_description} {file_tokens} sha={last_commit_sha}"
+        reference_time = datetime.now(UTC)
+        # Supersede prior file facts BEFORE adding the new episode, so the incoming fact is
+        # never caught by its own invalidation. Each call self-gates on the threshold, so this
+        # is inert (no writes) when the feature is off or the change is below the threshold.
+        if last_commit_sha:
+            for path in refactor_files:
+                await self.invalidate_file_facts(
+                    namespace,
+                    path,
+                    last_commit_sha,
+                    change_magnitude=file_change_lines[path],
+                    reference_time=reference_time,
+                )
         result = await self._graphiti.add_episode(
             name=_episode_name(content),
             episode_body=content,
             source=EpisodeType.message,
             source_description=source_description,
-            reference_time=datetime.now(UTC),
+            reference_time=reference_time,
             group_id=namespace,
         )
         episode = getattr(result, "episode", None)
@@ -499,6 +534,73 @@ class MemoryEngine:
                 await self._graphiti.remove_episode(uuid)
         return len(uuids)
 
+    async def invalidate_file_facts(
+        self,
+        namespace: str,
+        file_path: str,
+        new_commit_sha: str,
+        *,
+        change_magnitude: int,
+        reference_time: datetime | None = None,
+    ) -> int:
+        """Temporally supersede a file's prior facts after a big refactor (E9-S3 #60).
+
+        The deterministic, conservative staleness path (SPEC §5.5). When
+        ``change_magnitude`` — the file's changed-line count between its previously-stamped
+        commit and ``new_commit_sha`` — meets the configured
+        ``ingest.refactor_invalidation_lines`` threshold, every still-valid entity edge
+        derived from a *prior* episode that (a) lives in ``namespace`` (matched by
+        ``group_id``), (b) carries this ``file_path`` in its ``source_description`` file
+        provenance, and (c) was stamped at a *different* commit sha has its bitemporal
+        ``expired_at`` / ``invalid_at`` set to ``reference_time`` (now if omitted). Returns
+        the number of edges superseded.
+
+        Guarantees, by construction: it is inert — returns 0 and issues no write — unless the
+        threshold is a positive value the magnitude meets, so the zero-config default never
+        invalidates; it is scoped to the one ``group_id`` (**never crosses a namespace**); it
+        only ever touches edges tied to this file's episodes (**never a non-file memory**);
+        and it **never deletes** — the fact stays in the graph, fully recallable, merely
+        temporally closed. Only the two temporal fields are written; the edge's fact,
+        embedding, episodes and attributes are left untouched. This is the single tested
+        invalidation entry point; :meth:`note` calls it before adding the new episode so an
+        incoming fact never invalidates itself.
+        """
+        threshold = self._cfg.ingest.refactor_invalidation_lines
+        if threshold <= 0 or change_magnitude < threshold:
+            return 0
+        records, _, _ = await self._driver.execute_query(
+            "MATCH (e:Episodic) WHERE e.group_id = $group_id "
+            "RETURN e.uuid AS uuid, e.source_description AS source_description",
+            group_id=namespace,
+            routing_="r",
+        )
+        stale_episodes = {
+            record["uuid"]
+            for record in records
+            if file_path in _episode_files(record.get("source_description"))
+            and _episode_sha(record.get("source_description")) not in (None, new_commit_sha)
+        }
+        if not stale_episodes:
+            return 0
+        try:
+            edges = await EntityEdge.get_by_group_ids(self._driver, [namespace])
+        except GroupsEdgesNotFoundError:
+            return 0
+        target_uuids = [
+            edge.uuid
+            for edge in edges
+            if edge.expired_at is None and stale_episodes.intersection(edge.episodes or [])
+        ]
+        if not target_uuids:
+            return 0
+        ref_time = reference_time if reference_time is not None else datetime.now(UTC)
+        await self._driver.execute_query(
+            _invalidate_edges_query(self._driver.provider),
+            uuids=target_uuids,
+            ref_time=ref_time,
+        )
+        return len(target_uuids)
+
 
 def _episode_repo(source_description: str | None) -> str | None:
     """Recover the repo an episode was tagged with, or ``None``.
@@ -541,6 +643,67 @@ def _episode_agent(source_description: str | None) -> str | None:
         if sep and key == "agent":
             return value.strip() or None
     return None
+
+
+def _episode_files(source_description: str | None) -> frozenset[str]:
+    """Recover the set of file paths a file episode was tagged with (E9-S3 #60).
+
+    Inverse of the ``file=<path>`` tokens :meth:`MemoryEngine.note` appends when file-refactor
+    provenance is stamped. A composed episode may touch several files, so *all* ``file=``
+    tokens are collected; an episode with none yields an empty set. Paths containing a space
+    are never stamped (they would break the token grammar), so they never appear here. The
+    scan is token-order-independent and coexists with the ``repo=`` / ``agent=`` / ``sha=``
+    tokens that may share the same description.
+    """
+    text = (source_description or "").strip()
+    if "=" not in text:
+        return frozenset()
+    files: set[str] = set()
+    for token in text.split(" "):
+        key, sep, value = token.partition("=")
+        if sep and key == "file" and value.strip():
+            files.add(value.strip())
+    return frozenset(files)
+
+
+def _episode_sha(source_description: str | None) -> str | None:
+    """Recover the HEAD commit sha a file episode was stamped at (E9-S3 #60), or ``None``.
+
+    Inverse of the single ``sha=<sha>`` token :meth:`MemoryEngine.note` appends alongside file
+    provenance. Absent/empty yields ``None`` so an episode with no stamped sha is never treated
+    as belonging to a specific refactor generation (and so is never superseded).
+    """
+    text = (source_description or "").strip()
+    if "=" not in text:
+        return None
+    for token in text.split(" "):
+        key, sep, value = token.partition("=")
+        if sep and key == "sha":
+            return value.strip() or None
+    return None
+
+
+def _invalidate_edges_query(provider: GraphProvider) -> str:
+    """Cypher that temporally supersedes RELATES_TO edges by uuid (E9-S3 #60).
+
+    Sets ONLY the bitemporal ``expired_at`` / ``invalid_at`` — never deletes, and never
+    touches fact / embedding / episodes / attributes / reference_time — so a superseded fact
+    stays fully recallable, merely temporally closed. LadybugDB/Kuzu store the RELATES_TO fact
+    on an intermediary ``RelatesToNode_`` (see ``engine.backends.ladybug_driver``); other
+    providers keep it on the relationship itself, so the match shape is provider-specific
+    (mirroring graphiti-core's own KUZU branching).
+    """
+    if provider == GraphProvider.KUZU:
+        return (
+            "MATCH (n:Entity)-[:RELATES_TO]->(e:RelatesToNode_)-[:RELATES_TO]->(m:Entity) "
+            "WHERE e.uuid IN $uuids "
+            "SET e.expired_at = $ref_time, e.invalid_at = $ref_time"
+        )
+    return (
+        "MATCH (n:Entity)-[e:RELATES_TO]->(m:Entity) "
+        "WHERE e.uuid IN $uuids "
+        "SET e.expired_at = $ref_time, e.invalid_at = $ref_time"
+    )
 
 
 def _zip_scores(items: list[Any], scores: list[float] | None) -> list[tuple[Any, float | None]]:

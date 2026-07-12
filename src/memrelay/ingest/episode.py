@@ -28,9 +28,10 @@ from typing import Any
 
 #: The exact keys of the serialized episode dict, in declaration order. A & C build
 #: dicts against this; :func:`EpisodeRecord.from_dict` filters to it defensively.
-#: ``phase`` (E2-S6 #98) is appended last and defaults to ``None`` so that spool rows
-#: written before it existed still deserialize (the missing key falls back to the
-#: field default) — a backward-compatible wire-format extension.
+#: ``phase`` (E2-S6 #98), then ``last_commit_sha`` / ``file_change_lines`` (E9-S3 #60)
+#: are appended last and default to ``None`` so that spool rows written before they
+#: existed still deserialize (the missing key falls back to the field default) — a
+#: backward-compatible wire-format extension.
 EPISODE_FIELDS: tuple[str, ...] = (
     "content",
     "namespace",
@@ -41,6 +42,8 @@ EPISODE_FIELDS: tuple[str, ...] = (
     "ts",
     "idempotency_key",
     "phase",
+    "last_commit_sha",
+    "file_change_lines",
 )
 
 
@@ -70,9 +73,14 @@ class EpisodeRecord:
     through unchanged. ``phase`` (E2-S6 #98) is the derived traceforge
     workflow-phase for the episode when ``enable_phase`` is on (else ``None``); the
     ingester folds it into the noted content, so it is *not* an input to
-    :func:`make_idempotency_key` and never changes an episode's key. Instances are
-    frozen — treat a record as an immutable value and use :meth:`to_dict` to get the
-    transport form.
+    :func:`make_idempotency_key` and never changes an episode's key. ``last_commit_sha``
+    / ``file_change_lines`` (E9-S3 #60) are file-refactor provenance stamped by the sink
+    only when ``refactor_invalidation_lines`` is enabled: the HEAD sha the file episode
+    was observed at, and a ``{path: changed_lines}`` magnitude map. Both default ``None``
+    (so the zero-config wire form is unchanged), are pure provenance the ingester forwards
+    to ``note`` unchanged, and — like ``phase`` — are *not* part of the idempotency key.
+    Instances are frozen — treat a record as an immutable value and use :meth:`to_dict`
+    to get the transport form.
     """
 
     content: str
@@ -84,6 +92,8 @@ class EpisodeRecord:
     ts: str = ""
     idempotency_key: str = ""
     phase: str | None = None
+    last_commit_sha: str | None = None
+    file_change_lines: dict[str, int] | None = None
 
     @classmethod
     def new(
@@ -98,6 +108,8 @@ class EpisodeRecord:
         ts: str | None = None,
         idempotency_key: str | None = None,
         phase: str | None = None,
+        last_commit_sha: str | None = None,
+        file_change_lines: dict[str, int] | None = None,
     ) -> EpisodeRecord:
         """Build a record, filling ``ts`` (now, UTC ISO-8601) and the idempotency key.
 
@@ -106,6 +118,8 @@ class EpisodeRecord:
         from ``(session_id, event_id, content)`` via :func:`make_idempotency_key`.
         ``phase`` is optional derived provenance (E2-S6 #98) and, by design, is *not*
         part of the idempotency key — enabling phase never changes an episode's key.
+        ``last_commit_sha`` / ``file_change_lines`` are optional file-refactor provenance
+        (E9-S3 #60), likewise excluded from the idempotency key.
         """
         resolved_ts = ts if ts is not None else datetime.now(UTC).isoformat()
         resolved_key = (
@@ -123,6 +137,8 @@ class EpisodeRecord:
             ts=resolved_ts,
             idempotency_key=resolved_key,
             phase=phase,
+            last_commit_sha=last_commit_sha,
+            file_change_lines=file_change_lines,
         )
 
     def to_dict(self) -> dict[str, Any]:

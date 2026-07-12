@@ -77,7 +77,10 @@ def test_to_row_is_order_stable() -> None:
 
 
 def test_phase_is_the_appended_field_defaulting_none() -> None:
-    assert EPISODE_FIELDS[-1] == "phase"
+    # ``phase`` is a sidecar field defaulting to ``None``. It is no longer the *last*
+    # EPISODE_FIELD (E9-S3 #60 appended ``last_commit_sha`` / ``file_change_lines`` after
+    # it), but must remain present and default-None so the phase wire form is unchanged.
+    assert "phase" in EPISODE_FIELDS
     record = EpisodeRecord.new("c", "ns")
     assert record.phase is None
     assert record.to_dict()["phase"] is None
@@ -125,3 +128,68 @@ def test_idempotency_key_is_source_independent() -> None:
     expected = make_idempotency_key("s", "e", "c")
     assert with_agent.idempotency_key == without.idempotency_key == expected
     assert other_agent.idempotency_key == expected, "different agent must not change the key"
+
+
+# ------------------------------------------------ file-refactor provenance (E9-S3 #60)
+
+
+def test_last_commit_sha_and_change_lines_are_appended_fields_defaulting_none() -> None:
+    # The two file-refactor provenance fields are appended last and default to ``None``
+    # so the zero-config wire form is unchanged from before #60.
+    assert EPISODE_FIELDS[-2:] == ("last_commit_sha", "file_change_lines")
+    record = EpisodeRecord.new("c", "ns")
+    assert record.last_commit_sha is None
+    assert record.file_change_lines is None
+    dumped = record.to_dict()
+    assert dumped["last_commit_sha"] is None
+    assert dumped["file_change_lines"] is None
+
+
+def test_new_carries_explicit_refactor_provenance() -> None:
+    record = EpisodeRecord.new("c", "ns", last_commit_sha="abc123", file_change_lines={"a.py": 40})
+    assert record.last_commit_sha == "abc123"
+    assert record.file_change_lines == {"a.py": 40}
+    assert record.to_dict()["last_commit_sha"] == "abc123"
+    assert record.to_dict()["file_change_lines"] == {"a.py": 40}
+
+
+def test_refactor_provenance_roundtrips_through_row() -> None:
+    # ``file_change_lines`` is a dict; it must survive the JSON row round-trip intact.
+    record = EpisodeRecord.new(
+        "hello",
+        "proj-a",
+        last_commit_sha="deadbeef",
+        file_change_lines={"src/a.py": 12, "src/b.py": 200},
+    ).to_dict()
+    restored = from_row(to_row(record))
+    assert restored == record
+    assert restored["last_commit_sha"] == "deadbeef"
+    assert restored["file_change_lines"] == {"src/a.py": 12, "src/b.py": 200}
+
+
+def test_from_dict_missing_refactor_fields_defaults_to_none() -> None:
+    # A spool row written before #60 has neither key; it must still deserialize (missing
+    # keys fall back to the field defaults) — backward-compatible wire form.
+    legacy = EpisodeRecord.new("c", "ns").to_dict()
+    del legacy["last_commit_sha"]
+    del legacy["file_change_lines"]
+    record = EpisodeRecord.from_dict(legacy)
+    assert record.last_commit_sha is None
+    assert record.file_change_lines is None
+    assert record.content == "c"
+
+
+def test_idempotency_key_is_refactor_provenance_independent() -> None:
+    # E9-S3 #60: file-refactor provenance must NEVER enter the key — it is a sidecar, like
+    # phase/source. A record's key is byte-identical whether or not it carries a sha/magnitude.
+    without = EpisodeRecord.new("c", "ns", session_id="s", event_id="e")
+    with_sha = EpisodeRecord.new(
+        "c",
+        "ns",
+        session_id="s",
+        event_id="e",
+        last_commit_sha="abc",
+        file_change_lines={"a.py": 99},
+    )
+    expected = make_idempotency_key("s", "e", "c")
+    assert with_sha.idempotency_key == without.idempotency_key == expected

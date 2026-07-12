@@ -825,3 +825,167 @@ def test_resolve_session_cwd_none_when_cwd_not_a_string(tmp_path) -> None:
 def test_resolve_session_cwd_none_for_unreadable_file(tmp_path) -> None:
     # A missing file raises OSError internally, which is swallowed to None.
     assert resolve_session_cwd(tmp_path / "does-not-exist.jsonl") is None
+
+
+# ---------------------------------------------- file-refactor provenance (E9-S3 #60)
+
+
+class _FakeProc:
+    """A completed subprocess stand-in exposing just the surface ``_run_git`` reads."""
+
+    def __init__(self, stdout: str, returncode: int = 0) -> None:
+        self._stdout = stdout
+        self.returncode = returncode
+
+    def communicate(self) -> tuple[str, str]:
+        return (self._stdout, "")
+
+
+class FakeGit:
+    """Injectable ``popen`` that dispatches on the git argv (no real subprocess).
+
+    ``rev-parse HEAD`` yields ``sha`` (or a non-zero exit when ``fail`` is set); ``diff
+    --numstat`` yields the raw numstat text configured for the pathspec (``argv[-1]``),
+    defaulting to empty output (i.e. no churn) for unconfigured paths. Every call's argv is
+    recorded so tests can assert both *what* git was asked and *how often*.
+    """
+
+    def __init__(
+        self,
+        *,
+        sha: str = "sha-new",
+        numstat: dict[str, str] | None = None,
+        fail: bool = False,
+    ) -> None:
+        self.sha = sha
+        self.numstat = numstat or {}
+        self.fail = fail
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv, **_kwargs) -> _FakeProc:
+        argv = list(argv)
+        self.calls.append(argv)
+        if "rev-parse" in argv:
+            if self.fail:
+                return _FakeProc("", returncode=1)
+            return _FakeProc(f"{self.sha}\n")
+        if "diff" in argv:
+            return _FakeProc(self.numstat.get(argv[-1], ""))
+        return _FakeProc("")
+
+    @property
+    def rev_parse_calls(self) -> int:
+        return sum(1 for argv in self.calls if "rev-parse" in argv)
+
+
+def test_refactor_provenance_stamped_when_enabled() -> None:
+    # Knob on + a cwd + a touched file → the composed record carries the HEAD sha and the
+    # file's changed-line magnitude (added + deleted from numstat).
+    spool = FakeSpool()
+    git = FakeGit(sha="sha-new", numstat={"src/a.py": "120\t30\tsrc/a.py"})
+    sink = _sink(spool, cwd="/repo", refactor_lines=100, popen=git)
+
+    _drive(sink, _tool(result="ok", arguments={"path": "src/a.py"}))
+
+    assert sink.appended == 1
+    record = spool.records[0]
+    assert record["last_commit_sha"] == "sha-new"
+    assert record["file_change_lines"] == {"src/a.py": 150}
+
+
+def test_provenance_absent_and_git_unused_when_disabled() -> None:
+    # The zero-config default (refactor_lines == 0) must never spawn git and must leave the
+    # record byte-identical: the two provenance keys are simply absent (never forwarded).
+    spool = FakeSpool()
+    git = FakeGit(numstat={"src/a.py": "120\t30\tsrc/a.py"})
+    sink = _sink(spool, cwd="/repo", popen=git)  # refactor_lines defaults to 0
+
+    _drive(sink, _tool(result="ok", arguments={"path": "src/a.py"}))
+
+    record = spool.records[0]
+    assert "last_commit_sha" not in record
+    assert "file_change_lines" not in record
+    assert git.calls == [], "disabled knob must never spawn git"
+
+
+def test_provenance_absent_when_no_cwd() -> None:
+    # Even with the knob on, no session cwd means no repo to interrogate → no provenance and
+    # no git invocation.
+    spool = FakeSpool()
+    git = FakeGit()
+    sink = _sink(spool, refactor_lines=100, popen=git)  # cwd is None
+
+    _drive(sink, _tool(result="ok", arguments={"path": "src/a.py"}))
+
+    record = spool.records[0]
+    assert "last_commit_sha" not in record
+    assert "file_change_lines" not in record
+    assert git.calls == []
+
+
+def test_head_sha_resolved_once_across_segments() -> None:
+    # HEAD is constant for the session's repo state, so it is resolved once and cached even
+    # as multiple work-units flush; per-file churn is still resolved per path.
+    spool = FakeSpool()
+    git = FakeGit(sha="sha-new", numstat={"a.py": "5\t5\ta.py", "b.py": "9\t1\tb.py"})
+    sink = _sink(spool, cwd="/repo", refactor_lines=1, popen=git)
+
+    _drive(
+        sink,
+        _tool(result="ok", arguments={"path": "a.py"}, raw_id="w1"),
+        _tool(result="ok", arguments={"path": "b.py"}, raw_id="w2"),
+    )
+
+    assert sink.appended == 2
+    assert spool.records[0]["file_change_lines"] == {"a.py": 10}
+    assert spool.records[1]["file_change_lines"] == {"b.py": 10}
+    assert git.rev_parse_calls == 1, "HEAD sha resolved once and cached for the session"
+
+
+def test_zero_churn_touched_file_still_records_generation() -> None:
+    # A touched file with no churn in HEAD's commit is still stamped with the sha (magnitude
+    # 0), recording this episode's generation so a *later* big refactor can supersede it. The
+    # changed-line threshold gate lives in the engine, not the sink.
+    spool = FakeSpool()
+    git = FakeGit(sha="sha-new", numstat={})  # no numstat line for the path → churn 0
+    sink = _sink(spool, cwd="/repo", refactor_lines=100, popen=git)
+
+    _drive(sink, _tool(result="ok", arguments={"path": "src/a.py"}))
+
+    record = spool.records[0]
+    assert record["last_commit_sha"] == "sha-new"
+    assert record["file_change_lines"] == {"src/a.py": 0}
+
+
+def test_summary_episode_also_carries_file_provenance() -> None:
+    # The #27 session summary is a file-scoped episode too (it lists touched files), so it
+    # carries the same provenance over the session-wide touched-file set.
+    spool = FakeSpool()
+    git = FakeGit(sha="sha-new", numstat={"src/a.py": "200\t0\tsrc/a.py"})
+    sink = _sink(spool, cwd="/repo", refactor_lines=100, popen=git)
+
+    _drive(
+        sink,
+        _tool(result="ok", arguments={"path": "src/a.py"}, raw_id="w1"),
+        _event(kind="session.ended", content=None, raw_id="e1"),
+    )
+
+    summary = spool.records[-1]
+    assert summary["content"].startswith("Session summary")
+    assert summary["last_commit_sha"] == "sha-new"
+    assert summary["file_change_lines"] == {"src/a.py": 200}
+
+
+def test_git_failure_yields_no_provenance() -> None:
+    # A git that cannot resolve HEAD (root commit, not a repo, git absent) must never crash
+    # ingest: the flush proceeds with no provenance stamped.
+    spool = FakeSpool()
+    git = FakeGit(fail=True)  # rev-parse exits non-zero
+    sink = _sink(spool, cwd="/repo", refactor_lines=100, popen=git)
+
+    _drive(sink, _tool(result="ok", arguments={"path": "src/a.py"}))
+
+    assert sink.appended == 1
+    record = spool.records[0]
+    assert "last_commit_sha" not in record
+    assert "file_change_lines" not in record

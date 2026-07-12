@@ -77,7 +77,7 @@ class RecordingEngine:
     def __init__(self) -> None:
         self.notes: list[tuple[str, str]] = []
 
-    async def note(self, content, namespace, repo=None, source=None):
+    async def note(self, content, namespace, repo=None, source=None, **_):
         self.notes.append((content, namespace))
         return f"uuid-{len(self.notes)}"
 
