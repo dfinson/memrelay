@@ -1,0 +1,3 @@
+{"role": "user", "content_json": "[{\"type\": \"text\", \"text\": \"Add a health check endpoint to the widget service.\"}]", "created_timestamp": 1735689600}
+{"role": "assistant", "content_json": "[{\"type\": \"text\", \"text\": \"I'll inspect the routes, then add a /health endpoint.\"}, {\"type\": \"toolRequest\", \"id\": \"tool-0001\", \"toolCall\": {\"status\": \"success\", \"value\": {\"name\": \"developer__shell\", \"arguments\": {\"command\": \"ls src/service\"}}}}]", "created_timestamp": 1735689601}
+{"role": "user", "content_json": "[{\"type\": \"toolResponse\", \"id\": \"tool-0001\", \"toolResult\": {\"status\": \"success\", \"value\": {\"content\": \"routes.py\"}}}]", "created_timestamp": 1735689602}

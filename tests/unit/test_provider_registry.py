@@ -83,16 +83,31 @@ def _make_copilot_home(root: Path, session_ids: tuple[str, ...] = ()) -> Path:
 
 
 @pytest.fixture(autouse=True)
-def _isolate_claude_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Pin the Claude home to a non-existent dir so registry auto-detect is deterministic.
+def _isolate_agent_homes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Pin non-Copilot agent homes to non-existent dirs (deterministic auto-detect).
 
-    Now that a second provider (:class:`ClaudeCodeProvider`, #70) self-registers and detects
-    via ``~/.claude/projects``, these copilot-centric registry tests would otherwise leak the
-    real ``~/.claude`` on a dev machine that has Claude Code installed (CI runs clean). Pinning
-    ``MEMRELAY_CLAUDE_HOME`` at an empty path keeps ``detect``/``resolve`` copilot-only here,
+    Claude Code (#70) and the ten E12-S5 providers each self-register and detect via
+    their real on-disk homes, so without this these copilot-centric registry tests would
+    leak whatever agents are installed on a dev machine (CI runs clean). Pinning each
+    ``MEMRELAY_<AGENT>_HOME`` at an empty path keeps ``detect``/``resolve`` copilot-only,
     without touching the frozen base/registry/copilot source.
     """
     monkeypatch.setenv("MEMRELAY_CLAUDE_HOME", str(tmp_path / "_no_claude_home"))
+    # E12-S5: the ten new providers also auto-detect via their real homes; pin each
+    # away so ``detect()``/``resolve()`` stay copilot-only on a dev box with some installed.
+    for env_var in (
+        "MEMRELAY_CODEX_HOME",
+        "MEMRELAY_CONTINUE_HOME",
+        "MEMRELAY_CLINE_HOME",
+        "MEMRELAY_AIDER_HOME",
+        "MEMRELAY_AMAZONQ_HOME",
+        "MEMRELAY_GOOSE_HOME",
+        "MEMRELAY_OPENCODE_HOME",
+        "MEMRELAY_OPENHANDS_HOME",
+        "MEMRELAY_SWEAGENT_HOME",
+        "MEMRELAY_ANTIGRAVITY_HOME",
+    ):
+        monkeypatch.setenv(env_var, str(tmp_path / f"_no_home_{env_var.lower()}"))
 
 
 # ── the default registry resolves the real CopilotProvider ───────────────────

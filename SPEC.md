@@ -175,10 +175,25 @@ class AgentProvider(abc.ABC):                 # an abc.ABC, not a Protocol — c
 
 **Registration & discovery.** A provider joins the registry by decorating its class with `@register` (`memrelay.providers.registry`). `get_registry()` lazily imports every sibling module under `memrelay.providers` via `pkgutil`, so a new `providers/<agent>.py` self-registers with **no edit to any central list**. The registry resolves a provider three ways: by explicit id (`create`), by auto-detection (`detect` / `resolve` — the first agent whose `is_present()` is true, falling back to the default `copilot`), or as the default. Providers are built through the uniform `from_home(home=None)` classmethod.
 
-**Built-in providers.** TraceForge already ships mappings for ~18 agents; memrelay wraps them progressively. **Only Copilot CLI ships today** — the reference provider (canonical `copilot.yaml` mapping over per-session `events.jsonl`, with the SQLite `turns` → `CopilotPreParser` → `copilot_markdown` fallback; borrow-host LLM). The rest are planned:
+**Built-in providers.** TraceForge already ships mappings for ~18 agents; memrelay wraps them progressively. **Twelve coding agents ship today.** Copilot CLI is the reference provider (canonical `copilot.yaml` mapping over per-session `events.jsonl`, with the SQLite `turns` → `CopilotPreParser` → `copilot_markdown` fallback; borrow-host LLM); Claude Code ([#70](https://github.com/dfinson/memrelay/issues/70)) proved the seam holds with no core changes; and E12-S5 ([#71](https://github.com/dfinson/memrelay/issues/71)) broadened coverage to the remaining ten coding agents. Each rides entirely on its TraceForge mapping (+ preprocessor) and is exercised by the CI conformance matrix (§12 Step 5). memrelay **serves** its MCP server to agents whose MCP registry is JSON (a non-destructive merge); the rest are **ingest-only** until their TOML/YAML registries can be written without a new dependency. The ten E12-S5 providers advertise the `byo-key` LLM strategy (no host-borrow path exists for them yet).
 
-- **Next:** Claude Code (`claude` mapping) — proves the seam holds with no core changes ([#70](https://github.com/dfinson/memrelay/issues/70)).
-- **Coding agents:** Codex, Cursor/Continue, Cline, Aider, Amazon Q, Goose, OpenCode, OpenHands, SWE-agent, Antigravity.
+| Provider (`id`) | TraceForge mapping | Ingest | Serving |
+| --- | --- | --- | --- |
+| `copilot` | `copilot.yaml` (+ `copilot_markdown` fallback) | ✅ | ✅ `mcp-config.json` |
+| `claude` | `claude.yaml` | ✅ | ✅ `~/.claude.json` |
+| `codex` | `codex.yaml` | ✅ | ingest-only (TOML registry) |
+| `continue` | `continue_dev.yaml` (covers Cursor/Continue) | ✅ | ingest-only (YAML registry) |
+| `cline` | `cline.yaml` | ✅ | ✅ `cline_mcp_settings.json` |
+| `aider` | `aider.yaml` | ✅ | ingest-only (no MCP host) |
+| `amazonq` | `amazonq.yaml` | ✅ | ✅ `~/.aws/amazonq/mcp.json` |
+| `goose` | `goose.yaml` | ✅ | ingest-only (YAML registry) |
+| `opencode` | `opencode.yaml` | ✅ | ✅ `opencode.json` (`mcp` key) |
+| `openhands` | `openhands.yaml` | ✅ | ingest-only (TOML registry) |
+| `sweagent` | `sweagent.yaml` | ✅ | ingest-only (no MCP host) |
+| `antigravity` | `antigravity.yaml` | ✅ | ingest-only (no standard MCP) |
+
+Still planned:
+
 - **Framework runtimes (opt-in, live sources):** CrewAI, LangGraph, Microsoft Agent Framework, OpenAI Agents, Pydantic AI, smolagents — via `http_poll` / `sse`.
 
 **Auto-detection.** `memrelay init` / `status` uses the provider registry's `detect()` — each provider's cheap `is_present()` check — to report which agents are present on the machine and wire them automatically. Unknown or opted-out agents are skipped.
@@ -737,7 +752,10 @@ memrelay/
 │       ├── __init__.py
 │       ├── base.py             # AgentProvider ABC + SessionRef + LLMStrategyHint
 │       ├── registry.py         # @register decorator + pkgutil auto-discovery (E12)
-│       └── copilot.py          # Reference provider (events.jsonl canonical, SQLite fallback)
+│       ├── copilot.py          # Reference provider (events.jsonl canonical, SQLite fallback)
+│       ├── claude_code.py      # Second reference provider (#70)
+│       └── codex.py … antigravity.py  # E12-S5 coding agents (#71): codex, continue_dev, cline,
+│                                #   aider, amazon_q, goose, opencode, openhands, swe_agent, antigravity
 │
 ├── scripts/                    # dev utilities (capture_fixture, ingest_fixture, engine_demo)
 ├── tests/                      # pytest suites
