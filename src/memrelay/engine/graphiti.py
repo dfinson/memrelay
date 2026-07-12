@@ -34,6 +34,15 @@ from graphiti_core.utils.maintenance.graph_data_operations import clear_data
 from memrelay.config import Config, ensure_home, load_config
 
 from .backends import resolve_backend
+from .compaction import (
+    EpisodeStat,
+    build_summary_content,
+    compaction_source_description,
+    is_compaction_summary,
+    is_degraded,
+    select_eligible,
+    summary_key,
+)
 from .embedder import LocalEmbedder
 from .llm.strategy import select_llm_client
 
@@ -601,6 +610,204 @@ class MemoryEngine:
         )
         return len(target_uuids)
 
+    async def compact(
+        self,
+        namespace: str | None = None,
+        *,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Compact stale, low-value episodes on quality degradation (E9-S2 #59, SPEC §5.5).
+
+        A compaction *pass*: for each namespace whose stale low-value mass has crossed the
+        activity-scaled degradation bar, its **oldest, lowest-reference-frequency** episodes are
+        folded into **one deterministic extractive summary** and the originals are removed via the
+        shared-entity-preserving cascade (:meth:`graphiti_core.Graphiti.remove_episode`, the #58
+        primitive ``_forget_repo`` uses) — so the graph shrinks while the gist stays recallable, and
+        entities another episode still needs are never orphaned. Busier namespaces compact more
+        aggressively (the bar scales with namespace size). ``namespace=None`` sweeps every
+        namespace; otherwise only the one given is considered.
+
+        Guarantees, by construction (see :class:`memrelay.config.CompactionConfig`):
+
+        * **Opt-in / byte-identical when off.** With ``compaction.enabled`` at its ``False`` default
+          this is an inert no-op — it issues **no** graph query and returns zeroed metrics — and
+          ``note`` / ``search`` / ``detail`` / ``health`` are unmodified, so the zero-config
+          first-run is unchanged. Compaction only ever happens through an explicit ``compact`` call.
+        * **Degradation-driven, not a fixed count.** A namespace is compacted only when it holds at
+          least ``min_episodes`` episodes and its eligible (old + low-frequency) episodes reach
+          ``ceil(degradation_ratio * episodes)`` (:func:`memrelay.engine.compaction.is_degraded`);
+          the newest ``min_episodes`` episodes are always protected, so fresh notes stay.
+        * **Deterministic + hermetic.** Selection, the summary key, and the extractive digest are
+          pure and offline (no LLM/ML, no wall-clock, no network) — a re-run is byte-identical.
+        * **Idempotent / no thrash.** After a pass the eligible set is empty and the summary is
+          excluded from the working set, so an immediate re-run is a clean no-op; the deterministic
+          per-victim-set summary key plus a pre-existence check means a crash-retry never creates a
+          duplicate summary.
+        * **Measured before/after (AC4).** Returns per-namespace and aggregate before/after episode,
+          edge and entity counts a caller/test can assert on.
+
+        ``dry_run`` computes and reports what *would* be compacted (``eligible``) without writing —
+        parity with :meth:`forget`. Returns a structured metrics dict; it never raises for an empty
+        or absent namespace.
+        """
+        if not self._cfg.compaction.enabled:
+            # Off ⇒ inert: no driver query, zeroed metrics. Byte-identical to today.
+            return {
+                "enabled": False,
+                "dry_run": dry_run,
+                "namespaces": {},
+                "episodes_compacted": 0,
+                "summaries_added": 0,
+            }
+
+        if namespace is not None:
+            namespaces = [namespace]
+        else:
+            records, _, _ = await self._driver.execute_query(
+                "MATCH (e:Episodic) RETURN DISTINCT e.group_id AS group_id",
+                routing_="r",
+            )
+            namespaces = sorted(
+                {record["group_id"] for record in records if record.get("group_id")}
+            )
+
+        per_namespace: dict[str, Any] = {}
+        total_compacted = 0
+        total_summaries = 0
+        for group_id in namespaces:
+            metrics = await self._compact_namespace(group_id, dry_run=dry_run)
+            per_namespace[group_id] = metrics
+            total_compacted += metrics["episodes_compacted"]
+            total_summaries += metrics["summaries_added"]
+
+        return {
+            "enabled": True,
+            "dry_run": dry_run,
+            "namespaces": per_namespace,
+            "episodes_compacted": total_compacted,
+            "summaries_added": total_summaries,
+        }
+
+    async def _compact_namespace(self, namespace: str, *, dry_run: bool) -> dict[str, Any]:
+        """Run (or, when ``dry_run``, simulate) one namespace's compaction pass and report metrics.
+
+        All Cypher is filtered by ``group_id``, so a pass **never crosses a namespace**. Existing
+        compaction summaries (recognized by their ``source_description`` marker) are kept out of the
+        working set, which is what makes a re-run a no-op.
+        """
+        cfg = self._cfg.compaction
+        rows, _, _ = await self._driver.execute_query(
+            "MATCH (e:Episodic) WHERE e.group_id = $group_id "
+            "RETURN e.uuid AS uuid, e.valid_at AS valid_at, e.content AS content, "
+            "e.source_description AS source_description, e.entity_edges AS entity_edges",
+            group_id=namespace,
+            routing_="r",
+        )
+        episodes_before = len(rows)
+        existing_summary_sds = {
+            row.get("source_description")
+            for row in rows
+            if is_compaction_summary(row.get("source_description"))
+        }
+        stats = [
+            EpisodeStat(
+                uuid=row["uuid"],
+                valid_at=row["valid_at"],
+                ref_count=_entity_edge_count(row.get("entity_edges")),
+                content=row.get("content") or "",
+            )
+            for row in rows
+            if not is_compaction_summary(row.get("source_description"))
+        ]
+        episode_count = len(stats)
+        eligible = select_eligible(
+            stats,
+            low_reference_max=cfg.low_reference_max,
+            protected_recent=cfg.min_episodes,
+        )
+        triggered = is_degraded(
+            len(eligible),
+            episode_count,
+            degradation_ratio=cfg.degradation_ratio,
+            min_episodes=cfg.min_episodes,
+        )
+        edges_before = await self._namespace_edge_count(namespace)
+        entities_before = await self._namespace_entity_count(namespace)
+        metrics: dict[str, Any] = {
+            "triggered": triggered,
+            "eligible": len(eligible),
+            "episodes_before": episodes_before,
+            "episodes_after": episodes_before,
+            "episodes_compacted": 0,
+            "summaries_added": 0,
+            "edges_before": edges_before,
+            "edges_after": edges_before,
+            "entities_before": entities_before,
+            "entities_after": entities_before,
+        }
+        if dry_run or not triggered or not eligible:
+            return metrics
+
+        victim_uuids = [stat.uuid for stat in eligible]
+        source_description = compaction_source_description(summary_key(victim_uuids))
+        if source_description not in existing_summary_sds:
+            # Add the summary FIRST, so the gist is present before the originals are removed.
+            # ``reference_time`` is not part of the summary's identity (that is the deterministic
+            # victim-set key), and a re-run skips recreation, so ``now`` here never breaks the
+            # byte-identical-summary guarantee while avoiding any dependence on reading a Kuzu
+            # timestamp back out.
+            content = build_summary_content([stat.content for stat in eligible])
+            await self._graphiti.add_episode(
+                name=_episode_name(content),
+                episode_body=content,
+                source=EpisodeType.message,
+                source_description=source_description,
+                reference_time=datetime.now(UTC),
+                group_id=namespace,
+            )
+            metrics["summaries_added"] = 1
+
+        for uuid in victim_uuids:
+            # Shared-entity-preserving cascade: only edges/entities created solely by this
+            # episode are removed; entities another episode still mentions are preserved.
+            await self._graphiti.remove_episode(uuid)
+        metrics["episodes_compacted"] = len(victim_uuids)
+
+        metrics["episodes_after"] = await self._namespace_episode_count(namespace)
+        metrics["edges_after"] = await self._namespace_edge_count(namespace)
+        metrics["entities_after"] = await self._namespace_entity_count(namespace)
+        return metrics
+
+    async def _namespace_episode_count(self, namespace: str) -> int:
+        """Count every ``Episodic`` node in ``namespace`` (summaries included)."""
+        records, _, _ = await self._driver.execute_query(
+            "MATCH (e:Episodic) WHERE e.group_id = $group_id RETURN count(e) AS episode_count",
+            group_id=namespace,
+            routing_="r",
+        )
+        return int(records[0]["episode_count"]) if records else 0
+
+    async def _namespace_entity_count(self, namespace: str) -> int:
+        """Count every ``Entity`` node in ``namespace`` (the entity-reclaim metric)."""
+        records, _, _ = await self._driver.execute_query(
+            "MATCH (n:Entity) WHERE n.group_id = $group_id RETURN count(n) AS entity_count",
+            group_id=namespace,
+            routing_="r",
+        )
+        return int(records[0]["entity_count"]) if records else 0
+
+    async def _namespace_edge_count(self, namespace: str) -> int:
+        """Count the entity edges in ``namespace`` (the edge-reclaim metric).
+
+        Guarded by ``GroupsEdgesNotFoundError`` exactly like :meth:`invalidate_file_facts`, so a
+        namespace that has episodes but no edges yet reports 0 rather than raising.
+        """
+        try:
+            edges = await EntityEdge.get_by_group_ids(self._driver, [namespace])
+        except GroupsEdgesNotFoundError:
+            return 0
+        return len(edges)
+
 
 def _episode_repo(source_description: str | None) -> str | None:
     """Recover the repo an episode was tagged with, or ``None``.
@@ -681,6 +888,30 @@ def _episode_sha(source_description: str | None) -> str | None:
         if sep and key == "sha":
             return value.strip() or None
     return None
+
+
+def _entity_edge_count(value: Any) -> int:
+    """Count the entity edges (facts) an episode produced, from its stored ``entity_edges`` cell.
+
+    This is the episode's **reference frequency** — the ``low_reference_max`` compaction knob
+    compares against it. graphiti-core stores ``entity_edges`` provider-specifically: Kuzu/LadybugDB
+    (memrelay's default) use a native ``STRING[]`` column, so the driver returns a Python list;
+    Neptune joins the uuids into one ``|``-delimited string. This tolerates both (and ``None`` /
+    empty), so the count is never mistaken for a string length.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, (list, tuple)):
+        return len(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return 0
+        for separator in ("|", ","):
+            if separator in stripped:
+                return len([part for part in stripped.split(separator) if part])
+        return 1
+    return 0
 
 
 def _invalidate_edges_query(provider: GraphProvider) -> str:
