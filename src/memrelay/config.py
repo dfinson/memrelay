@@ -101,6 +101,12 @@ class LLMConfig:
     provider: str | None = None
     api_key_env: str | None = None
     model: str | None = None
+    # local strategy only (SPEC §6.2 / E4-S7 #64). Added additively with offline-friendly
+    # defaults so the borrow-host/byo-key paths stay byte-identical. ``local_base_url`` is left
+    # None so it never auto-selects local; the client falls back to the default Ollama endpoint
+    # (http://localhost:11434), and setting it (or strategy="local") opts this environment in.
+    local_base_url: str | None = None
+    local_model: str = "llama3.1"
 
 
 @dataclass
