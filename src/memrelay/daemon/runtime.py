@@ -315,6 +315,9 @@ class DaemonRuntime:
         await self._server.start()
         if self._ingester is not None:
             self._ingest_task = asyncio.create_task(self._ingester.run(self._stop))
+            # Fire-and-forget: without this callback a fatal exit of the ingester task would
+            # be swallowed unretrieved, silently stopping ingest while the daemon serves on.
+            self._ingest_task.add_done_callback(self._on_ingest_task_done)
         if self._poller is not None:
             self._poll_task = asyncio.create_task(self._poller.run(self._stop))
 
@@ -384,6 +387,24 @@ class DaemonRuntime:
             logger.debug("ingester did not stop within %.1fs; cancelled", INGEST_STOP_TIMEOUT)
         except Exception:  # noqa: BLE001 - a failing ingester must not break shutdown
             logger.debug("ingester task errored during shutdown", exc_info=True)
+
+    @staticmethod
+    def _on_ingest_task_done(task: asyncio.Task[None]) -> None:
+        """Surface an unexpected death of the fire-and-forget ingester task (rt-ingest F2).
+
+        :meth:`Ingester.run` is self-healing — it catches per-pass spool faults and retries —
+        so the task should only ever finish by ``stop`` being set (normal return) or by being
+        cancelled at shutdown. Any *other* exit means it died with an exception that, because
+        the task is launched fire-and-forget, would otherwise be swallowed unretrieved: ingest
+        would stop while the daemon keeps answering from stale memory. Log it at ERROR so it is
+        at least visible; reading ``exception()`` here also clears asyncio's "Task exception
+        was never retrieved" warning. Shutdown paths still await the task separately.
+        """
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("ingester task exited unexpectedly; ingest has stopped", exc_info=exc)
 
     @staticmethod
     async def _close_backend(backend: Backend) -> None:

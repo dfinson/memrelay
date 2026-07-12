@@ -239,49 +239,66 @@ class Ingester:
     async def run(self, stop: asyncio.Event) -> None:
         """Loop until ``stop`` is set: accumulate arrivals, then flush on idle or size.
 
-        Never raises for a bad record (see the module docstring); the only way out is
-        ``stop`` being set. Safe to launch as a background task and cancel via
+        Never raises: a malformed record is handled per the module docstring, and any
+        *spool*-op failure (disk/IO/corruption, or ``database is locked`` under
+        cross-connection contention) is caught per-pass, logged, and retried after an idle
+        wait — mirroring the session poller so one transient fault can never kill this task
+        and stop ingest permanently and silently. The only way out is ``stop`` being set
+        (or task cancellation). Safe to launch as a background task and cancel via
         ``stop.set()``.
         """
         last_pending = 0
         idle_polls = 0
         while not stop.is_set():
-            # Disk watchdog first, so the oldest unprocessed episodes are summarized in
-            # place *before* ingest whenever the spool is over its budget (E3-S4 #33).
-            if self._maybe_compact(stop):
-                # Compaction lowered pending() without a checkpoint, which would fool the
-                # active-session detector below (it infers "new arrivals" from a rising
-                # pending). Re-baseline so a compaction is never misread as a new burst.
-                last_pending = self._spool.pending()
-            # Retention watchdog: prune below-cursor history back under its byte budget
-            # (E3 #112). It touches only already-ingested rows, so it never changes pending()
-            # and cannot disturb the active-session detector — no re-baseline needed.
-            self._maybe_reclaim()
-            pending = self._spool.pending()
-            if pending == 0:
-                # Nothing buffered: reset the idle window and wait for the next arrival.
-                last_pending = 0
-                idle_polls = 0
-                await self._idle(stop)
-                continue
-            if pending > last_pending:
-                # New rows since the last poll → the session is active. Accumulate,
-                # unless the backlog has hit the flush ceiling.
-                last_pending = pending
-                idle_polls = 0
-                if pending >= self._batch_size:
+            try:
+                # Disk watchdog first, so the oldest unprocessed episodes are summarized in
+                # place *before* ingest whenever the spool is over its budget (E3-S4 #33).
+                if self._maybe_compact(stop):
+                    # Compaction lowered pending() without a checkpoint, which would fool the
+                    # active-session detector below (it infers "new arrivals" from a rising
+                    # pending). Re-baseline so a compaction is never misread as a new burst.
+                    last_pending = self._spool.pending()
+                # Retention watchdog: prune below-cursor history back under its byte budget
+                # (E3 #112). It touches only already-ingested rows, so it never changes pending()
+                # and cannot disturb the active-session detector — no re-baseline needed.
+                self._maybe_reclaim()
+                pending = self._spool.pending()
+                if pending == 0:
+                    # Nothing buffered: reset the idle window and wait for the next arrival.
+                    last_pending = 0
+                    idle_polls = 0
+                    await self._idle(stop)
+                    continue
+                if pending > last_pending:
+                    # New rows since the last poll → the session is active. Accumulate,
+                    # unless the backlog has hit the flush ceiling.
+                    last_pending = pending
+                    idle_polls = 0
+                    if pending >= self._batch_size:
+                        await self._drain(stop)
+                        last_pending = self._spool.pending()
+                    else:
+                        await self._idle(stop)
+                    continue
+                # No new rows this poll: once arrivals have been quiet long enough, flush.
+                idle_polls += 1
+                if idle_polls >= self._idle_flush_cycles:
                     await self._drain(stop)
                     last_pending = self._spool.pending()
+                    idle_polls = 0
                 else:
                     await self._idle(stop)
-                continue
-            # No new rows this poll: once arrivals have been quiet long enough, flush.
-            idle_polls += 1
-            if idle_polls >= self._idle_flush_cycles:
-                await self._drain(stop)
-                last_pending = self._spool.pending()
-                idle_polls = 0
-            else:
+            except Exception:  # noqa: BLE001 - a spool fault must never crash the ingester
+                # Any spool op (pending/read_batch/checkpoint/pending_bytes/replace/reclaim)
+                # can raise on a transient disk/IO/corruption fault or a
+                # ``sqlite3.OperationalError: database is locked`` when a cross-connection
+                # write contends past SQLite's busy timeout. Left unguarded, that exception
+                # unwinds _drain → run and kills this fire-and-forget task, stopping ingest
+                # permanently and *silently* while the daemon keeps serving stale memory.
+                # Mirror the session poller ("a capture must never crash the daemon"): log it
+                # loudly and retry on the next pass after an idle wait. CancelledError
+                # (BaseException) is intentionally not caught, so shutdown still unwinds.
+                logger.exception("ingester: drain-loop pass failed; retrying after idle")
                 await self._idle(stop)
 
     async def _drain(self, stop: asyncio.Event) -> None:
