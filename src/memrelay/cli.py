@@ -355,6 +355,14 @@ def init(copilot_home: str | None) -> None:
         mcp_path = provider.register()
     except NotImplementedError:
         mcp_path = None
+    except ValueError as exc:
+        # A registerable provider refuses to clobber an existing MCP config that is not valid
+        # JSON (SPEC §2 Registration) — a hand-edited file with a typo is realistic. Surface a
+        # clean, actionable error naming the file (the provider's message includes the path)
+        # instead of crashing init with a raw traceback.
+        raise click.ClickException(
+            f"MCP registration failed: {exc}. Fix or remove the file and re-run."
+        ) from exc
 
     click.echo(f"memrelay home:  {home}")
     click.echo(f"config:         {config_file}" + ("" if created else "  (kept existing)"))
