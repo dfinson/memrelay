@@ -1,0 +1,6 @@
+{"event": "on_chain_start", "run_id": "r1", "name": "graph", "data": {"input": {"q": "hi"}}}
+{"event": "on_chat_model_start", "run_id": "r2", "name": "model", "metadata": {"ls_model_name": "gpt-4o"}}
+{"event": "on_chat_model_end", "run_id": "r2", "metadata": {"ls_model_name": "gpt-4o"}, "data": {"output": {"content": "hello", "usage_metadata": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}}}}
+{"event": "on_tool_start", "run_id": "r3", "name": "search", "data": {"input": {"q": "x"}}}
+{"event": "on_tool_end", "run_id": "r3", "name": "search", "data": {"output": "result"}}
+{"event": "on_chain_end", "run_id": "r1", "name": "graph", "data": {"output": {"answer": "done"}}}

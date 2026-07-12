@@ -1,0 +1,6 @@
+{"type": "crew_kickoff_started", "timestamp": "2026-01-01T00:00:00Z", "crew_name": "demo", "event_id": "e1"}
+{"type": "agent_execution_started", "timestamp": "2026-01-01T00:00:01Z", "agent_id": "a1", "agent_role": "researcher", "task_name": "gather"}
+{"type": "tool_usage_started", "timestamp": "2026-01-01T00:00:02Z", "tool_name": "web_search", "event_id": "t1", "tool_args": {"q": "x"}}
+{"type": "tool_usage_finished", "timestamp": "2026-01-01T00:00:03Z", "tool_name": "web_search", "output": "ok"}
+{"type": "task_completed", "timestamp": "2026-01-01T00:00:04Z", "task_id": "k1", "task_name": "gather", "output": "done"}
+{"type": "crew_kickoff_completed", "timestamp": "2026-01-01T00:00:05Z", "crew_name": "demo", "output": "final"}

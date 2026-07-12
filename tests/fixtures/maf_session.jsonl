@@ -1,0 +1,4 @@
+{"name": "agents.app.run", "start_time_unix_nano": 1767225600000000000, "end_time_unix_nano": 1767225601000000000, "status": {"status_code": 1}, "attributes": {"activity.type": "message", "activity.is_agentic_request": true}}
+{"name": "agents.adapter.process", "start_time_unix_nano": 1767225601000000000, "end_time_unix_nano": 1767225602000000000, "status": {"status_code": 1}, "attributes": {"activity.type": "message", "activity.id": "act1", "activity.conversation.id": "conv1"}}
+{"name": "agents.storage.read", "start_time_unix_nano": 1767225602000000000, "end_time_unix_nano": 1767225603000000000, "status": {"status_code": 1}, "attributes": {"storage.keys.count": 2}}
+{"name": "agents.app.after_turn", "start_time_unix_nano": 1767225603000000000, "end_time_unix_nano": 1767225604000000000, "status": {"status_code": 1}, "attributes": {}}
