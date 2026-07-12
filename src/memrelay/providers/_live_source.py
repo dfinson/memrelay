@@ -40,6 +40,7 @@ Three design points make them safe to add to the auto-detected registry:
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
+from functools import cache
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -54,6 +55,43 @@ TRANSPORT_SSE = "sse"
 #: Framework runtimes have no key-less host-borrow path in memrelay's engine, so they
 #: advertise the honest bring-your-own-key default (metadata only; → ``config.llm.strategy``).
 LLM_STRATEGY = "byo-key"
+
+#: Bounded-timeout policy for the live traceforge sources (rt-providers F1).
+#:
+#: The installed ``traceforge_toolkit`` 0.1.0 ``SSESource``/``HttpPollSource`` expose **no**
+#: timeout constructor parameter, and ``SSESource`` hardcodes its client to
+#: ``httpx.AsyncClient(timeout=None)`` (traceforge ``sources/sse.py``). So against a *black-hole*
+#: endpoint (TCP connects but no bytes ever arrive) the SSE read blocks **forever** and never
+#: reaches the reconnect branch — ``max_reconnects`` alone is inert. We therefore bound the httpx
+#: client timeout via a thin ``__aenter__`` override in the ``_Bounded*`` subclasses built by
+#: :func:`_bounded_source_classes` (traceforge itself stays untouched). These are kept as
+#: module-level constants so they are discoverable and adjustable; a later lane can make them
+#: config-driven.
+#:
+#: TODO(traceforge>0.1.0): if a future traceforge accepts a timeout parameter, drop the
+#: ``_Bounded*`` subclasses and pass these values as constructor arguments instead.
+
+#: Seconds to establish the TCP/TLS connection before failing (both transports) — bounds a
+#: connect to a black hole so opening the stream/poll cannot hang either.
+LIVE_CONNECT_TIMEOUT_SECONDS = 10.0
+
+#: Seconds to wait for the next bytes on the SSE stream. httpx resets this on **any** received
+#: byte (including SSE ``:`` comment/heartbeat lines), so a legitimately quiet-but-alive stream
+#: survives; only a true black hole (zero bytes) trips it — turning the former forever-hang into
+#: a bounded, logged, cooperatively-cancellable reconnect. This is the actual F1 fix.
+LIVE_SSE_READ_TIMEOUT_SECONDS = 30.0
+
+#: SSE reconnect bound. Intentionally **unbounded** (``None``) with traceforge's built-in
+#: ``reconnect_delay`` backoff: the read timeout above already removes the hang, so an opt-in
+#: operator endpoint that briefly blips should be retried at a bounded cadence rather than
+#: permanently killing intake after a handful of disconnects. A finite cap here would be a
+#: deliberate policy choice, not a correctness requirement.
+LIVE_SSE_MAX_RECONNECTS: int | None = None
+
+#: Seconds for a single HTTP-poll request (connect is bounded separately, above). HttpPollSource
+#: already inherits httpx's 5 s default so it never *forever*-hangs; setting this explicitly is
+#: determinism/hardening (belt-and-suspenders), not the F1 fix.
+LIVE_HTTP_POLL_TIMEOUT_SECONDS = 30.0
 
 
 def mapping_path(name: str) -> str:
@@ -86,6 +124,48 @@ class _LiveReplaySource:
                 stripped = line.strip()
                 if stripped:
                     yield stripped
+
+
+@cache
+def _bounded_source_classes() -> tuple[type, type]:
+    """Build the timeout-bounded ``(HttpPollSource, SSESource)`` subclasses.
+
+    Defined lazily (traceforge is imported inside methods throughout this package) and memoized
+    so the classes are created once. Each subclass overrides **only** ``__aenter__``: a faithful
+    copy of the traceforge 0.1.0 parent body whose sole change is a bounded ``httpx.Timeout`` on
+    the client, stored on the **same** ``_client`` attribute the parent ``__aexit__`` closes — so
+    connection lifecycle and cleanup are preserved and no client is leaked. ``httpx.AsyncClient``
+    is looked up on the ``httpx`` module at call time so test seams that monkeypatch it (an
+    in-memory ``MockTransport``) keep working.
+    """
+    import httpx
+    from traceforge.sources import HttpPollSource, SSESource
+
+    class _BoundedHttpPollSource(HttpPollSource):
+        async def __aenter__(self) -> HttpPollSource:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=LIVE_CONNECT_TIMEOUT_SECONDS,
+                    read=LIVE_HTTP_POLL_TIMEOUT_SECONDS,
+                    write=LIVE_CONNECT_TIMEOUT_SECONDS,
+                    pool=LIVE_CONNECT_TIMEOUT_SECONDS,
+                )
+            )
+            return self
+
+    class _BoundedSSESource(SSESource):
+        async def __aenter__(self) -> SSESource:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=LIVE_CONNECT_TIMEOUT_SECONDS,
+                    read=LIVE_SSE_READ_TIMEOUT_SECONDS,
+                    write=LIVE_CONNECT_TIMEOUT_SECONDS,
+                    pool=LIVE_CONNECT_TIMEOUT_SECONDS,
+                )
+            )
+            return self
+
+    return _BoundedHttpPollSource, _BoundedSSESource
 
 
 class LiveSourceProvider(AgentProvider):
@@ -169,13 +249,20 @@ class LiveSourceProvider(AgentProvider):
         return self._make_live_source()
 
     def _make_live_source(self) -> Any:
-        """Build the live traceforge source for :attr:`transport` (endpoint is set)."""
-        from traceforge.sources import HttpPollSource, SSESource
+        """Build the live traceforge source for :attr:`transport` (endpoint is set).
+
+        Uses the timeout-bounded subclasses from :func:`_bounded_source_classes` (see the
+        ``LIVE_*`` constants) so a stalled / black-hole endpoint fails or reconnects on a bound
+        instead of hanging forever; traceforge itself is not modified.
+        """
+        bounded_http_poll, bounded_sse = _bounded_source_classes()
 
         if self.transport == TRANSPORT_HTTP_POLL:
-            return HttpPollSource(url=self.endpoint, name=self.id)
+            return bounded_http_poll(url=self.endpoint, name=self.id)
         if self.transport == TRANSPORT_SSE:
-            return SSESource(url=self.endpoint, name=self.id)
+            return bounded_sse(
+                url=self.endpoint, name=self.id, max_reconnects=LIVE_SSE_MAX_RECONNECTS
+            )
         raise ValueError(f"{self.id}: unknown transport {self.transport!r}")
 
     def make_adapter(self, session_id: str) -> Any:
