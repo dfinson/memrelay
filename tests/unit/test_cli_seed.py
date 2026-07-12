@@ -94,7 +94,7 @@ def test_seed_repo_override_sets_provenance(monkeypatch, tmp_path: Path) -> None
     assert result.exit_code == 0, result.output
     # repo overrides provenance; namespace derives from the override's owner.
     assert spool.appended[0]["repo"] == "OWNER/Name"
-    assert "namespace: OWNER" in result.output
+    assert "namespace: owner" in result.output
 
 
 def test_seed_dry_run_appends_nothing(monkeypatch, tmp_path: Path) -> None:

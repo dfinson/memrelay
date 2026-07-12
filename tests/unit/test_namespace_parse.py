@@ -29,6 +29,10 @@ from memrelay.mcp.namespace import _parse_owner_name
         ("https://github.com/dfinson/memrelay.git", "dfinson/memrelay"),
         ("https://github.com/dfinson/memrelay", "dfinson/memrelay"),
         ("https://github.com/dfinson/memrelay/", "dfinson/memrelay"),
+        # .git AND a trailing slash together (HTTPS + SSH): the slash must be stripped
+        # BEFORE the .git suffix, else ".git" is retained and the id silently diverges.
+        ("https://github.com/dfinson/memrelay.git/", "dfinson/memrelay"),
+        ("git@github.com:dfinson/memrelay.git/", "dfinson/memrelay"),
         # Deep self-hosted path: the last two segments (subgroup/repo) win.
         ("https://gitlab.example.com/group/subgroup/repo.git", "subgroup/repo"),
     ],
