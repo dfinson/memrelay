@@ -255,7 +255,8 @@ def test_make_source_live_builds_declared_transport(spec: Spec) -> None:
     """
     provider = spec.provider_cls("http://framework.local/trace")
     source = provider.make_source()
-    assert type(source).__name__ == spec.source_cls_name
+    # F1 fix makes this a bounded subclass; assert the declared source class is in the MRO.
+    assert spec.source_cls_name in {b.__name__ for b in type(source).__mro__}
     assert source.url == "http://framework.local/trace"
     assert source.name == spec.id
 

@@ -25,7 +25,14 @@ import json
 
 import httpx
 import pytest
+from traceforge.sources import HttpPollSource, SSESource
 
+from memrelay.providers._live_source import (
+    LIVE_CONNECT_TIMEOUT_SECONDS,
+    LIVE_HTTP_POLL_TIMEOUT_SECONDS,
+    LIVE_SSE_MAX_RECONNECTS,
+    LIVE_SSE_READ_TIMEOUT_SECONDS,
+)
 from memrelay.providers.crewai import CrewaiProvider
 from memrelay.providers.langgraph import LangGraphProvider
 
@@ -141,7 +148,7 @@ def test_http_poll_live_path_yields_canonical_events(monkeypatch: pytest.MonkeyP
 
     provider = CrewaiProvider.from_home("http://crewai.local/trace")
     source = provider.make_source()
-    assert type(source).__name__ == "HttpPollSource"
+    assert isinstance(source, HttpPollSource)
 
     async def drive() -> str:
         # First poll returns the whole accumulated trace as a single record; break before
@@ -174,7 +181,7 @@ def test_sse_live_path_yields_canonical_events(monkeypatch: pytest.MonkeyPatch) 
 
     provider = LangGraphProvider.from_home("http://langgraph.local/events")
     source = provider.make_source()
-    assert type(source).__name__ == "SSESource"
+    assert isinstance(source, SSESource)
 
     async def drive() -> list[str]:
         payloads: list[str] = []
@@ -192,3 +199,51 @@ def test_sse_live_path_yields_canonical_events(monkeypatch: pytest.MonkeyPatch) 
     events = [event for line in payloads for event in adapter.parse(line)]
     assert {str(e.kind) for e in events} == LANGGRAPH_KINDS
     assert all(e.session_id == "live-langgraph" for e in events)
+
+
+# ── bounded-timeout coverage (rt-providers F1) ───────────────────────────────
+# The live traceforge sources hardcode/inherit their httpx client timeout in ``__aenter__``
+# (SSE: ``timeout=None`` → a black-hole endpoint reads forever). ``make_source()`` must instead
+# build timeout-bounded subclasses. These tests assert the built source carries the bounded
+# read+connect timeout — the pragmatic, network-free stand-in for "does not hang forever"
+# (they genuinely fail on pre-fix code, where the SSE client is unbounded and the poll client
+# uses httpx's 5 s default rather than the explicit bound).
+
+
+def _entered_client_timeout(source) -> httpx.Timeout:
+    """Enter ``source`` and return its httpx client's configured timeout, then release it.
+
+    Entering allocates the client but issues **no** request (the traceforge sources only touch
+    the network on iteration), so this stays fully hermetic — no sockets, no monkeypatch.
+    """
+
+    async def _run() -> httpx.Timeout:
+        async with source as opened:
+            return opened._client.timeout
+
+    return asyncio.run(_run())
+
+
+def test_sse_source_bounds_read_and_connect_timeout() -> None:
+    """SSE (the F1 fix): the live ``SSESource`` must build its httpx client with a BOUNDED
+    read+connect timeout, so a black-hole endpoint (TCP up, no bytes) cannot read forever.
+    Pre-fix the client is ``timeout=None`` (unbounded) and the assertions below fail."""
+    source = LangGraphProvider.from_home("http://langgraph.local/events").make_source()
+    assert isinstance(source, SSESource)
+    # Reconnect policy is intentionally unbounded — the read timeout, not a reconnect cap, is
+    # what breaks the hang; pin it so a silent regression to a finite cap is caught.
+    assert source.max_reconnects is LIVE_SSE_MAX_RECONNECTS
+    timeout = _entered_client_timeout(source)
+    assert timeout.read == LIVE_SSE_READ_TIMEOUT_SECONDS
+    assert timeout.connect == LIVE_CONNECT_TIMEOUT_SECONDS
+
+
+def test_http_poll_source_bounds_read_and_connect_timeout() -> None:
+    """HTTP-poll (hardening): the live ``HttpPollSource`` must build its httpx client with an
+    explicit bounded timeout. Pre-fix the client uses httpx's 5 s default, so asserting the
+    explicit 30 s read bound fails until the fix sets it."""
+    source = CrewaiProvider.from_home("http://crewai.local/trace").make_source()
+    assert isinstance(source, HttpPollSource)
+    timeout = _entered_client_timeout(source)
+    assert timeout.read == LIVE_HTTP_POLL_TIMEOUT_SECONDS
+    assert timeout.connect == LIVE_CONNECT_TIMEOUT_SECONDS
