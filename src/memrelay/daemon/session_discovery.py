@@ -229,7 +229,6 @@ class LiveTailCapture:
         interval: float = DEFAULT_POLL_INTERVAL,
         wait: PollWait | None = None,
         tail_source_factory: Callable[[SessionRef], Any] | None = None,
-        offset_store: Any = None,
         replay_capture: RunObserveCapture | None = None,
     ) -> None:
         self._ref = ref
@@ -238,7 +237,6 @@ class LiveTailCapture:
         self._config = config
         self._namespace_map = namespace_map
         self._tail_source_factory = tail_source_factory
-        self._offset_store = offset_store
         #: The retained #8 backstop — injected for tests, else built with the same wiring.
         self._replay = replay_capture or RunObserveCapture(
             ref,
@@ -274,7 +272,6 @@ class LiveTailCapture:
                 namespace_map=self._namespace_map,
                 stop=self._stop,
                 tail_source=tail_source,
-                offset_store=self._offset_store,
             )
         except asyncio.CancelledError:
             raise

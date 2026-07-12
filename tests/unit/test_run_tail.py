@@ -2,19 +2,17 @@
 
 Everything here is deterministic and wall-clock-free: the source is an injected
 ``FakeFileWatch`` (a scripted async-CM that yields one record per fixture line, each release
-optionally gated by a test-controlled ``asyncio.Event``), the spool is a duck-typed
-``DedupeSpool`` that mirrors the real spool's ``idempotency_key`` UNIQUE (INSERT OR IGNORE),
-and the durable cursor is a ``RecordingOffsetStore`` fake. No real watchdog observer is
-started and no real filesystem-event timing is relied upon.
+optionally gated by a test-controlled ``asyncio.Event``) and the spool is a duck-typed
+``DedupeSpool`` that mirrors the real spool's ``idempotency_key`` UNIQUE (INSERT OR IGNORE).
+No real watchdog observer is started and no real filesystem-event timing is relied upon.
+
+The tail carries **no durable offset** — it is best-effort latency only; correctness (no
+loss / no dup) is owned by the periodic ``run_observe`` replay backstop + the spool's
+idempotency dedupe, so these tests inject no cursor.
 
 Proofs (the founder-gated set):
 * **Parity (AC4):** the tail path composes byte-identical episodes to the ``run_observe``
   replay path on the copilot fixture — same shared ``_push_line``/pipeline backbone.
-* **Crash-restart no-loss AND no-dup (Test B):** losing the last cursor advance to a
-  simulated crash re-reads + re-ingests the overlap, which the spool dedupes — the final
-  episode set equals a full replay's, with zero duplicate keys.
-* **Cursor advances only after append:** the durable line-cursor is monotonic and only ever
-  lands on spool-durable checkpoints, ending at EOF.
 * **Per-append loop-yield:** the tail suspends the loop between appends (it streams one
   record at a time and stays responsive), asserted via injected gating, not timing.
 * **Stop mid-stream:** a stop signal breaks the read in a normal context, the trailing
@@ -63,28 +61,6 @@ def _fake_idem(session_id: str | None, event_id: str | None, content: str) -> st
 
 def _fake_factory(**fields: object) -> dict:
     return dict(fields)
-
-
-class RecordingOffsetStore:
-    """Durable line-cursor fake: records every read/write so we can assert advance semantics."""
-
-    def __init__(self, initial: dict[str, int] | None = None) -> None:
-        self._vals: dict[str, int] = dict(initial or {})
-        self.writes: list[tuple[str, int]] = []
-
-    def read(self, session_id: str) -> int:
-        return self._vals.get(session_id, 0)
-
-    def write(self, session_id: str, line_no: int) -> None:
-        self._vals[session_id] = line_no
-        self.writes.append((session_id, line_no))
-
-    def value(self, session_id: str) -> int:
-        return self._vals.get(session_id, 0)
-
-    def force(self, session_id: str, line_no: int) -> None:
-        """Simulate a crash that lost cursor advances: rewind the persisted value."""
-        self._vals[session_id] = line_no
 
 
 class FakeFileWatch:
@@ -142,7 +118,7 @@ async def _pump_until(pred: Any, cap: int = 2000) -> None:
     raise AssertionError("condition not reached within pump cap")
 
 
-def _replay(spool: Any, fixture: Path, offset_store: Any = None) -> Any:
+def _replay(spool: Any, fixture: Path) -> Any:
     return asyncio.run(
         run_observe(
             fixture,
@@ -154,14 +130,13 @@ def _replay(spool: Any, fixture: Path, offset_store: Any = None) -> Any:
     )
 
 
-def _tail(spool: Any, fixture: Path, lines: list[str], *, offset_store: Any = None) -> Any:
+def _tail(spool: Any, fixture: Path, lines: list[str]) -> Any:
     return asyncio.run(
         run_tail(
             fixture,
             SID,
             spool=spool,
             tail_source=FakeFileWatch(lines),
-            offset_store=offset_store,
             idempotency_fn=_fake_idem,
             record_factory=_fake_factory,
         )
@@ -183,100 +158,6 @@ def test_run_tail_parity_with_run_observe(copilot_fixture: Path) -> None:
     assert tail_result.appended == replay_result.appended == 3
     assert tail_spool.records == replay_spool.records
     assert tail_result.parsed == replay_result.parsed
-
-
-# ── Test B: crash restart is lossless + duplicate-free ─────────────────────────────────────
-def test_run_tail_crash_restart_no_loss_and_no_dup(copilot_fixture: Path) -> None:
-    """A crash that drops the durable cursor re-reads + re-ingests; the spool dedupes (Test B).
-
-    Contract (RULING 1): losslessness = ``start_at=beginning`` + spool dedupe, NOT the cursor.
-    The line-cursor is a re-read-efficiency layer only. So the worst case — a crash that loses
-    the cursor entirely — must still be exactly-once: the restart re-reads from the top,
-    re-composes every episode byte-identically, and the spool's ``idempotency_key`` UNIQUE
-    (INSERT OR IGNORE) collapses the whole overlap to zero net rows. at-least-once + dedupe =
-    exactly-once, with the cursor contributing nothing to correctness.
-    """
-    lines = _fixture_lines(copilot_fixture)
-
-    # Reference episode set = a full replay.
-    ref_spool = DedupeSpool()
-    _replay(ref_spool, copilot_fixture)
-    ref_keys = ref_spool.keys
-    assert len(ref_keys) == 3
-
-    # Run A: a full tail with a durable cursor. It advances monotonically to EOF, landing only
-    # on spool-durable checkpoints (buffer-empty boundaries — advance strictly after append).
-    store = RecordingOffsetStore()
-    spool = DedupeSpool()
-    _tail(spool, copilot_fixture, lines, offset_store=store)
-    checkpoints = [n for _sid, n in store.writes]
-    assert checkpoints == sorted(checkpoints)  # monotonic
-    assert len(set(checkpoints)) >= 2  # multiple spool-durable checkpoints
-    assert checkpoints[-1] == len(lines)  # advanced to EOF (session.ended is a boundary)
-    assert set(spool.keys) == set(ref_keys)
-
-    # Crash: the durable cursor is lost entirely (the worst case — losslessness must not depend
-    # on it). Reset to 0 so the restart re-reads the WHOLE file, maximally overlapping Run A.
-    store.force(SID, 0)
-    appended_before = len(spool.records)
-
-    # Run B (restart): re-reads 1..EOF against the SAME spool. Every episode re-composes
-    # byte-identically and the spool dedupes the entire overlap (INSERT OR IGNORE).
-    result_b = asyncio.run(
-        run_tail(
-            copilot_fixture,
-            SID,
-            spool=spool,
-            tail_source=FakeFileWatch(lines),
-            offset_store=store,
-            idempotency_fn=_fake_idem,
-            record_factory=_fake_factory,
-        )
-    )
-
-    # no-loss: every reference episode is still present.
-    assert set(spool.keys) == set(ref_keys)
-    # no-dup: exactly the 3 reference keys, none stored twice, zero net new rows.
-    assert len(spool.keys) == len(set(spool.keys)) == 3
-    assert len(spool.records) == appended_before
-    # The overlap really was re-ingested and deduped (not merely skipped): all 3 re-composed
-    # episodes collided with the durable rows.
-    assert result_b.parsed >= 1
-    assert spool.ignored == 3
-    # The cursor recovered back to EOF after the clean re-read.
-    assert store.read(SID) == len(lines)
-
-
-# ── cursor advances only after append ──────────────────────────────────────────────────────
-def test_run_tail_clean_resume_skips_ingested_prefix(copilot_fixture: Path) -> None:
-    """With the cursor persisted, a restart re-pushes nothing already ingested (efficiency)."""
-    lines = _fixture_lines(copilot_fixture)
-
-    ref_spool = DedupeSpool()
-    ref_result = _replay(ref_spool, copilot_fixture)
-
-    store = RecordingOffsetStore()
-    spool = DedupeSpool()
-    _tail(spool, copilot_fixture, lines, offset_store=store)
-    assert store.value(SID) == len(lines)  # fully caught up
-
-    # Restart with the cursor intact: the whole file is already ingested, so nothing is
-    # re-parsed or re-appended — the prefix is skipped wholesale.
-    result_b = asyncio.run(
-        run_tail(
-            copilot_fixture,
-            SID,
-            spool=spool,
-            tail_source=FakeFileWatch(lines),
-            offset_store=store,
-            idempotency_fn=_fake_idem,
-            record_factory=_fake_factory,
-        )
-    )
-    assert result_b.parsed == 0  # nothing re-pushed
-    assert spool.ignored == 0  # nothing even reached the spool to dedupe
-    assert set(spool.keys) == set(ref_spool.keys)
-    assert ref_result.parsed > 0  # sanity: the fixture does carry events
 
 
 # ── per-append loop-yield ──────────────────────────────────────────────────────────────────

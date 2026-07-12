@@ -122,7 +122,6 @@ def default_poller_factory(engine: Any, config: Config) -> SupportsPoller | None
             SessionDiscoveryPoller,
             active_sessions,
         )
-        from memrelay.ingest.graphiti_sink import OffsetStore
         from memrelay.ingest.spool import Spool
         from memrelay.providers.base import SessionRef
         from memrelay.providers.registry import get_registry
@@ -148,12 +147,10 @@ def default_poller_factory(engine: Any, config: Config) -> SupportsPoller | None
     # E1-S2 #11: select the per-session capture by config. Default "replay" keeps #8's
     # RunObserveCapture verbatim (the shipping default); "file_watch" opts into the live
     # tail (LiveTailCapture) — the retained replay backstop + a real-time FileWatch tail,
-    # both feeding the one idempotent spool. The tail's durable line-cursor lives under
-    # <home>/offsets (a shared, session-keyed store; a re-read-efficiency layer only).
+    # both feeding the one idempotent spool. The tail is best-effort latency-only: it carries
+    # no durable offset (start_at="beginning" + spool dedupe own losslessness), so there is no
+    # per-session cursor state to wire here.
     intake_source = config.ingest.intake_source
-    offset_store = (
-        OffsetStore(config.home_path / "offsets") if intake_source == "file_watch" else None
-    )
 
     def capture_factory(ref: SessionRef) -> SessionCapture:
         if intake_source == "file_watch":
@@ -164,7 +161,6 @@ def default_poller_factory(engine: Any, config: Config) -> SupportsPoller | None
                 config=config,
                 namespace_map=namespace_map,
                 interval=interval,
-                offset_store=offset_store,
             )
         return RunObserveCapture(
             ref,
