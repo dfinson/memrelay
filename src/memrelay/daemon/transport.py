@@ -147,21 +147,32 @@ async def serve(
 
 
 async def connect(
-    endpoint: Endpoint, *, timeout: float
+    endpoint: Endpoint, *, timeout: float, limit: int = MAX_LINE_BYTES
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
     """Open a client connection to a running daemon, bounded by ``timeout``.
 
     Raises :class:`ConnectionError` if the daemon is not reachable (no socket /
     port file, refused connection, or the connect times out).
+
+    ``limit`` sets the client StreamReader's read-buffer ceiling and defaults to
+    :data:`MAX_LINE_BYTES` — the *same* ceiling :func:`serve` gives the daemon's
+    request reads — so the response side stays symmetric: any reply the daemon can
+    frame, the client can read. asyncio's default reader limit is only 64 KiB
+    (2**16), which would trip a large-but-valid reply (a ``search`` result with
+    many hits, or a ``memory_note`` echoed back) on the client read even though
+    the daemon answered fine. A genuinely over-limit reply then surfaces as
+    :class:`MessageTooLarge` from :func:`read_message` — the same clear, named
+    error the server raises on an over-limit request — rather than an opaque
+    overrun.
     """
     try:
         if endpoint.use_loopback:
             port = _read_port(endpoint.port_path)
-            opener = asyncio.open_connection(LOOPBACK_HOST, port)
+            opener = asyncio.open_connection(LOOPBACK_HOST, port, limit=limit)
         else:
             if not endpoint.socket_path.exists():
                 raise ConnectionError(f"daemon socket not found: {endpoint.socket_path}")
-            opener = asyncio.open_unix_connection(str(endpoint.socket_path))
+            opener = asyncio.open_unix_connection(str(endpoint.socket_path), limit=limit)
         return await asyncio.wait_for(opener, timeout=timeout)
     except (TimeoutError, OSError) as exc:
         raise ConnectionError(f"cannot reach daemon at {endpoint.describe()}: {exc}") from exc

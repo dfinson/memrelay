@@ -10,10 +10,33 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from memrelay.daemon import transport
 from memrelay.daemon.protocol import StubBackend
 from memrelay.daemon.server import DaemonServer
 from memrelay.daemon.transport import Endpoint, resolve_endpoint
+
+#: Response payload size for the daemon→client read-limit tests: 200 KiB comfortably
+#: exceeds asyncio's default 64 KiB (2**16) StreamReader buffer while staying well
+#: under MAX_LINE_BYTES (4 MiB), so it is a legitimate large-but-valid reply.
+_BIG_RESPONSE_BYTES = 200 * 1024
+
+
+class _BigResponseBackend(StubBackend):
+    """A backend whose ``search`` returns a payload far larger than asyncio's
+    default 64 KiB client reader buffer — a realistic large result set — driven by
+    a *small* request, so tests exercise the RESPONSE read path in isolation.
+    """
+
+    async def search(self, query: str, namespace: str, prefer_repo: str | None = None) -> dict:
+        node = {
+            "uuid": "big-node",
+            "name": "big stub result",
+            "summary": "y" * _BIG_RESPONSE_BYTES,
+            "agent": "copilot",
+        }
+        return {"nodes": [node], "edges": [], "scores": [1.0]}
 
 
 async def _roundtrip(endpoint: Endpoint, message: dict) -> dict | None:
@@ -207,3 +230,52 @@ def test_idle_connection_is_closed_without_crashing(tmp_path: Path) -> None:
     idle_eof, health = asyncio.run(scenario())
     assert idle_eof is None  # server closed the idle connection cleanly (EOF)
     assert health["status"] == "running"
+
+
+def test_large_response_roundtrips_ok(tmp_path: Path) -> None:
+    # Symmetric partner of test_large_note_roundtrips_ok, on the RESPONSE side: a
+    # *small* request whose *reply* far exceeds asyncio's default 64 KiB client
+    # StreamReader buffer must round-trip cleanly. The daemon frames the big reply
+    # fine; before connect() raised the client's read limit, the client's
+    # readline() overran on the 64 KiB cap and broke the round-trip. Proves the
+    # invariant: a reply the daemon can produce, the client can read.
+    endpoint = resolve_endpoint(tmp_path)
+
+    async def scenario() -> dict | None:
+        server = DaemonServer(_BigResponseBackend(), endpoint)
+        await server.start()
+        try:
+            return await _roundtrip(endpoint, {"method": "search", "query": "q", "namespace": "ns"})
+        finally:
+            await server.stop()
+
+    result = asyncio.run(scenario())
+    assert set(result) == {"nodes", "edges", "scores"}
+    assert len(result["nodes"][0]["summary"]) == _BIG_RESPONSE_BYTES
+
+
+def test_oversize_response_raises_symmetric_error(tmp_path: Path) -> None:
+    # A reply larger than the *client's* read limit must fail with the same clear,
+    # named error the server raises on an over-limit request (MessageTooLarge) —
+    # never an opaque asyncio overrun. We shrink only the client's limit (the
+    # daemon still frames the ~200 KiB reply fine) to force the over-limit path
+    # deterministically, keeping the failure symmetric with the request side.
+    endpoint = resolve_endpoint(tmp_path)
+
+    async def scenario() -> None:
+        server = DaemonServer(_BigResponseBackend(), endpoint)
+        await server.start()
+        try:
+            reader, writer = await transport.connect(endpoint, timeout=5.0, limit=4096)
+            try:
+                await transport.write_message(
+                    writer, {"method": "search", "query": "q", "namespace": "ns"}
+                )
+                with pytest.raises(transport.MessageTooLarge):
+                    await transport.read_message(reader)
+            finally:
+                writer.close()
+        finally:
+            await server.stop()
+
+    asyncio.run(scenario())
