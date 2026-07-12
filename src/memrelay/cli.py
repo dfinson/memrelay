@@ -348,11 +348,24 @@ def init(copilot_home: str | None) -> None:
 
     provider = _resolve_provider(copilot_home)
     config_file, created = _write_default_config(home, _render_config(provider.llm_strategy()))
-    mcp_path = provider.register()
+    # Ingest-only providers (SPEC §2.1) raise NotImplementedError from register(). Auto-detect
+    # can resolve one (e.g. Codex) ahead of Copilot, so skip MCP registration gracefully rather
+    # than crash init — ingestion still works. Only NotImplementedError means "ingest-only".
+    try:
+        mcp_path = provider.register()
+    except NotImplementedError:
+        mcp_path = None
 
     click.echo(f"memrelay home:  {home}")
     click.echo(f"config:         {config_file}" + ("" if created else "  (kept existing)"))
-    click.echo(f"registered MCP: {mcp_path}")
+    if mcp_path is None:
+        click.echo(
+            f"MCP registration: skipped — {provider.id} is ingest-only "
+            "(memory ingestion works; add memrelay to its MCP config manually, "
+            "or re-run `memrelay init --copilot-home <path>` to register Copilot)."
+        )
+    else:
+        click.echo(f"registered MCP: {mcp_path}")
     _prefetch_embedding_model(cfg)
     _prefetch_fts_extension(cfg)
     _check_phase_bundle(cfg)
