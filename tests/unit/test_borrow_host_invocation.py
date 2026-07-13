@@ -16,6 +16,7 @@ the pre-fix code and passes only once the per-host wiring is correct.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 
 import pytest
@@ -324,3 +325,30 @@ def test_os_level_large_prompt_overflows_through_cmd_shim(
         asyncio.run(borrow_host._run_host_cli("copilot", ["-p", prompt, "-s"]))
 
     assert "command line is too long" in str(excinfo.value).lower()
+
+
+def test_shim_fallback_warning_throttled_once_per_process(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The shim-bypass fallback warns at most once per process, not once per extraction call.
+
+    ``_node_shim_launch`` runs on every Copilot completion, so a persistent misconfiguration (shim
+    present but loader absent) must not flood the daemon log. Three consecutive fallbacks must emit
+    a single WARNING, the later two dropping to DEBUG. Cross-platform: ``sys.platform`` and
+    ``os.path.isfile`` are patched and nothing is launched.
+    """
+    monkeypatch.setattr(borrow_host, "_warned_shim_fallbacks", set())
+    monkeypatch.setattr(borrow_host.sys, "platform", "win32")
+    monkeypatch.setattr(borrow_host.os.path, "isfile", lambda _p: False)  # loader absent everywhere
+    shim = r"C:\fake\bin\copilot.CMD"
+
+    with caplog.at_level(logging.DEBUG, logger="memrelay.engine.llm.borrow_host"):
+        assert borrow_host._node_shim_launch(shim) is None
+        assert borrow_host._node_shim_launch(shim) is None
+        assert borrow_host._node_shim_launch(shim) is None
+
+    records = [r for r in caplog.records if "no node loader found" in r.getMessage()]
+    warnings = [r for r in records if r.levelno == logging.WARNING]
+    debugs = [r for r in records if r.levelno == logging.DEBUG]
+    assert len(warnings) == 1  # three fallbacks -> exactly one warning
+    assert len(debugs) == 2  # the remaining two dropped to debug

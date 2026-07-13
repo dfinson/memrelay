@@ -32,6 +32,22 @@ from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
+# ``_node_shim_launch`` runs on every Copilot extraction call, so a persistent Windows
+# misconfiguration (shim present but its node loader / ``node`` missing) must NOT warn once per
+# call — that would flood the daemon log. Each distinct reason warns once per process, then drops
+# to debug. Reset only matters for tests; production keeps it for the process lifetime.
+_warned_shim_fallbacks: set[str] = set()
+
+
+def _warn_shim_fallback_once(reason: str, message: str, *args: object) -> None:
+    """Warn about a node-shim bypass fallback at most once per process per ``reason``."""
+    if reason in _warned_shim_fallbacks:
+        logger.debug(message, *args)
+        return
+    _warned_shim_fallbacks.add(reason)
+    logger.warning(message, *args)
+
+
 DEFAULT_MAX_TOKENS = 16384
 
 
@@ -175,8 +191,10 @@ def _node_shim_launch(resolved: str) -> tuple[str, str] | None:
     hard regression on any platform).
     """
     if sys.platform != "win32":
+        logger.debug("borrow-host: node-shim bypass n/a (not win32); exec resolved %r", resolved)
         return None
     if not resolved.lower().endswith((".cmd", ".bat")):
+        logger.debug("borrow-host: node-shim bypass n/a (not a shim); exec resolved %r", resolved)
         return None
     shim_dir = os.path.dirname(resolved)
     loader = _extract_loader_from_shim(resolved)
@@ -184,7 +202,8 @@ def _node_shim_launch(resolved: str) -> tuple[str, str] | None:
         conventional = os.path.join(shim_dir, "node_modules", "@github", "copilot", "npm-loader.js")
         loader = conventional if os.path.isfile(conventional) else None
     if loader is None:
-        logger.warning(
+        _warn_shim_fallback_once(
+            "loader-missing",
             "borrow-host: no node loader found for shim %r; running the shim directly "
             "(large prompts may overflow the cmd.exe command line)",
             resolved,
@@ -193,7 +212,8 @@ def _node_shim_launch(resolved: str) -> tuple[str, str] | None:
     sibling = os.path.join(shim_dir, "node.exe")
     node = sibling if os.path.isfile(sibling) else shutil.which("node")
     if node is None:
-        logger.warning(
+        _warn_shim_fallback_once(
+            "node-missing",
             "borrow-host: shim %r found but 'node' is not on PATH; running the shim directly",
             resolved,
         )
