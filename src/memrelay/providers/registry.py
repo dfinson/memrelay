@@ -4,7 +4,8 @@ memrelay resolves an :class:`~memrelay.providers.base.AgentProvider` three ways:
 
 * **by explicit id** — :meth:`ProviderRegistry.create` (e.g. the CLI's ``--copilot-home``).
 * **by auto-detect** — :meth:`ProviderRegistry.detect` returns every provider whose agent
-  is present on this machine (``is_present()``); :meth:`ProviderRegistry.resolve` picks the
+  is present on this machine (``is_present()``); :meth:`ProviderRegistry.resolve` prefers the
+  reference provider (:data:`DEFAULT_PROVIDER_ID`) when it is among those detected, else the
   first detected, falling back to :data:`DEFAULT_PROVIDER_ID` when nothing is detected so
   today's Copilot-only behavior is preserved.
 * **as the default** — :data:`DEFAULT_PROVIDER_ID` (the reference, zero-key agent).
@@ -103,17 +104,28 @@ class ProviderRegistry:
         return present
 
     def resolve(self, agent_id: str | None = None, *, home: str | None = None) -> AgentProvider:
-        """Resolve a provider: explicit ``agent_id`` → first auto-detected → default.
+        """Resolve a provider: explicit ``agent_id`` → reference-preferred detected → default.
 
-        With ``agent_id`` set this is just :meth:`create`. Otherwise the first
-        auto-detected provider wins; if none are present, :data:`DEFAULT_PROVIDER_ID` is
-        constructed so behavior is unchanged on machines where detection can't see the
-        agent home (``home`` is applied to that fallback).
+        With ``agent_id`` set this is just :meth:`create`. Otherwise auto-detection runs and:
+
+        * if the reference provider (:data:`DEFAULT_PROVIDER_ID`) is among those detected it
+          wins. Detection order is otherwise alphabetical (``detect`` iterates
+          :meth:`ids`), so on a machine with several agents installed the zero-key reference
+          agent is preferred instead of whichever id merely sorts first — e.g. ``"amazonq"``
+          sorts before ``"copilot"`` but must not be auto-selected ahead of it (#171);
+        * else the first detected provider (deterministic, alphabetical) is returned, so a
+          single-agent machine still resolves exactly that agent;
+        * else nothing is present and :data:`DEFAULT_PROVIDER_ID` is constructed so behavior
+          is unchanged on machines where detection can't see the agent home (``home`` is
+          applied to that fallback).
         """
         if agent_id is not None:
             return self.create(agent_id, home=home)
         detected = self.detect()
         if detected:
+            for provider in detected:
+                if provider.id == DEFAULT_PROVIDER_ID:
+                    return provider
             return detected[0]
         return self.create(DEFAULT_PROVIDER_ID, home=home)
 
