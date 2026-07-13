@@ -20,6 +20,7 @@ from pathlib import Path
 import _generator
 import _harness
 import _precision
+import generate_baseline
 import pytest
 
 BASELINE_PATH = Path(__file__).resolve().parent / "baseline.json"
@@ -51,6 +52,23 @@ def test_precision_at_k_meets_baseline(report: dict, baseline: dict) -> None:
         if value < threshold - 1e-9:
             regressions.append((metric, value, threshold))
     assert not regressions, f"recall quality regressed below baseline-margin: {regressions}"
+
+
+def test_measured_metrics_clear_absolute_floor(report: dict) -> None:
+    """Measured recall must clear the hardcoded absolute floor, not merely baseline-margin.
+
+    The floor is a code-only lower bound (``generate_baseline._ABSOLUTE_FLOORS``) that the
+    ``--write`` path cannot walk beneath, so the gate can't be silently ratcheted down over
+    successive baseline rewrites. Enforce it in the normal suite too, not just the CI job.
+    """
+    breaches = generate_baseline._below_floor(report["metrics"])
+    assert not breaches, f"measured recall fell below the absolute floor: {breaches}"
+
+
+def test_committed_baseline_clears_absolute_floor(baseline: dict) -> None:
+    """The checked-in baseline.json must itself sit at or above the absolute floor."""
+    breaches = generate_baseline._below_floor(baseline["metrics"])
+    assert not breaches, f"committed baseline.json is below the absolute floor: {breaches}"
 
 
 def test_eval_is_deterministic(report: dict) -> None:

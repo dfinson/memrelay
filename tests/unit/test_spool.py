@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from memrelay.ingest.episode import EpisodeRecord
-from memrelay.ingest.spool import Spool
+from memrelay.ingest.spool import _BUSY_TIMEOUT_MS, Spool
 
 
 def _record(content: str, key: str) -> dict:
@@ -14,6 +14,23 @@ def _record(content: str, key: str) -> dict:
 
 def _db(tmp_path: Path) -> Path:
     return tmp_path / "spool" / "spool.db"
+
+
+def test_busy_timeout_is_pinned(tmp_path: Path) -> None:
+    """The connection pins an explicit ``busy_timeout`` (rt-ingest hardening).
+
+    The daemon opens two separate ``Spool`` connections on one ``spool.db`` (ingester +
+    poller); the pinned busy-timeout makes a contended writer wait rather than immediately
+    raise ``database is locked``. Pinning it also guards against a future connect-call
+    change silently dropping it to 0 (CPython's ``connect(timeout=5.0)`` default sets it
+    today, but this makes it explicit). See ``_BUSY_TIMEOUT_MS``.
+    """
+    spool = Spool(_db(tmp_path))
+    try:
+        (timeout,) = spool._conn.execute("PRAGMA busy_timeout").fetchone()
+        assert timeout == _BUSY_TIMEOUT_MS
+    finally:
+        spool.close()
 
 
 def test_append_increments_pending(tmp_path: Path) -> None:
