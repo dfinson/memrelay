@@ -144,6 +144,31 @@ def test_status_reports_not_running(cli_env: tuple[Path, Path]) -> None:
     assert "not running" in result.output
 
 
+def test_status_renders_ingest_failure_counters(
+    cli_env: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`status` renders notes_failed / poison_skipped so silent ingest failures are visible.
+
+    The daemon threads both counters into its health payload; here ``probe_health`` is stubbed to
+    a running daemon reporting non-zero failures, and the command must render both lines (Wall E).
+    """
+    health = {
+        "status": "running",
+        "sessions_observed": 4,
+        "episodes_ingested": 10,
+        "spool_pending": 1,
+        "notes_failed": 3,
+        "poison_skipped": 2,
+    }
+    monkeypatch.setattr(lifecycle, "probe_health", lambda home, timeout=0.5: health)
+
+    result = CliRunner().invoke(main, ["status"])
+    assert result.exit_code == 0, result.output
+    assert "memrelay daemon: running" in result.output
+    assert "notes_failed:      3" in result.output
+    assert "poison_skipped:    2" in result.output
+
+
 def test_start_status_stop_cycle(cli_env: tuple[Path, Path], fake_daemon_spawn: dict) -> None:
     runner = CliRunner()
 

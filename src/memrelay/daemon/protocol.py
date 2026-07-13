@@ -132,6 +132,8 @@ class StubBackend:
             "sessions_observed": 0,
             "episodes_ingested": 0,
             "spool_pending": 0,
+            "notes_failed": 0,
+            "poison_skipped": 0,
         }
 
 
