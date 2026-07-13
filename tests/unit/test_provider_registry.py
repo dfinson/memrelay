@@ -190,6 +190,57 @@ def test_resolve_explicit_id_and_home(tmp_path: Path) -> None:
     assert [r.session_id for r in provider.discover_sessions()] == ["only"]
 
 
+# ── reference-preferred auto-detect (#171: no alphabetical-first surprise) ────
+#
+# These are hermetic: a throwaway ``ProviderRegistry`` + fake providers with fixed
+# ``is_present()`` results, so the outcome never depends on which agents are installed on
+# the test machine (the founder's box has BOTH ~/.aws/amazonq and ~/.copilot, which is what
+# exposed the bug live).
+
+
+def _fixed_presence_provider(agent_id: str, *, present: bool) -> type[_CompleteProvider]:
+    """A complete provider with a fixed ``id`` + ``is_present()`` for detection tests."""
+
+    class _Fixed(_CompleteProvider):
+        id = agent_id
+
+        def is_present(self) -> bool:
+            return present
+
+    return _Fixed
+
+
+def test_resolve_prefers_reference_over_alphabetically_earlier_agent() -> None:
+    """The reference provider wins over an alphabetically-earlier detected agent (#171).
+
+    ``detect()`` iterates ``sorted(ids)``, so ``"amazonq"`` is detected *before* ``"copilot"``;
+    the old ``resolve()`` returned ``detected[0]`` and thus picked amazonq. Now copilot wins.
+    (Reverting the precedence change flips this assertion back to ``"amazonq"`` — the
+    counterfactual guard.)
+    """
+    registry = ProviderRegistry()
+    registry.register(_fixed_presence_provider("amazonq", present=True))
+    registry.register(_fixed_presence_provider(DEFAULT_PROVIDER_ID, present=True))
+
+    # amazonq really is detected first (alphabetical) ...
+    assert [p.id for p in registry.detect()] == ["amazonq", DEFAULT_PROVIDER_ID]
+    # ... but the reference provider is the one resolve() selects.
+    assert registry.resolve().id == DEFAULT_PROVIDER_ID
+
+
+def test_resolve_picks_sole_present_agent_when_reference_absent() -> None:
+    """No regression: with the reference absent, the sole present agent still wins.
+
+    This is the guard against a naive "always copilot" fix — precedence must fall through to
+    the deterministic first-detected provider when the reference isn't present.
+    """
+    registry = ProviderRegistry()
+    registry.register(_fixed_presence_provider("amazonq", present=True))
+    registry.register(_fixed_presence_provider(DEFAULT_PROVIDER_ID, present=False))
+
+    assert registry.resolve().id == "amazonq"
+
+
 # ── LLM-strategy advertisement (responsibility 2) ────────────────────────────
 
 
