@@ -43,9 +43,25 @@ else:
 PID_FILENAME = "daemon.pid"
 LOCK_FILENAME = "daemon.lock"
 
+#: Daemon stderr log: the detached daemon's stdout+stderr are redirected here
+#: (instead of ``DEVNULL``). The daemon logs to stderr for its whole life, so this
+#: captures all of it — but the point is diagnosing a *startup* death, previously
+#: invisible because the detached child's stderr was thrown away.
+STARTUP_LOG_DIRNAME = "logs"
+STARTUP_LOG_FILENAME = "daemon-startup.log"
+
 #: Default timeouts (seconds).
 PROBE_TIMEOUT = 0.5
-READY_TIMEOUT = 10.0
+#: Readiness wait for a *warm* start (engine caches already built). Raised well
+#: above a healthy engine build so a normal start never reports a false failure.
+READY_TIMEOUT = 30.0
+#: Readiness wait for a *cold* first run, where the detached daemon must build the
+#: embedder + LadybugDB + FTS extension before it can answer health — routinely
+#: far longer than a warm start.
+COLD_READY_TIMEOUT = 120.0
+#: Env var overriding the readiness wait (seconds); a positive value wins over the
+#: adaptive default, so operators can tune the window without touching the CLI.
+READY_TIMEOUT_ENV = "MEMRELAY_READY_TIMEOUT"
 STOP_TIMEOUT = 5.0
 POLL_INTERVAL = 0.1
 
@@ -137,19 +153,42 @@ def _send_shutdown(home: Path, timeout: float) -> bool:
 # ─── Spawning the detached daemon ────────────────────────────────────────────
 
 
+def _serve_argv() -> list[str]:
+    """Argv that runs the detached foreground daemon (``memrelay _serve``).
+
+    Uses ``python -m memrelay`` (not the console script) so it works even when the
+    ``memrelay`` executable is not on PATH. Exposed as a module-level seam so tests
+    can point the spawn at a harmless child without launching a real daemon.
+    """
+    return [sys.executable, "-m", "memrelay", "_serve"]
+
+
+def startup_log_path(home: Path) -> Path:
+    """Path to the detached daemon's captured startup log under ``home``."""
+    return home / STARTUP_LOG_DIRNAME / STARTUP_LOG_FILENAME
+
+
 def spawn_detached(home: Path) -> int:
     """Launch ``memrelay _serve`` as a detached background process; return its PID.
 
-    Uses ``python -m memrelay`` (not the console script) so it works even when the
-    ``memrelay`` executable is not on PATH. ``MEMRELAY_HOME`` pins the child to the
-    same home directory.
+    ``MEMRELAY_HOME`` pins the child to the same home directory. The child's
+    stdout+stderr are redirected to :func:`startup_log_path` (append) rather than
+    ``DEVNULL``. The daemon logs to stderr for its whole life, so this captures all
+    of it; the point is that a *startup* death — previously invisible under
+    ``DEVNULL`` — now leaves a diagnosable trace.
+
+    The capture target is a real *file*, never a pipe the parent holds open: a
+    parent-held pipe would tie the child's lifetime to the CLI and hang it. The
+    detachment flags are unchanged, so the child stays fully detached; the parent's
+    file handle is closed here once ``Popen`` has duplicated the descriptor for the
+    child.
     """
     env = dict(os.environ)
     env["MEMRELAY_HOME"] = str(home)
+    log_path = startup_log_path(home)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     kwargs: dict = {
         "stdin": subprocess.DEVNULL,
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
         "env": env,
         "cwd": str(home),
     }
@@ -160,7 +199,13 @@ def spawn_detached(home: Path) -> int:
         )
     else:
         kwargs["start_new_session"] = True
-    proc = subprocess.Popen([sys.executable, "-m", "memrelay", "_serve"], **kwargs)
+    with open(log_path, "ab") as startup_log:
+        proc = subprocess.Popen(
+            _serve_argv(),
+            stdout=startup_log,
+            stderr=subprocess.STDOUT,
+            **kwargs,
+        )
     return proc.pid
 
 
@@ -228,20 +273,59 @@ def _hold_start_lock(
 # ─── start / stop / status ───────────────────────────────────────────────────
 
 
+def _is_cold_start(config: Config) -> bool:
+    """True when the graph database has not been built yet (a first-ever start).
+
+    A missing graph file means the daemon has never completed an engine build on
+    this home, so the next start faces the slow cold path (embedder + LadybugDB +
+    FTS). Any error inspecting the path is treated as cold — prefer patience over a
+    premature failure.
+    """
+    try:
+        return not config.graph_path.exists()
+    except OSError:
+        return True
+
+
+def _resolve_ready_timeout(config: Config) -> float:
+    """Pick the readiness wait for a start, adapting to a cold first run.
+
+    Precedence: a valid :data:`READY_TIMEOUT_ENV` override (a positive float) wins;
+    otherwise a *cold* start gets the wide :data:`COLD_READY_TIMEOUT`, while a
+    *warm* restart uses :data:`READY_TIMEOUT`. Keying cold-ness off the graph file
+    (created only once the engine has built) is the truest in-process signal that
+    *this* start faces the long first-run build — unlike the model/FTS cache, which
+    ``init`` may have already warmed even though the first ``start`` still needs the
+    wide window.
+    """
+    override = os.environ.get(READY_TIMEOUT_ENV)
+    if override:
+        try:
+            seconds = float(override)
+        except ValueError:
+            seconds = 0.0
+        if seconds > 0:
+            return seconds
+    return COLD_READY_TIMEOUT if _is_cold_start(config) else READY_TIMEOUT
+
+
 def start_daemon(
     config: Config,
     *,
-    ready_timeout: float = READY_TIMEOUT,
+    ready_timeout: float | None = None,
     poll_interval: float = POLL_INTERVAL,
     lock_timeout: float | None = None,
 ) -> DaemonStatus:
     """Start the daemon if not already running; wait until it answers health.
 
     Returns the resulting :class:`DaemonStatus`; ``running`` is always true on
-    success. Raises :class:`DaemonStartError` if the spawned process never
-    becomes healthy within ``ready_timeout``, or if the start lock cannot be
-    acquired within ``lock_timeout`` (defaults to ``ready_timeout`` plus a
-    margin so a waiter always outlasts a legitimately slow peer).
+    success. When ``ready_timeout`` is ``None`` it is resolved adaptively by
+    :func:`_resolve_ready_timeout` (a cold first run gets a wider window than a warm
+    restart, and :data:`READY_TIMEOUT_ENV` overrides both). Raises
+    :class:`DaemonStartError` if the spawned process never becomes healthy within
+    that window, or if the start lock cannot be acquired within ``lock_timeout``
+    (defaults to the resolved ``ready_timeout`` plus a margin so a waiter always
+    outlasts a legitimately slow peer).
 
     An OS-level advisory lock serializes the health-check→spawn critical section
     so two concurrent ``start`` invocations can never spawn two daemons: the
@@ -254,6 +338,8 @@ def start_daemon(
     if existing is not None:
         return DaemonStatus(running=True, pid=read_pid(home), health=existing)
 
+    if ready_timeout is None:
+        ready_timeout = _resolve_ready_timeout(config)
     if lock_timeout is None:
         lock_timeout = ready_timeout + LOCK_TIMEOUT_MARGIN
 
@@ -278,7 +364,9 @@ def start_daemon(
                 return DaemonStatus(running=True, pid=pid, health=health)
             time.sleep(poll_interval)
 
-    raise DaemonStartError("daemon did not become healthy within the timeout")
+    raise DaemonStartError(
+        "daemon is still starting; run `memrelay status` to check whether it has come up."
+    )
 
 
 def stop_daemon(
