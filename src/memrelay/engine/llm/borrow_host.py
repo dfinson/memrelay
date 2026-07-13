@@ -19,7 +19,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import shutil
+import sys
 from typing import Any, Protocol, runtime_checkable
 
 from graphiti_core.llm_client.client import LLMClient, ModelSize
@@ -134,11 +137,77 @@ class BorrowHostLLMClient(LLMClient):
         )
 
 
+def _extract_loader_from_shim(shim_path: str) -> str | None:
+    """Extract the ``.js`` loader path a Windows npm ``.cmd``/``.bat`` shim launches.
+
+    The shim ends in a line that runs ``node "<dir>/npm-loader.js" %*``. We take the first
+    quoted ``*.js`` token and resolve its ``%dp0%``/``%~dp0`` variable (the shim's directory).
+    Returns a normalized absolute path, or ``None`` if the shim can't be read or has no ``.js``
+    reference — the caller then tries the conventional layout, else execs the shim directly.
+    """
+    try:
+        with open(shim_path, encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return None
+    match = re.search(r'"([^"\r\n]*\.js)"', text)
+    if match is None:
+        return None
+    shim_dir = os.path.dirname(shim_path)
+    # ``%dp0%``/``%~dp0`` expands to the shim's directory. Use a function replacement so the
+    # backslashes in a Windows path aren't interpreted as regex escape sequences.
+    resolved = re.sub(
+        r"%~?dp0%?", lambda _m: shim_dir + os.sep, match.group(1), flags=re.IGNORECASE
+    )
+    return os.path.normpath(resolved)
+
+
+def _node_shim_launch(resolved: str) -> tuple[str, str] | None:
+    """Return ``(node, loader)`` to launch a Windows npm shim via node, else ``None``.
+
+    Running ``copilot.CMD`` goes through **cmd.exe** (command line capped at 8191 chars);
+    borrow-host's extraction prompts are larger, so cmd aborts with "command line is too long"
+    before Copilot starts. The shim just runs ``node "<...>/npm-loader.js" %*``, so invoking
+    ``node`` on that loader ourselves routes through ``CreateProcess`` (32767-char cap) instead.
+
+    Returns ``None`` — caller execs ``resolved`` directly, as before — when this isn't a Windows
+    ``.cmd``/``.bat`` shim or the loader/``node`` can't be found (small prompts still work; no
+    hard regression on any platform).
+    """
+    if sys.platform != "win32":
+        return None
+    if not resolved.lower().endswith((".cmd", ".bat")):
+        return None
+    shim_dir = os.path.dirname(resolved)
+    loader = _extract_loader_from_shim(resolved)
+    if loader is None or not os.path.isfile(loader):
+        conventional = os.path.join(shim_dir, "node_modules", "@github", "copilot", "npm-loader.js")
+        loader = conventional if os.path.isfile(conventional) else None
+    if loader is None:
+        logger.warning(
+            "borrow-host: no node loader found for shim %r; running the shim directly "
+            "(large prompts may overflow the cmd.exe command line)",
+            resolved,
+        )
+        return None
+    sibling = os.path.join(shim_dir, "node.exe")
+    node = sibling if os.path.isfile(sibling) else shutil.which("node")
+    if node is None:
+        logger.warning(
+            "borrow-host: shim %r found but 'node' is not on PATH; running the shim directly",
+            resolved,
+        )
+        return None
+    logger.debug("borrow-host: launching shim %r via node %r loader %r", resolved, node, loader)
+    return node, loader
+
+
 async def _run_host_cli(
     command: str,
     argv: list[str],
     *,
     stdin_payload: bytes | None = None,
+    bypass_windows_shim: bool = False,
 ) -> str:
     """Launch the *resolved* host CLI ``command`` with ``argv``; return its stdout text.
 
@@ -153,6 +222,13 @@ async def _run_host_cli(
       the fully-built ``argv`` (so a host that wants the prompt as an argument — ``copilot -p
       <text>`` — puts it there) and, only for a host that reads stdin (``claude -p``), a
       ``stdin_payload``.
+    * **Windows cmd-overflow bypass (opt-in).** With ``bypass_windows_shim=True`` (Copilot only),
+      a resolved Windows ``.cmd``/``.bat`` npm shim is launched as ``node <npm-loader.js> *argv``
+      via :func:`_node_shim_launch` — ``CreateProcess`` (32767 chars) instead of ``cmd.exe`` (8191)
+      — so >8 KB extraction prompts no longer abort with "The command line is too long." Any
+      non-shim, non-Windows, or unresolvable case execs ``resolved`` directly (never worse than
+      before); Claude keeps ``bypass_windows_shim=False`` (its prompt rides stdin, so it can't
+      overflow argv).
 
     Kept out of the hermetic gate for the *real* subprocess on purpose (the exact CLI is
     environment- and version-dependent), but the *invocation shape* — resolved path, argv, and
@@ -162,9 +238,14 @@ async def _run_host_cli(
     resolved = shutil.which(command)
     if resolved is None:
         raise HostProcessError(f"host command {command!r} not found on PATH")
+    launch: list[str] = [resolved]
+    if bypass_windows_shim:
+        node_loader = _node_shim_launch(resolved)
+        if node_loader is not None:
+            launch = [node_loader[0], node_loader[1]]
     try:
         process = await asyncio.create_subprocess_exec(
-            resolved,
+            *launch,
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
@@ -192,6 +273,10 @@ class CopilotHostProcess:
     scripting with -p"). It is intentionally *best effort*: the real subprocess path is NOT
     exercised by the hermetic gate (which uses a deterministic mock). Availability is discovered
     via ``shutil.which`` so the strategy layer can fall back cleanly when Copilot is not installed.
+
+    On Windows ``shutil.which`` resolves ``copilot`` to an npm ``copilot.CMD`` shim; since the
+    prompt rides in ``argv`` and extraction prompts exceed cmd.exe's 8191-char limit, this host
+    opts into a node-direct launch (``bypass_windows_shim=True``) so large prompts don't overflow.
     """
 
     def __init__(self, command: str = "copilot", extra_args: list[str] | None = None) -> None:
@@ -208,8 +293,10 @@ class CopilotHostProcess:
     async def complete(self, prompt: str) -> str:
         # The prompt is the value of ``-p`` and MUST immediately follow it; extra flags (e.g.
         # ``-s``) come after. Delivered as an argument, never on stdin (see class docstring).
+        # ``bypass_windows_shim`` routes a Windows ``copilot.CMD`` shim through node directly so
+        # the >8 KB prompt argv clears cmd.exe's 8191-char limit (see :func:`_run_host_cli`).
         argv = ["-p", prompt, *self._extra_args]
-        return await _run_host_cli(self._command, argv)
+        return await _run_host_cli(self._command, argv, bypass_windows_shim=True)
 
 
 class ClaudeHostProcess:

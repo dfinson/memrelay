@@ -16,6 +16,7 @@ the pre-fix code and passes only once the per-host wiring is correct.
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
@@ -163,3 +164,163 @@ def test_counterfactual_pins_the_origin_main_defects(monkeypatch: pytest.MonkeyP
     assert prompt in recorder.args
     assert process.stdin_payload != prompt.encode("utf-8")
     assert process.stdin_payload is None
+
+
+# ---------------------------------------------------------------------------
+# Windows cmd.exe command-line overflow fix (#… borrow-host node-direct launch)
+#
+# On Windows ``shutil.which("copilot")`` resolves to an npm ``copilot.CMD`` shim. Executing a
+# ``.CMD`` runs it under cmd.exe, whose command line is capped at 8191 chars — Graphiti extraction
+# prompts are >8 KB, so every real call died with "The command line is too long." before Copilot
+# launched. The fix launches ``node <npm-loader.js> *argv`` (CreateProcess, 32767-char cap) for the
+# Windows-shim Copilot case only; Claude (prompt on stdin) and non-Windows/non-shim paths are
+# untouched.
+# ---------------------------------------------------------------------------
+
+
+def test_windows_cmd_shim_redirects_copilot_through_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Windows ``copilot.CMD`` → launched as ``node <loader.js> -p <prompt> -s`` (not the shim)."""
+    process = _FakeProcess()
+    recorder = _ExecRecorder(process)
+    monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", recorder)
+    monkeypatch.setattr(borrow_host.sys, "platform", "win32")
+    # ``copilot`` resolves to the .CMD shim; ``node`` resolves to a distinct real interpreter path.
+    monkeypatch.setattr(
+        borrow_host.shutil,
+        "which",
+        lambda cmd: r"C:\nodedir\node.exe" if cmd == "node" else rf"C:\fake\bin\{cmd}.CMD",
+    )
+    # The shim file itself isn't on disk (parse falls back); the conventional loader "exists".
+    monkeypatch.setattr(borrow_host.os.path, "isfile", lambda p: p.endswith("npm-loader.js"))
+    prompt = "EXTRACT-ENTITIES-CANARY"
+
+    out = asyncio.run(CopilotHostProcess().complete(prompt))
+
+    # program is node (from which('node')), NOT the .CMD shim.
+    assert recorder.args[0] == r"C:\nodedir\node.exe"
+    assert not recorder.args[0].lower().endswith(".cmd")
+    # first arg is the npm loader .js, then the unchanged Copilot argv.
+    assert recorder.args[1].endswith("npm-loader.js")
+    assert list(recorder.args[2:]) == ["-p", prompt, "-s"]
+    # prompt is still the -p argument, never stdin.
+    assert process.stdin_payload is None
+    assert out == '{"nodes": []}'
+
+
+def test_extract_loader_from_shim_parses_npm_cmd(tmp_path) -> None:
+    """The parser pulls the ``.js`` loader out of a real npm ``.cmd`` shim, resolving ``%dp0%``."""
+    if sys.platform != "win32":
+        pytest.skip("shim path resolution uses Windows separators")
+    shim = tmp_path / "copilot.cmd"
+    # The operative last line of npm's generated shim (%dp0% == the shim's own directory).
+    shim.write_text(
+        "@ECHO off\r\nGOTO start\r\n:start\r\nSETLOCAL\r\n"
+        "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+        '"%_prog%"  "%dp0%\\node_modules\\@github\\copilot\\npm-loader.js" %*\r\n',
+        encoding="utf-8",
+    )
+
+    loader = borrow_host._extract_loader_from_shim(str(shim))
+
+    expected = str(tmp_path / "node_modules" / "@github" / "copilot" / "npm-loader.js")
+    assert loader == expected
+
+
+def test_non_windows_copilot_execs_resolved_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Off Windows the resolved copilot path is exec'd directly — no node indirection."""
+    process = _FakeProcess()
+    recorder = _ExecRecorder(process)
+    monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", recorder)
+    monkeypatch.setattr(borrow_host.sys, "platform", "linux")
+    monkeypatch.setattr(borrow_host.shutil, "which", lambda cmd: "/usr/bin/copilot")
+    prompt = "LINUX-DIRECT-CANARY"
+
+    asyncio.run(CopilotHostProcess().complete(prompt))
+
+    assert list(recorder.args) == ["/usr/bin/copilot", "-p", prompt, "-s"]
+    assert process.stdin_payload is None
+
+
+def test_windows_non_shim_copilot_execs_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A Windows ``copilot.exe`` (real executable, not a shim) is exec'd directly."""
+    process = _FakeProcess()
+    recorder = _ExecRecorder(process)
+    monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", recorder)
+    monkeypatch.setattr(borrow_host.sys, "platform", "win32")
+    monkeypatch.setattr(borrow_host.shutil, "which", lambda cmd: r"C:\tools\copilot.exe")
+    prompt = "WIN-EXE-DIRECT-CANARY"
+
+    asyncio.run(CopilotHostProcess().complete(prompt))
+
+    assert list(recorder.args) == [r"C:\tools\copilot.exe", "-p", prompt, "-s"]
+
+
+def test_windows_shim_without_loader_falls_back_to_direct(monkeypatch: pytest.MonkeyPatch) -> None:
+    """If no loader/node can be found, fall back to exec'ing the shim directly (never worse)."""
+    process = _FakeProcess()
+    recorder = _ExecRecorder(process)
+    monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", recorder)
+    monkeypatch.setattr(borrow_host.sys, "platform", "win32")
+    monkeypatch.setattr(borrow_host.shutil, "which", lambda cmd: r"C:\fake\bin\copilot.CMD")
+    monkeypatch.setattr(borrow_host.os.path, "isfile", lambda p: False)  # loader absent everywhere
+    prompt = "FALLBACK-DIRECT-CANARY"
+
+    asyncio.run(CopilotHostProcess().complete(prompt))
+
+    # unchanged pre-fix behavior: the resolved .CMD reaches exec with the same argv.
+    assert list(recorder.args) == [r"C:\fake\bin\copilot.CMD", "-p", prompt, "-s"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe 8191-char cap is Windows-specific")
+def test_os_level_large_prompt_survives_node_direct(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """★ Real OS launch: a ~20 KB ``-p`` argument reaches the child via CreateProcess, no overflow.
+
+    A real stand-in for node+loader (``sys.executable`` running a script that echoes the length of
+    the ``-p`` value) is injected and launched through the *real* ``create_subprocess_exec`` — a
+    genuine OS process, NOT cmd.exe and NOT copilot, so this spends zero AI quota and hits no
+    network. It proves node-direct clears the 8191 limit that kills the ``.cmd`` path.
+    """
+    echo = tmp_path / "echo_len.py"
+    echo.write_text(
+        "import sys\ni = sys.argv.index('-p')\nsys.stdout.write(str(len(sys.argv[i + 1])))\n",
+        encoding="utf-8",
+    )
+    # ``which`` resolves to a REAL .cmd shim. With the fix it is never executed (the injected
+    # node stand-in runs instead); if the node-direct branch is reverted, _run_host_cli execs this
+    # .cmd with the 20 KB argv and cmd.exe overflows — that is the revert→fail signal.
+    shim = tmp_path / "copilot.cmd"
+    shim.write_text("@echo off\r\necho stub-ran\r\n", encoding="utf-8")
+    monkeypatch.setattr(borrow_host.shutil, "which", lambda cmd: str(shim))
+    monkeypatch.setattr(
+        borrow_host, "_node_shim_launch", lambda resolved: (sys.executable, str(echo))
+    )
+    prompt = "A" * 20000  # >> cmd.exe's 8191-char command-line limit
+
+    out = asyncio.run(CopilotHostProcess().complete(prompt))
+
+    # No HostProcessError was raised, and the child received the FULL 20 000-char argument.
+    assert out.strip() == str(len(prompt))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe 8191-char cap is Windows-specific")
+def test_os_level_large_prompt_overflows_through_cmd_shim(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """Counterfactual: the same ~20 KB prompt through a real ``.bat`` overflows (pre-fix path).
+
+    This is what Copilot did before the fix — exec the ``.cmd``/``.bat`` directly. cmd.exe parses
+    the now >8191-char command line and aborts *before* the stub body runs, raising the exact
+    production error. It proves the length test has teeth and that node-direct is the fix.
+    """
+    stub = tmp_path / "copilot_stub.bat"
+    stub.write_text("@echo off\r\necho stub-ran\r\n", encoding="utf-8")
+    monkeypatch.setattr(borrow_host.shutil, "which", lambda cmd: str(stub))
+    prompt = "A" * 20000
+
+    # bypass_windows_shim defaults to False here → direct exec of the .bat, the pre-fix path.
+    with pytest.raises(HostProcessError) as excinfo:
+        asyncio.run(borrow_host._run_host_cli("copilot", ["-p", prompt, "-s"]))
+
+    assert "command line is too long" in str(excinfo.value).lower()
