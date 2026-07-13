@@ -134,6 +134,35 @@ jobs:
 
           echo "clean-env install of the built wheel verified."
 
+      - name: Guard the release tag against the built version
+        # release event only: GITHUB_REF_NAME is the git tag here (it is a branch name on
+        # push / pull_request / workflow_dispatch), so the guard is a no-op / skipped
+        # off-release and never blocks the TestPyPI dry-run. A failure here fails
+        # install-verify, which publish-pypi `needs`, so publish is gated on this passing.
+        if: github.event_name == 'release'
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/verify-venv"
+
+          # Recompute the built distribution's version the SAME way as the step above
+          # (importlib.metadata on the wheel already installed into the verify venv) -- this
+          # is exactly the version publish-pypi will upload.
+          meta_version="$("$venv/bin/python" -c 'import importlib.metadata as m; print(m.version("memrelay"))')"
+
+          # Strip one leading 'v' from the tag (GitHub release tags are formatted vX.Y.Z; a
+          # bare X.Y.Z is tolerated too) to get the version the tag claims to ship.
+          tag_version="${GITHUB_REF_NAME#v}"
+
+          echo "release tag:         $GITHUB_REF_NAME"
+          echo "tag version (bare):  $tag_version"
+          echo "built wheel version: $meta_version"
+
+          if [ "$tag_version" != "$meta_version" ]; then
+            echo "::error::release tag '$GITHUB_REF_NAME' -> '$tag_version' does not match the built version '$meta_version'. Bump __version__ in src/memrelay/__init__.py to match the tag before publishing."
+            exit 1
+          fi
+          echo "release tag matches the built version ($meta_version); publish may proceed."
+
   publish-testpypi:
     name: publish to TestPyPI (dry-run rehearsal)
     if: github.event_name == 'workflow_dispatch' && inputs.testpypi

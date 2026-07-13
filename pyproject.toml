@@ -18,6 +18,7 @@ classifiers = [
     "Development Status :: 2 - Pre-Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -74,6 +75,7 @@ phase = [
 [project.urls]
 Homepage = "https://github.com/dfinson/memrelay"
 Repository = "https://github.com/dfinson/memrelay"
+Issues = "https://github.com/dfinson/memrelay/issues"
 
 [project.scripts]
 memrelay = "memrelay.__main__:main"
