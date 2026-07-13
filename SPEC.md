@@ -27,7 +27,7 @@ Agents (Copilot/Claude/Codex)  MCP Server (stdio)               Daemon (backgrou
                     ┌─────────────────────────────────────┐
                     │           Graphiti Engine            │
                     │                                     │
-                    │   Backend: Kuzu (embedded file)      │
+                    │   Backend: Ladybug (embedded file)   │
                     │   LLM: pluggable strategy (§6.2)     │
                     │   Embeddings: fastembed (local ONNX) │
                     └─────────────────────────────────────┘
@@ -54,7 +54,7 @@ Two processes. Separate concerns.
 
 Runs as a background process. Discovers sessions for every enabled `AgentProvider` (§2.1) and tails their event streams. Normalizes raw agent events into TraceForge's canonical `SessionEvent` schema via each provider's source + mapping + EventPipeline. Filters, assembles episodes, queues for Graphiti ingestion. The daemon core contains **no agent-specific logic** — all of that lives behind providers.
 
-**The daemon is the sole owner of the Kuzu database.** Kuzu enforces a file-level exclusive lock — only one process can open a `READ_WRITE` database at a time. The daemon holds this lock for the lifetime of its process.
+**The daemon is the sole owner of the Ladybug database.** Ladybug enforces a file-level exclusive lock — only one process can open a `READ_WRITE` database at a time. The daemon holds this lock for the lifetime of its process.
 
 ### MCP Server
 
@@ -65,7 +65,7 @@ The MCP server is **stateless** — it can be spawned and killed freely by Copil
 ### Process Communication
 
 ```
-Copilot CLI ←stdio→ MCP Server ←socket→ Daemon ←file→ Kuzu
+Copilot CLI ←stdio→ MCP Server ←socket→ Daemon ←file→ Ladybug
 ```
 
 The daemon exposes a lightweight JSON-over-socket query API:
@@ -565,7 +565,7 @@ The daemon determines context from the session it's observing:
 # $XDG_CONFIG_HOME/memrelay/ and ~/.config/memrelay/ (see src/memrelay/config.py).
 
 [graph]
-backend = "kuzu"
+backend = "ladybug"
 path = "~/.memrelay/graph.db"
 
 [llm]
@@ -590,7 +590,7 @@ enable_boundary = false
 
 The default stack requires **zero API keys** when a borrow-host agent (e.g. Copilot) is present — it reuses that agent's model. The byo-key strategy needs no host agent at all (a fully local `local` strategy is planned — [#64](https://github.com/dfinson/memrelay/issues/64)).
 
-> **Backend caveat:** Kuzu is memrelay's committed graph backend today, but it is deprecated upstream in graphiti-core 0.29.2; tracking a successor is [#76](https://github.com/dfinson/memrelay/issues/76).
+> **Backend note:** memrelay's default graph backend is **Ladybug** — the original Kuzu developers' maintained, Kuzu-API/Cypher drop-in fork. It replaced the now-archived `kuzu` as the out-of-the-box default in [#76](https://github.com/dfinson/memrelay/issues/76). memrelay's storage driver still reports `provider = KUZU` to graphiti-core and reuses its Kuzu-dialect Cypher verbatim, so the query language is unchanged (see [ADR 0001](docs/adr/0001-graph-backends.md)).
 
 ### 6.2 LLM Strategy (pluggable)
 
@@ -680,9 +680,9 @@ model = "text-embedding-3-small"
 
 ### 6.5 Concurrency
 
-**Critical constraint:** Kuzu enforces a file-level exclusive lock. Only ONE process can open a `READ_WRITE` database at a time.
+**Critical constraint:** Ladybug enforces a file-level exclusive lock. Only ONE process can open a `READ_WRITE` database at a time.
 
-**Architecture consequence:** The daemon is the sole owner of the Kuzu database. The MCP server does NOT open Kuzu directly — it queries the daemon over the local socket.
+**Architecture consequence:** The daemon is the sole owner of the Ladybug database. The MCP server does NOT open Ladybug directly — it queries the daemon over the local socket.
 
 ### 6.6 First Run
 
@@ -739,7 +739,7 @@ memrelay/
 │   ├── cli.py                  # CLI: init, start, stop, status, observe, mcp, config (forget/seed = stubs)
 │   ├── config.py               # Config loading (TOML, defaults, env + XDG discovery)
 │   │
-│   ├── daemon/                 # Background process (owns the engine + Kuzu; query API for MCP)
+│   ├── daemon/                 # Background process (owns the engine + Ladybug; query API for MCP)
 │   │   ├── __init__.py
 │   │   ├── lifecycle.py        # start/stop/status, PID + health probing, foreground runner
 │   │   ├── protocol.py         # socket method schema (search/detail/note/health) + StubBackend
@@ -750,7 +750,7 @@ memrelay/
 │   ├── engine/                 # Graphiti wrapper (used by the daemon only)
 │   │   ├── __init__.py
 │   │   ├── graphiti.py         # MemoryEngine — config-driven Graphiti init (backend/LLM/embedder)
-│   │   ├── kuzu_backend.py     # embedded Kuzu driver wiring (graphiti-core 0.29.2)
+│   │   ├── ladybug_backend.py  # embedded Ladybug driver wiring (graphiti-core 0.29.2)
 │   │   ├── embedder.py         # LocalEmbedder — fastembed ONNX (key-less)
 │   │   └── llm/                # Pluggable LLM strategies (§6.2)
 │   │       ├── __init__.py
@@ -805,8 +805,8 @@ memrelay/
 requires-python = ">=3.11,<3.14"     # traceforge-toolkit pins Python <3.14
 dependencies = [
     "traceforge-toolkit>=0.1,<0.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent
-    "graphiti-core>=0.29,<0.30",     # knowledge graph engine (Kuzu backend deprecated upstream in 0.29.2, #76)
-    "kuzu>=0.11.3",                  # embedded graph database (floor matches graphiti-core 0.29.2)
+    "graphiti-core>=0.29,<0.30",     # knowledge graph engine; we inject our own storage driver reporting provider=KUZU, so its Kuzu-dialect Cypher is reused verbatim (#76, docs/adr/0001-graph-backends.md)
+    "ladybug>=0.18,<0.18.1",         # embedded graph database — the Kuzu devs' maintained, Kuzu-API/Cypher drop-in fork; replaces the archived kuzu (#76)
     "fastembed>=0.3",                # local ONNX embeddings (key-less)
     "mcp>=1.0",                      # Model Context Protocol server
     "click>=8.0",                    # CLI
@@ -954,7 +954,7 @@ Not implemented in v0.1. Specced here for architectural awareness.
 
 ```
 Single-user (v0.1):
-  copilot cli ←stdio→ mcp server ←socket→ daemon → Kuzu (local file)
+  copilot cli ←stdio→ mcp server ←socket→ daemon → Ladybug (local file)
 
 Multi-user (v1.0):
   copilot cli ←stdio→ mcp server ←socket→ daemon → memrelay-sync → Neo4j (shared)
@@ -987,13 +987,13 @@ Multi-user (v1.0):
 
 ### Step 2: Graphiti Engine
 
-- Config-driven Graphiti initialization (Kuzu embedded)
+- Config-driven Graphiti initialization (Ladybug embedded)
 - Pluggable LLM strategy seam; `BorrowHostLLMClient` reference impl (background host-agent process for inference)
 - `LocalEmbedder` implementation (fastembed, ONNX, auto-download model)
 - byo-key and local strategies behind the same interface (keys / Ollama optional)
 - `memory_note` → real episode in Graphiti
 - `memory_recall` → real search + formatted response
-- Integration tests (Kuzu in-memory)
+- Integration tests (Ladybug in-memory)
 
 **Gate:** Note/recall roundtrip works.
 
@@ -1042,7 +1042,7 @@ Multi-user (v1.0):
 - Cross-session continuity works (repo- and agent-tagged, isolated by neither)
 - At least two agents supported end-to-end (Copilot CLI + Claude Code) behind the `AgentProvider` seam
 - Cross-agent recall works: a fact learned in one agent surfaces in another within the same namespace
-- Works with Kuzu (local) + borrow-host LLM (e.g. Copilot subscription) + fastembed (embeddings) — zero API keys
+- Works with Ladybug (local) + borrow-host LLM (e.g. Copilot subscription) + fastembed (embeddings) — zero API keys
 - Retrieval latency imperceptible to the agent
 - Graceful degradation when LLM unavailable (spool accumulates)
 - No data loss (spool is durable)
