@@ -17,13 +17,18 @@ Design (validated against SQLite 3.49 — see the PR body for the delta writeup)
 * ``PRAGMA journal_mode=WAL`` + ``synchronous=NORMAL`` — durable across process /
   OS crash (only a hard power-loss window remains, acceptable for an ingest spool)
   while keeping the one-writer/one-reader path cheap.
+* ``PRAGMA busy_timeout`` (see :data:`_BUSY_TIMEOUT_MS`) — pinned explicitly so that when
+  the daemon's two separate ``Spool`` connections over one ``spool.db`` (ingester + poller)
+  contend, the loser waits rather than immediately raising ``database is locked``.
 * ``INSERT OR IGNORE`` on the unique ``idempotency_key`` makes :meth:`append`
   idempotent: re-appending an already-seen episode is a silent no-op.
 
 Concurrency: the connection is opened with ``check_same_thread=False`` and every
 operation is guarded by a lock, so a single writer (``append``) and a single
 reader (``read_batch`` / ``checkpoint``) may live on different threads (e.g. the
-daemon's note handler vs. the ingester task) without corrupting the DB.
+daemon's note handler vs. the ingester task) without corrupting the DB. Across
+*connections* (the ingester and poller each open their own ``Spool`` on the same file)
+the pinned ``busy_timeout`` absorbs the brief cross-connection write contention.
 """
 
 from __future__ import annotations
@@ -36,6 +41,21 @@ from typing import Any
 from memrelay.ingest.episode import from_row, to_row
 
 _CURSOR_ID = 1
+
+#: Explicit SQLite busy-timeout (ms) pinned on the connection. The daemon runs the ingester
+#: and the session poller on **separate** ``Spool`` connections over the same ``spool.db``
+#: (see :mod:`memrelay.daemon.runtime`); when their small writes contend, the loser waits in
+#: SQLite's busy handler for up to this long instead of immediately raising ``database is
+#: locked``. CPython's ``sqlite3.connect(timeout=5.0)`` default already maps to
+#: ``sqlite3_busy_timeout(5000)``, so this PINS that value explicitly — it does **not** *reduce*
+#: the (already-bounded) contention; it regression-proofs it, so a future change to the connect
+#: call (or a differently-opened connection) can no longer silently drop the timeout to 0.
+#: Truly *eliminating* cross-connection contention would need a single shared ``Spool`` across
+#: the ingester/poller factories (option b), but that global-connection lifecycle coupling was
+#: deliberately declined as over-engineering for a fault the #147 non-fatal ingester guard
+#: already makes benign. That guard stays the correctness backstop; this pin only trims
+#: avoidable ``database is locked`` log-noise/retries under load.
+_BUSY_TIMEOUT_MS = 5000
 
 
 class Spool:
@@ -54,6 +74,9 @@ class Spool:
         self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # Pin the busy-timeout explicitly (see _BUSY_TIMEOUT_MS): PRAGMA values can't be
+        # bound parameters and the interpolated value is an int constant, so it is safe.
+        self._conn.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
         self._init_schema()
 
     def _init_schema(self) -> None:

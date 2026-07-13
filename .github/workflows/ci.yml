@@ -115,6 +115,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
+    env:
+      # Provision Ladybug's FTS extension into a stable, cacheable dir so the precision@k gate
+      # is genuinely offline (rt-release / #153). The engine build otherwise fetches the FTS
+      # extension from the CDN on a cold runner, which contradicts the "offline" claim and goes
+      # red whenever the CDN is down (cf. the #114/#118 yank incidents). The harness
+      # (tests/eval/_harness.py) and the runtime loader both read this via MEMRELAY_EXTENSION_DIR:
+      # on a cache hit the whole job touches no network, and on a miss it warms exactly once in
+      # the clearly-attributed "prefetch" step below (so a CDN blip reddens *that* step, not the
+      # gate itself).
+      MEMRELAY_EXTENSION_DIR: ${{ github.workspace }}/.memrelay-extensions
+
     steps:
       - uses: actions/checkout@v4
 
@@ -125,10 +136,26 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
 
+      - name: Cache Ladybug FTS extension
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.MEMRELAY_EXTENSION_DIR }}
+          # Keyed by dependency set (pyproject pins the Ladybug version that decides the
+          # extension URL); restore-keys lets a prior cache seed the dir, which prefetch then
+          # re-validates (a version bump just fetches the new build into the same dir).
+          key: ladybug-fts-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ladybug-fts-${{ runner.os }}-
+
       - name: Install memrelay (default extras only)
         run: |
           python -m pip install --upgrade pip
           pip install .
+
+      - name: Prefetch Ladybug FTS extension (warm the offline cache)
+        # Explicit, retryable, clearly-attributed network step: no-op on a cache hit, warms
+        # MEMRELAY_EXTENSION_DIR once on a miss. prefetch_fts_extension() never raises.
+        run: python -c "from memrelay.engine.backends._fts_extension import prefetch_fts_extension; prefetch_fts_extension()"
 
       - name: Enforce precision@k baseline
         run: python tests/eval/generate_baseline.py --check

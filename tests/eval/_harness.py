@@ -31,6 +31,7 @@ from graphiti_core.prompts.models import Message
 from pydantic import BaseModel
 
 from memrelay.config import load_config
+from memrelay.engine.backends._fts_extension import prefetch_fts_extension
 from memrelay.engine.graphiti import MemoryEngine
 
 # Single-sourced defaults so the generator, the baseline artifact, the pytest gate,
@@ -177,6 +178,13 @@ def run_eval(
     writing to / checking against the baseline artifact.
     """
     _quiet_dependency_logging()
+    # Provision Ladybug's FTS extension explicitly up-front rather than letting the first
+    # engine build fetch it mid-eval. prefetch_fts_extension() warms the resolved cache dir
+    # (respecting MEMRELAY_EXTENSION_DIR) and never raises; with a pre-populated/cached dir the
+    # subsequent engine build performs no network I/O, so the eval is genuinely offline. CI
+    # caches that dir and the property is pinned by tests/eval/test_offline_extension.py
+    # (rt-release / #153).
+    prefetch_fts_extension()
     corpus = generate(seed=seed, n_topics=n_topics, facts_per_topic=facts_per_topic)
     with tempfile.TemporaryDirectory(prefix="memrelay-eval-") as tmp:
         metrics = asyncio.run(measure(Path(tmp), corpus, ks))
