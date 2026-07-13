@@ -20,6 +20,13 @@ from pathlib import Path
 import _harness
 import pytest
 
+# CROSS-LANE DEPENDENCY: `_fts_extension.py` lives in the engine+backends lane (out of this
+# session's fence) and is owned there by rt-backends' "LOAD EXTENSION single-quote path" fix.
+# This guard imports it strictly read-only and monkeypatches/reads exactly these symbols:
+#   _CACHE_ENV, _cache_path, _download, _ensure_extension_file,
+#   _ladybug_version, _ladybug_platform_candidates, prefetch_fts_extension
+# If that lane renames any of them, update the references here in lockstep. Flagged in the PR
+# body so the two merges can be sequenced.
 from memrelay.engine.backends import _fts_extension as fts
 
 _VERSION = "0.18.0"

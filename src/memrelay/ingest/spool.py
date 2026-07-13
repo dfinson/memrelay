@@ -47,10 +47,14 @@ _CURSOR_ID = 1
 #: (see :mod:`memrelay.daemon.runtime`); when their small writes contend, the loser waits in
 #: SQLite's busy handler for up to this long instead of immediately raising ``database is
 #: locked``. CPython's ``sqlite3.connect(timeout=5.0)`` default already maps to
-#: ``sqlite3_busy_timeout(5000)``, so this only *pins* that value explicitly — it does not
-#: change default-path behaviour — guarding against a future change to the connect call (or a
-#: differently-opened connection) silently dropping the timeout to 0. The E4 non-fatal
-#: ingester guard (#147) remains the correctness backstop for any residual contention.
+#: ``sqlite3_busy_timeout(5000)``, so this PINS that value explicitly — it does **not** *reduce*
+#: the (already-bounded) contention; it regression-proofs it, so a future change to the connect
+#: call (or a differently-opened connection) can no longer silently drop the timeout to 0.
+#: Truly *eliminating* cross-connection contention would need a single shared ``Spool`` across
+#: the ingester/poller factories (option b), but that global-connection lifecycle coupling was
+#: deliberately declined as over-engineering for a fault the #147 non-fatal ingester guard
+#: already makes benign. That guard stays the correctness backstop; this pin only trims
+#: avoidable ``database is locked`` log-noise/retries under load.
 _BUSY_TIMEOUT_MS = 5000
 
 
