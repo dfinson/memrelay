@@ -43,9 +43,10 @@ else:
 PID_FILENAME = "daemon.pid"
 LOCK_FILENAME = "daemon.lock"
 
-#: Startup log: the detached daemon's stdout+stderr are captured here (instead of
-#: ``DEVNULL``) so a startup death leaves a diagnosable trace. The daemon logs
-#: everything to stderr, which was otherwise discarded for the detached process.
+#: Daemon stderr log: the detached daemon's stdout+stderr are redirected here
+#: (instead of ``DEVNULL``). The daemon logs to stderr for its whole life, so this
+#: captures all of it — but the point is diagnosing a *startup* death, previously
+#: invisible because the detached child's stderr was thrown away.
 STARTUP_LOG_DIRNAME = "logs"
 STARTUP_LOG_FILENAME = "daemon-startup.log"
 
@@ -171,9 +172,10 @@ def spawn_detached(home: Path) -> int:
     """Launch ``memrelay _serve`` as a detached background process; return its PID.
 
     ``MEMRELAY_HOME`` pins the child to the same home directory. The child's
-    stdout+stderr are captured to :func:`startup_log_path` (append) rather than
-    ``DEVNULL`` so a startup death leaves a diagnosable trace — the daemon logs
-    everything to stderr, which was otherwise thrown away for the detached process.
+    stdout+stderr are redirected to :func:`startup_log_path` (append) rather than
+    ``DEVNULL``. The daemon logs to stderr for its whole life, so this captures all
+    of it; the point is that a *startup* death — previously invisible under
+    ``DEVNULL`` — now leaves a diagnosable trace.
 
     The capture target is a real *file*, never a pipe the parent holds open: a
     parent-held pipe would tie the child's lifetime to the CLI and hang it. The
