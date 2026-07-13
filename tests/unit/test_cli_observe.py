@@ -91,23 +91,34 @@ def test_observe_uses_explicit_spool_path(monkeypatch, tmp_path: Path) -> None:
 
 
 def test_observe_errors_when_no_session(monkeypatch, tmp_path: Path) -> None:
+    # F1 (#153): the "nothing to observe" error must name the *resolved* provider, not a
+    # hardcoded "Copilot" (which is false when e.g. aider is the resolved provider).
+    provider = SimpleNamespace(id="aider")
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: provider)
     monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: None)
     monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
 
     result = CliRunner().invoke(cli.main, ["observe"])
 
     assert result.exit_code != 0
-    assert "no Copilot sessions found" in result.output
+    assert "no aider sessions found to observe" in result.output
+    assert "Copilot" not in result.output
+    assert "copilot" not in result.output
 
 
 def test_observe_errors_when_named_session_missing(monkeypatch, tmp_path: Path) -> None:
+    # F1 (#153): the "unknown id" error must likewise name the resolved provider.
+    provider = SimpleNamespace(id="aider")
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: provider)
     monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: None)
     monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
 
     result = CliRunner().invoke(cli.main, ["observe", "--session", "ghost"])
 
     assert result.exit_code != 0
-    assert "ghost" in result.output
+    assert "no aider session found with id 'ghost'" in result.output
+    assert "Copilot" not in result.output
+    assert "copilot" not in result.output
 
 
 def test_observe_resolves_provider_via_registry(monkeypatch, tmp_path: Path) -> None:

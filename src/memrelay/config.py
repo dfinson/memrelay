@@ -41,6 +41,18 @@ class NamespaceConfigError(ValueError):
     """
 
 
+class ConfigError(ValueError):
+    """Raised when a configuration value cannot be resolved to a usable path.
+
+    Subclasses :class:`ValueError` (like :class:`NamespaceConfigError`) so a broad
+    value-error guard still catches it, while staying specific enough to assert on in
+    tests. Currently raised when a config path references an environment variable that
+    is not set: rather than let an unresolved ``${VAR}`` silently collapse into a
+    current-directory-relative path, memrelay fails loud and names the offending
+    variable (see :func:`_expand`).
+    """
+
+
 # ─── Schema ──────────────────────────────────────────────────────────────────
 
 
@@ -361,11 +373,27 @@ def _expand(value: str, environ: Mapping[str, str] | None = None) -> Path:
     process environment, so :func:`load_config` with an injected ``environ`` is
     genuinely isolated from the caller's real home directory and ``MEMRELAY_*`` /
     ``XDG_*`` variables (this is what makes the config default tests hermetic).
+
+    **Fail loud on an unresolved variable.** Both expanders leave an unknown
+    ``$VAR`` / ``${VAR}`` / ``%VAR%`` reference in place (``os.path.expandvars`` and
+    :func:`_expandvars_with` alike). If that literal reached :meth:`Path.resolve`, the
+    leftover token would silently become a *current-directory-relative* path (e.g.
+    ``${UNSET}`` → ``<cwd>/${UNSET}``), so a typo'd or unset variable would misplace the
+    graph DB under the process CWD with no diagnostic. Instead we detect any surviving
+    reference and raise :class:`ConfigError` naming the variable.
     """
     if environ is None:
         expanded = os.path.expandvars(os.path.expanduser(value))
     else:
         expanded = _expandvars_with(_expanduser_with(value, environ), environ)
+    leftover = _VAR_PATTERN.search(expanded)
+    if leftover is not None:
+        name = leftover.group(1) or leftover.group(2) or leftover.group(3)
+        raise ConfigError(
+            f"config path {value!r} references environment variable {name!r}, which is "
+            f"not set; set it or use a literal path (an unresolved {leftover.group(0)} "
+            f"would otherwise resolve under the current directory)."
+        )
     return Path(expanded).resolve()
 
 

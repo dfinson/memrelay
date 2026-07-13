@@ -15,6 +15,7 @@ from click.testing import CliRunner
 
 import memrelay.engine.graphiti as engine_mod
 from memrelay.cli import main
+from memrelay.config import Config
 
 
 class _FakeEngine:
@@ -47,7 +48,10 @@ def _patch_engine(monkeypatch, count: int) -> _FakeEngine:
         return fake
 
     monkeypatch.setattr(engine_mod.MemoryEngine, "from_config", staticmethod(_fake_from_config))
-    monkeypatch.setattr("memrelay.cli.load_config", lambda: None)
+    # ``forget`` now routes through ``_load_config``, which eagerly resolves the config's
+    # paths (#153, F2); return a real default ``Config`` rather than ``None`` so the stub
+    # matches what ``load_config`` actually returns.
+    monkeypatch.setattr("memrelay.cli.load_config", lambda: Config())
     return fake
 
 
@@ -130,7 +134,8 @@ def test_forget_surfaces_engine_open_failure(monkeypatch) -> None:
         raise RuntimeError("graph is locked")
 
     monkeypatch.setattr(engine_mod.MemoryEngine, "from_config", staticmethod(_boom))
-    monkeypatch.setattr("memrelay.cli.load_config", lambda: None)
+    # Real default ``Config`` (not ``None``): ``_load_config`` now dereferences it (#153, F2).
+    monkeypatch.setattr("memrelay.cli.load_config", lambda: Config())
 
     result = CliRunner().invoke(main, ["forget", "--repo", "owner/name", "--yes"])
     assert result.exit_code != 0

@@ -80,11 +80,13 @@ def test_config_malformed_namespaces_reports_clean_error(
     assert "foo" in result.output  # the offending namespace is named
 
 
-# The shared ``_load_config`` wrapper must behave identically across *every* user-facing
-# command that loads config — a clean ``ClickException`` (surfacing as ``SystemExit``),
-# never a raw traceback. These commands reach config-loading with no required arguments, so
-# a malformed ``MEMRELAY_CONFIG`` drives each straight through the wrapper.
-WRAPPED_COMMANDS = ["status", "start", "stop", "observe"]
+# The shared ``_load_config`` wrapper must behave identically across *every* command that
+# loads config — a clean ``ClickException`` (surfacing as ``SystemExit``), never a raw
+# traceback. This includes the agent-facing ``mcp`` stdio server and the internal ``_serve``
+# daemon entrypoint (#153, F3), which previously called ``load_config`` directly. These
+# commands reach config-loading with no required arguments, so a malformed ``MEMRELAY_CONFIG``
+# drives each straight through the wrapper.
+WRAPPED_COMMANDS = ["status", "start", "stop", "observe", "mcp", "_serve"]
 
 
 @pytest.mark.parametrize("command", WRAPPED_COMMANDS)
@@ -102,6 +104,24 @@ def test_wrapped_command_reports_clean_error_on_malformed_config(
     assert isinstance(result.exception, SystemExit)
     assert not isinstance(result.exception, tomllib.TOMLDecodeError)
     assert "could not parse config file" in result.output
+    assert str(bad) in result.output
+
+
+def test_config_unresolved_env_var_reports_clean_error(
+    cli_env: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2 (#153): a config path referencing an *unset* env var must fail loud with a clean
+    error that names the variable — never silently resolve under the current directory."""
+    monkeypatch.delenv("RT153_UNSET_DIR", raising=False)
+    bad = _write(tmp_path / "unsetvar.toml", '[graph]\npath = "${RT153_UNSET_DIR}/graph.db"\n')
+
+    result = CliRunner().invoke(main, ["config", "--path", str(bad)])
+
+    assert result.exit_code != 0
+    # A clean ClickException exits via SystemExit — not a raw ValueError/ConfigError traceback.
+    assert isinstance(result.exception, SystemExit)
+    assert "invalid configuration in" in result.output
+    assert "RT153_UNSET_DIR" in result.output  # the offending variable is named
     assert str(bad) in result.output
 
 
