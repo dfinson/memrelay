@@ -73,6 +73,10 @@ def test_content_is_length_bounded() -> None:
     # The digest portion itself is clamped to MAX_SUMMARY_CHARS.
     digest = summary["content"].split(": ", 1)[1]
     assert len(digest) <= MAX_SUMMARY_CHARS
+    # rt-episode F5: MAX_SUMMARY_CHARS bounds only the digest. The emitted content also carries a
+    # fixed "[memrelay compaction] N episode(s): " frame, so with a saturated digest the content
+    # deliberately exceeds MAX_SUMMARY_CHARS — the module docstring must not claim otherwise.
+    assert len(summary["content"]) > MAX_SUMMARY_CHARS
 
 
 def test_summary_key_is_deterministic_and_order_independent() -> None:

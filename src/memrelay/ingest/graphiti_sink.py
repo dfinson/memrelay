@@ -297,10 +297,16 @@ def build_episode_record(
 
 
 def _truncate(text: str, limit: int) -> str:
-    """Deterministically cap *text* at *limit* chars, marking any truncation."""
+    """Deterministically cap *text* at *limit* chars (marker included), marking truncation.
+
+    The returned string — *including* the appended :data:`TRUNCATION_MARKER` — is at most
+    *limit* characters, so a documented bound (e.g. :data:`MAX_EPISODE_CHARS`) actually holds on
+    the emitted content instead of being overshot by the marker's length. Every caller passes a
+    *limit* far larger than the marker, so the reserved room is always positive.
+    """
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip() + TRUNCATION_MARKER
+    return text[: limit - len(TRUNCATION_MARKER)].rstrip() + TRUNCATION_MARKER
 
 
 def _extract_touched_files(arguments: Any) -> list[str]:

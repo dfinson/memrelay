@@ -31,12 +31,15 @@ from traceforge.types import EventMetadata, SessionEvent, ToolMotivation
 
 from memrelay.ingest.graphiti_sink import (
     DEFAULT_SOURCE,
+    MAX_EPISODE_CHARS,
     MAX_RESULT_CHARS,
+    MAX_SUMMARY_CHARS,
     TRUNCATION_MARKER,
     GraphitiSink,
     _extract_content,
     _render_file,
     _render_tool,
+    _truncate,
     build_episode_record,
     resolve_session_cwd,
     run_observe,
@@ -231,6 +234,48 @@ def test_tool_result_is_truncated() -> None:
     assert TRUNCATION_MARKER in content
     # The Result line is bounded: full content is name+outcome+bounded-result, well under 2x.
     assert len(content) < MAX_RESULT_CHARS + 200
+
+
+def test_truncate_final_length_never_exceeds_cap_including_marker() -> None:
+    # rt-episode F1: the emitted string INCLUDING the marker must be <= the cap. Pre-fix the
+    # marker was appended after slicing to the cap, so a truncated string overshot the cap by
+    # len(TRUNCATION_MARKER) (e.g. 4013 for a 4000 cap).
+    for cap in (MAX_EPISODE_CHARS, MAX_SUMMARY_CHARS):
+        out = _truncate("x" * (cap + 500), cap)
+        assert out.endswith(TRUNCATION_MARKER)
+        assert len(out) <= cap
+        # No trailing whitespace at the cut, so the bound is reached exactly at the boundary.
+        assert len(out) == cap
+
+
+def test_truncate_passes_through_text_at_or_under_cap() -> None:
+    assert _truncate("hello", MAX_EPISODE_CHARS) == "hello"
+    exact = "y" * MAX_SUMMARY_CHARS
+    assert _truncate(exact, MAX_SUMMARY_CHARS) == exact  # length == limit is not truncated
+
+
+def test_truncate_is_codepoint_safe_on_astral_characters() -> None:
+    # rt-episode F6: slicing is codepoint-based, so truncating a run of 4-byte (astral) code
+    # points never splits a character, emits no U+FFFD replacement char, and round-trips UTF-8.
+    emoji = "\U0001f600"  # U+1F600, one code point, four UTF-8 bytes
+    out = _truncate(emoji * (MAX_EPISODE_CHARS + 100), MAX_EPISODE_CHARS)
+    assert out.endswith(TRUNCATION_MARKER)
+    assert len(out) <= MAX_EPISODE_CHARS
+    body = out[: -len(TRUNCATION_MARKER)]
+    assert set(body) == {emoji}  # only whole emoji kept — never a partial code point
+    assert "\ufffd" not in out
+    assert out.encode("utf-8").decode("utf-8") == out
+
+
+def test_truncate_handles_combining_sequences_without_crashing() -> None:
+    # A base+combining sequence: codepoint-safe slicing must not raise and must stay valid UTF-8
+    # even when it cuts between a base char and its combining mark. Grapheme integrity is
+    # deliberately NOT promised here — only codepoint safety.
+    combining = "e\u0301"  # 'e' + COMBINING ACUTE ACCENT — two code points
+    out = _truncate(combining * MAX_EPISODE_CHARS, MAX_EPISODE_CHARS)
+    assert out.endswith(TRUNCATION_MARKER)
+    assert len(out) <= MAX_EPISODE_CHARS
+    assert out.encode("utf-8").decode("utf-8") == out
 
 
 def test_file_edited_renders_path_and_operation() -> None:

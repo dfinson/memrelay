@@ -15,9 +15,11 @@ summarizer; that would plug into the same :data:`Summarizer` seam (still inside
 
 The default (:func:`default_summarizer`) groups the oldest records by ``namespace`` — the
 graph scope must be preserved, so episodes from different namespaces are never merged —
-and emits **one bounded summary record per namespace**. Each summary's ``content`` is a
-capped digest (``≤`` :data:`MAX_SUMMARY_CHARS`), which is what makes compaction reclaim
-disk: many large episodes collapse into a few small ones. The summary's
+and emits **one bounded summary record per namespace**. Each summary's ``content`` is a short
+fixed frame (``[memrelay compaction] N episode(s): ``) followed by a capped extractive digest;
+the *digest* is bounded by :data:`MAX_SUMMARY_CHARS`, so ``content`` is bounded by that plus the
+small constant frame. This collapse is what makes compaction reclaim disk: many large episodes
+become a few small ones. The summary's
 ``idempotency_key`` is a deterministic hash of its members' keys, so re-running the same
 compaction (e.g. after a crash rolled back the replace) yields the identical key.
 """
@@ -30,9 +32,11 @@ from typing import Any
 
 from memrelay.ingest.episode import EpisodeRecord
 
-#: Upper bound (characters) on a single compaction summary's ``content``. The digest is
-#: truncated to this, so a summary's size is independent of how large the compacted
-#: episodes were — the guarantee that lets a budget-triggered compaction bound disk.
+#: Upper bound (characters) on the extractive **digest** folded into a compaction summary. The
+#: digest is clamped to this, so a summary's size is independent of how large the compacted
+#: episodes were — the guarantee that lets a budget-triggered compaction bound disk. The emitted
+#: ``content`` is that digest plus a small fixed frame (prefix + episode count), so
+#: ``len(content) <= MAX_SUMMARY_CHARS + len(frame)``.
 MAX_SUMMARY_CHARS = 512
 
 #: Per-episode excerpt cap folded into the digest, so one huge episode cannot crowd out
