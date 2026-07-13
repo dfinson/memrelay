@@ -31,7 +31,7 @@ def test_init_skips_mcp_for_ingest_only_provider(
     # A real ingest-only provider whose register() raises NotImplementedError, pointed at an
     # inert tmp home. Monkeypatch the resolver so the outcome is independent of what is installed.
     codex = get_registry().create("codex", home=str(tmp_path / "codex"))
-    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home, cfg=None: codex)
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: codex)
 
     result = CliRunner().invoke(main, ["init"])
 

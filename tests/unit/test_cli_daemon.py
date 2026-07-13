@@ -92,9 +92,9 @@ def test_init_routes_provider_through_registry(cli_env: tuple[Path, Path], monke
     calls: list = []
     real_resolve = cli._resolve_provider
 
-    def spy_resolve(copilot_home, cfg=None):
+    def spy_resolve(copilot_home):
         calls.append(copilot_home)
-        return real_resolve(copilot_home, cfg)
+        return real_resolve(copilot_home)
 
     monkeypatch.setattr(cli, "_resolve_provider", spy_resolve)
     result = CliRunner().invoke(main, ["init"])

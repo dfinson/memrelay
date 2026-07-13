@@ -241,6 +241,43 @@ def test_resolve_picks_sole_present_agent_when_reference_absent() -> None:
     assert registry.resolve().id == "amazonq"
 
 
+def test_resolve_returns_first_detected_when_reference_absent_and_multiple_present() -> None:
+    """Safety case: reference-preference must NOT become "force copilot/DEFAULT".
+
+    With copilot absent but several other agents present, ``resolve()`` returns the
+    deterministic first-detected provider (``sorted`` ⇒ ``detected[0]``), never the DEFAULT.
+    This pins that "prefer copilot when present" did not regress into "always DEFAULT".
+    """
+    registry = ProviderRegistry()
+    registry.register(_fixed_presence_provider("amazonq", present=True))
+    registry.register(_fixed_presence_provider("codex", present=True))
+    registry.register(_fixed_presence_provider(DEFAULT_PROVIDER_ID, present=False))
+
+    assert [p.id for p in registry.detect()] == ["amazonq", "codex"]
+    resolved = registry.resolve()
+    assert resolved.id == "amazonq"
+    assert resolved.id != DEFAULT_PROVIDER_ID
+
+
+def test_resolve_falls_back_to_default_when_nothing_detected() -> None:
+    """INV4 unchanged: with nothing present, the DEFAULT provider is constructed."""
+    registry = ProviderRegistry()
+    registry.register(_fixed_presence_provider("amazonq", present=False))
+    registry.register(_fixed_presence_provider(DEFAULT_PROVIDER_ID, present=False))
+
+    assert registry.detect() == []
+    assert registry.resolve().id == DEFAULT_PROVIDER_ID
+
+
+def test_resolve_explicit_id_wins_over_present_reference() -> None:
+    """An explicit ``agent_id`` overrides auto-detection even when the reference is present."""
+    registry = ProviderRegistry()
+    registry.register(_fixed_presence_provider("amazonq", present=True))
+    registry.register(_fixed_presence_provider(DEFAULT_PROVIDER_ID, present=True))
+
+    assert registry.resolve("amazonq").id == "amazonq"
+
+
 # ── LLM-strategy advertisement (responsibility 2) ────────────────────────────
 
 

@@ -31,7 +31,7 @@ from memrelay.logging_config import (
     configure_logging,
 )
 from memrelay.providers.base import AgentProvider, LLMStrategyHint
-from memrelay.providers.registry import DEFAULT_PROVIDER_ID, ProviderRegistry, get_registry
+from memrelay.providers.registry import DEFAULT_PROVIDER_ID, get_registry
 
 #: Starter config written by ``init`` (mirrors the built-in defaults; SPEC §6). The
 #: ``[llm]`` block is rendered from the resolved provider's advertised default strategy
@@ -64,48 +64,16 @@ def _render_config(hint: LLMStrategyHint) -> str:
     return _CONFIG_TEMPLATE.format(strategy=hint.strategy, host_line=host_line)
 
 
-def _resolve_provider(
-    copilot_home: str | None,
-    cfg: Config | None = None,
-    *,
-    registry: ProviderRegistry | None = None,
-) -> AgentProvider:
-    """Resolve the agent provider (SPEC §2.1) with least-surprising precedence.
+def _resolve_provider(copilot_home: str | None) -> AgentProvider:
+    """Resolve the agent provider through the registry (SPEC §2.1).
 
-    Order, highest priority first:
-
-    1. **explicit** — ``--copilot-home`` targets the reference provider directly.
-    2. **configured host** — when ``cfg`` names a ``[llm] host`` that matches a registered
-       provider *and that agent is actually installed*, it is honored. This keeps ``init``
-       and ``observe`` in agreement: the agent recorded in ``~/.memrelay/config.toml`` is not
-       silently swapped for a different auto-detected one at ``observe`` time (#171 — the
-       live smoke hit exactly this, ``observe`` re-detecting Amazon Q under a Copilot config).
-       The ``is_present()`` guard is deliberate: ``config.llm.host`` defaults to ``"copilot"``
-       even when the key was never written, so without the guard that default would hijack a
-       box where only another agent is installed. Requiring the configured agent to be
-       present means the default only takes effect when Copilot genuinely is — identical to
-       the reference-preference below — while an explicitly-configured, installed host still
-       overrides detection.
-    3. **auto-detect** — :meth:`ProviderRegistry.resolve` prefers the reference provider when
-       present, else the first detected, else the :data:`DEFAULT_PROVIDER_ID` fallback so
-       behavior is unchanged on a machine where nothing is detected.
-
-    ``registry`` is injectable so tests can drive this seam with a throwaway registry of fake
-    providers; production callers leave it ``None`` to use the process-wide default.
+    An explicit ``--copilot-home`` targets the reference provider directly; otherwise the
+    registry auto-detects the present agent, falling back to the default provider so
+    behavior is unchanged on a machine where nothing is detected.
     """
-    registry = registry if registry is not None else get_registry()
+    registry = get_registry()
     if copilot_home:
         return registry.create(DEFAULT_PROVIDER_ID, home=copilot_home)
-    if cfg is not None:
-        host = cfg.llm.host
-        if host and host in registry.ids():
-            provider = registry.create(host)
-            try:
-                present = provider.is_present()
-            except Exception:  # noqa: BLE001 - a broken detector must not crash resolution
-                present = False
-            if present:
-                return provider
     return registry.resolve()
 
 
@@ -396,7 +364,7 @@ def init(copilot_home: str | None) -> None:
     cfg = _load_config(recovery=_INIT_CONFIG_RECOVERY)
     home = ensure_home(cfg)
 
-    provider = _resolve_provider(copilot_home, cfg)
+    provider = _resolve_provider(copilot_home)
     config_file, created = _write_default_config(home, _render_config(provider.llm_strategy()))
     # Ingest-only providers (SPEC §2.1) raise NotImplementedError from register(). Auto-detect
     # can resolve one (e.g. Codex) ahead of Copilot, so skip MCP registration gracefully rather
@@ -517,7 +485,7 @@ def observe(session_id: str | None, spool_path: str | None, copilot_home: str | 
     from memrelay.ingest.graphiti_sink import run_observe
 
     cfg = _load_config()
-    provider = _resolve_provider(copilot_home, cfg)
+    provider = _resolve_provider(copilot_home)
 
     ref = _select_session(provider, session_id)
     if ref is None:

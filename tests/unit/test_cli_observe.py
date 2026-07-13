@@ -94,7 +94,7 @@ def test_observe_errors_when_no_session(monkeypatch, tmp_path: Path) -> None:
     # F1 (#153): the "nothing to observe" error must name the *resolved* provider, not a
     # hardcoded "Copilot" (which is false when e.g. aider is the resolved provider).
     provider = SimpleNamespace(id="aider")
-    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home, cfg=None: provider)
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: provider)
     monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: None)
     monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
 
@@ -109,7 +109,7 @@ def test_observe_errors_when_no_session(monkeypatch, tmp_path: Path) -> None:
 def test_observe_errors_when_named_session_missing(monkeypatch, tmp_path: Path) -> None:
     # F1 (#153): the "unknown id" error must likewise name the resolved provider.
     provider = SimpleNamespace(id="aider")
-    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home, cfg=None: provider)
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: provider)
     monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: None)
     monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
 
@@ -126,7 +126,7 @@ def test_observe_resolves_provider_via_registry(monkeypatch, tmp_path: Path) -> 
     sentinel = object()
     captured: dict = {}
 
-    def fake_resolve(copilot_home, cfg=None):
+    def fake_resolve(copilot_home):
         captured["home_arg"] = copilot_home
         return sentinel
 
@@ -172,7 +172,7 @@ def test_observe_passes_config_repo_map_as_namespace_map(monkeypatch, tmp_path: 
         return ObserveResult(session_id=session_id, namespace="acme", repo="acme/api")
 
     monkeypatch.setattr(cli, "load_config", lambda: cfg)
-    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home, cfg=None: object())
+    monkeypatch.setattr(cli, "_resolve_provider", lambda copilot_home: object())
     monkeypatch.setattr(cli, "_select_session", lambda provider, session_id: ref)
     monkeypatch.setattr(cli, "_open_spool", lambda db_path: _FakeSpool())
     monkeypatch.setattr(cli, "ensure_home", lambda cfg: tmp_path)
