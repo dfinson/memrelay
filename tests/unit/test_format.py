@@ -548,26 +548,20 @@ def test_tiered_output_is_deterministic() -> None:
 # ------------------------------------------------------- E8-S4 token budget (AC1/AC3)
 
 
-def _node_cost(rendered: str, position: int = 0) -> int:
-    """Budget cost of one rendered entity line (its length + the 1-char separator).
-
-    Mirrors :func:`memrelay.mcp.format._node_budget_cost` from the black-box side: the entity
-    line under ``### Entities`` *is* ``_format_node_line``'s output, so measuring it here lets a
-    test set a budget in real rendered units without hand-counting the tuning format.
-    """
-    return len(_entity_block(rendered)[position]) + 1
-
-
 def test_budget_stops_at_char_cap(monkeypatch) -> None:
     # (AC1) fill highest-score nodes until the char budget is hit, then stop: the lower-ranked
     # nodes that would overflow the cap drop out of BOTH the entity list and the diagram.
-    payload = _scored([0.9, 0.9, 0.9, 0.9])  # equal -> #54 keeps all, all high tier, equal cost
+    payload = _scored([0.9, 0.9, 0.9, 0.9])  # equal -> #54 keeps all, all high tier
     full = format_as_map(payload)
     assert _kept_uuids(full) == ["u0", "u1", "u2", "u3"]  # inert at the default budget
 
-    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", _node_cost(full) * 2)
+    # whole-map budget: mermaid + ### Entities + ### Relationships all count (E8-S4), so size the
+    # cap to the full render of just the first two nodes -- the third would push past it.
+    two_node_cap = len(format_as_map(_scored([0.9, 0.9])))
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", two_node_cap)
     capped = format_as_map(payload)
     assert _kept_uuids(capped) == ["u0", "u1"]  # only the first two fit under the cap
+    assert len(capped) <= two_node_cap  # the *whole* rendered map honors the budget
     _assert_valid_mermaid(capped)
 
 
@@ -601,7 +595,7 @@ def test_budget_truncation_is_deterministic(monkeypatch) -> None:
     # (invariant) truncation is a pure function of nodes + scores + budget (no wall-clock / RNG),
     # so a capped render is byte-identical across calls.
     payload = _scored([0.9, 0.9, 0.9, 0.9])
-    cap = _node_cost(format_as_map(payload)) * 2  # room for exactly the first two nodes
+    cap = len(format_as_map(_scored([0.9, 0.9])))  # whole-map size of exactly the first two nodes
     monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", cap)
     first = format_as_map(payload)
     assert first == format_as_map(payload)
@@ -619,7 +613,7 @@ def test_budget_dropped_nodes_prune_edges_in_sync(monkeypatch) -> None:
         {"name": "ORPH", "source_node_uuid": "u2", "target_node_uuid": "u3", "fact": "linkCD"},
     ]
     payload = _scored([0.9, 0.9, 0.9, 0.9], edges)  # all kept + high by #54/#55 before the cap
-    cap = _node_cost(format_as_map(payload)) * 2  # room for exactly u0 + u1
+    cap = len(format_as_map(_scored([0.9, 0.9], edges)))  # whole-map size of the u0+u1 survivor set
     monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", cap)
     rendered = format_as_map(payload)
 
@@ -649,6 +643,68 @@ def test_default_budget_is_inert() -> None:
     }
     rendered = format_as_map(payload)
     assert _kept_uuids(rendered) == ["u0", "u1", "u2"]  # nothing dropped at the default cap
+    _assert_valid_mermaid(rendered)
+
+
+def test_budget_counts_mermaid_block(monkeypatch) -> None:
+    # (finding 1b) the whole rendered map -- the mermaid block + ### Entities + ### Relationships
+    # -- must honor _MAX_MAP_CHARS, not just the entity detail. Cap to the full render of the first
+    # three nodes; the budget then keeps exactly what fits so the total stays within it. Pre-fix
+    # the mermaid block was never counted, so the real output overran the cap.
+    payload = _scored([0.9, 0.9, 0.9, 0.9, 0.9, 0.9])
+    cap = len(format_as_map(_scored([0.9, 0.9, 0.9])))
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", cap)
+    rendered = format_as_map(payload)
+    assert len(rendered) <= cap  # the *whole* map (mermaid included) is within budget
+    assert _kept_uuids(rendered) == ["u0", "u1", "u2"]  # only what actually fits survives
+    _assert_valid_mermaid(rendered)
+
+
+def test_budget_caps_oversized_top_node_content() -> None:
+    # (finding 1a) the always-kept top node's summary is capped per item, so it can't leak an
+    # unbounded blob past the budget. Pre-fix the >8 KB summary was emitted verbatim.
+    big = "x" * 8192
+    payload = {
+        "nodes": [{"uuid": "u0", "name": "Big", "summary": big}],
+        "edges": [],
+        "scores": [0.9],
+    }
+    rendered = format_as_map(payload)
+    top = _entity_block(rendered)[0]
+    assert big not in rendered  # the raw 8 KB blob never reaches the output
+    assert "…" in top  # truncation marker present
+    assert len(top) < 3000  # bounded to the per-item summary cap (+ small line chrome)
+    _assert_valid_mermaid(rendered)
+
+
+def test_edge_fact_is_truncated(monkeypatch) -> None:
+    # (finding 1c) a pathologically long edge fact is capped per item so one relationship line
+    # can't blow the budget. Raise the map budget so the node is not dropped -- isolating the
+    # fact-truncation path. Pre-fix the ~100 KB fact was emitted verbatim.
+    monkeypatch.setattr("memrelay.mcp.format._MAX_MAP_CHARS", 200_000)
+    huge = "y" * 100_000
+    payload = {
+        "nodes": [{"uuid": "u0", "name": "A"}, {"uuid": "u1", "name": "B"}],
+        "edges": [
+            {"name": "REL", "source_node_uuid": "u0", "target_node_uuid": "u1", "fact": huge}
+        ],
+        "scores": [0.9, 0.9],
+    }
+    rendered = format_as_map(payload)
+    assert huge not in rendered  # the raw 100 KB fact never reaches the output
+    rel = next(line for line in rendered.split("\n") if line.startswith("- u0 -["))
+    assert "…" in rel and len(rel) < 1000  # truncated to the per-item fact cap
+    _assert_valid_mermaid(rendered)
+
+
+def test_bool_score_not_formatted_as_numeric() -> None:
+    # (finding 2) a stray bool is not a numeric score: _is_score (used everywhere else) excludes
+    # bool, so the score suffix must be withheld. Pre-fix isinstance(True, int | float) was True,
+    # rendering "_(score 1.00)_" for a bool.
+    rendered = format_as_map(
+        {"nodes": [{"uuid": "u0", "name": "B"}], "edges": [], "scores": [True]}
+    )
+    assert "_(score" not in rendered  # bool never formatted as a numeric score
     _assert_valid_mermaid(rendered)
 
 

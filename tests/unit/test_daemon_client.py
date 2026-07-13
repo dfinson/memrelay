@@ -81,6 +81,8 @@ def test_client_times_out_on_silent_daemon(tmp_path: Path, monkeypatch: pytest.M
 
         def close(self) -> None: ...
 
+        async def wait_closed(self) -> None: ...
+
     async def fake_connect(endpoint: Endpoint, *, timeout: float):
         return _HangingReader(), _NoopWriter()
 
@@ -118,3 +120,39 @@ def test_client_reconnects_after_transient_failure(
     health, attempts = asyncio.run(scenario())
     assert health["status"] == "running"
     assert attempts == 2  # first connect failed, retry succeeded
+
+
+def test_round_trip_awaits_wait_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # (finding 3) _round_trip must await writer.wait_closed() after close(): StreamWriter.close()
+    # only *starts* the teardown, so skipping wait_closed() half-closes the socket and asyncio
+    # emits a ResourceWarning per tool call. Spy on a fake writer; assert the teardown is awaited.
+    # Pre-fix close() runs but wait_closed() never does, so `waited` stays False.
+    class _SpyWriter:
+        def __init__(self) -> None:
+            self.closed = False
+            self.waited = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            self.waited = True
+
+    writer = _SpyWriter()
+
+    async def fake_connect(endpoint: Endpoint, *, timeout: float):
+        return object(), writer  # reader is unused -- read_message is stubbed below
+
+    async def fake_write_message(stream, message) -> None: ...
+
+    async def fake_read_message(reader) -> dict:
+        return {"status": "running"}
+
+    monkeypatch.setattr(transport, "connect", fake_connect)
+    monkeypatch.setattr(transport, "write_message", fake_write_message)
+    monkeypatch.setattr(transport, "read_message", fake_read_message)
+
+    result = asyncio.run(DaemonClient(resolve_endpoint(tmp_path), timeout=0.5, retries=0).health())
+    assert result == {"status": "running"}
+    assert writer.closed is True  # sanity: teardown ran
+    assert writer.waited is True  # the fix: wait_closed() was awaited after close()
