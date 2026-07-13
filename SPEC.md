@@ -549,7 +549,7 @@ The daemon determines context from the session it's observing:
 
 ### 5.5 Graph Lifecycle
 
-- **Compaction**: Triggered by retrieval quality degradation. When `memory_recall` latency exceeds acceptable bounds or precision drops (measured by tracking query-to-result relevance over time), the daemon runs a compaction pass: oldest episodes with the lowest reference frequency are summarized into compressed episodes. The graph self-regulates — busier namespaces compact more aggressively.
+- **Compaction**: Triggered by retrieval quality degradation. When `memory_recall` latency exceeds acceptable bounds or precision drops (measured by tracking query-to-result relevance over time), the daemon runs a compaction pass: oldest episodes with the lowest reference frequency (approximated deterministically by each episode's produced-fact count — its entity-edge count — rather than by tracking live recall references, which would be non-deterministic and run on the recall hot path) are summarized into compressed episodes. The graph self-regulates — busier namespaces compact more aggressively.
 - **Forgetting**: `memrelay forget --repo X` deletes episodes tagged with that repo. `memrelay forget --namespace X` deletes the entire namespace graph. *(Planned — `forget` is a stub today; see §7.)*
 - **Staleness**: Graphiti's temporal edges handle contradiction. The plugin adds `last_commit_sha` metadata to file-related episodes for explicit invalidation on major refactors.
 

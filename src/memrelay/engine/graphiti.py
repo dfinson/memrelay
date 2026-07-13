@@ -693,7 +693,10 @@ class MemoryEngine:
 
         ``dry_run`` computes and reports what *would* be compacted (``eligible``) without writing —
         parity with :meth:`forget`. Returns a structured metrics dict; it never raises for an empty
-        or absent namespace.
+        or absent namespace. If a namespace's summary write fails because entity extraction is
+        unavailable (e.g. the LLM is down), that namespace degrades — no summary is written, its
+        originals are left in place, ``summaries_added`` stays ``0`` — rather than raising, and the
+        sweep continues to the remaining namespaces.
         """
         if not self._cfg.compaction.enabled:
             # Off ⇒ inert: no driver query, zeroed metrics. Byte-identical to today.
@@ -796,15 +799,34 @@ class MemoryEngine:
                 # never breaks the byte-identical-summary guarantee while avoiding any dependence
                 # on reading a Kuzu timestamp back.
                 content = build_summary_content([stat.content for stat in eligible])
-                await self._graphiti.add_episode(
-                    name=_episode_name(content),
-                    episode_body=content,
-                    source=EpisodeType.message,
-                    source_description=_summary_source_description(victim_uuids),
-                    reference_time=datetime.now(UTC),
-                    group_id=namespace,
-                )
-                metrics["summaries_added"] = 1
+                try:
+                    await self._graphiti.add_episode(
+                        name=_episode_name(content),
+                        episode_body=content,
+                        source=EpisodeType.message,
+                        source_description=_summary_source_description(victim_uuids),
+                        reference_time=datetime.now(UTC),
+                        group_id=namespace,
+                    )
+                except Exception as exc:  # noqa: BLE001 - add_episode runs entity extraction (LLM)
+                    # Writing the summary triggers graphiti's entity extraction, which needs the
+                    # LLM; if it is unavailable/failing this raises. Degrade rather than propagate
+                    # (compact() is a best-effort maintenance sweep): log, add no summary, and DROP
+                    # this pass's victims so the originals are NEVER removed without their summary
+                    # (the summary-first ordering is what makes that safe). A prior interrupted pass
+                    # (finish_uuids) is still finished below — pure remove_episode, no LLM — and the
+                    # per-namespace loop keeps sweeping the rest. A later pass, once the LLM is
+                    # back, retries this namespace cleanly.
+                    logger.warning(
+                        "compaction: summary write failed for namespace=%s (%d victims); "
+                        "leaving originals in place, skipping this pass's removal: %s",
+                        namespace,
+                        len(victim_uuids),
+                        exc,
+                    )
+                    victim_uuids = []
+                else:
+                    metrics["summaries_added"] = 1
 
         # Removal, shared-entity-preserving cascade (only edges/entities created solely by an
         # episode are removed; entities another episode still mentions are preserved). FINISH any
@@ -1101,10 +1123,19 @@ def _entity_edge_count(value: Any) -> int:
     """Count the entity edges (facts) an episode produced, from its stored ``entity_edges`` cell.
 
     This is the episode's **reference frequency** — the ``low_reference_max`` compaction knob
-    compares against it. graphiti-core stores ``entity_edges`` provider-specifically: Kuzu/LadybugDB
-    (memrelay's default) use a native ``STRING[]`` column, so the driver returns a Python list;
-    Neptune joins the uuids into one ``|``-delimited string. This tolerates both (and ``None`` /
-    empty), so the count is never mistaken for a string length.
+    compares against it. It is a deterministic, graph-derived **proxy** for SPEC §5.5's "reference
+    frequency": the number of facts the episode produced (``len(entity_edges)``), NOT a count of how
+    often it was later referenced by recall — tracking live recall references would be stateful,
+    non-deterministic, and would run on the recall hot path (see the :mod:`.compaction` module
+    docstring's determinism rationale).
+
+    graphiti-core stores ``entity_edges`` provider-specifically: Kuzu/LadybugDB (memrelay's
+    default), Neo4j and FalkorDB use a native list column, so the driver returns a Python
+    ``list`` (``tuple`` tolerated); Neptune joins the uuids into one ``|``-delimited string
+    (``,`` also tolerated). This handles both (and ``None`` / empty ⇒ 0), so the count is never
+    mistaken for a string length. Any **other** shape is an unknown provider serialization: we
+    **fail loud** (``TypeError``) rather than silently returning 0, which would misreport a
+    high-value episode as low-reference and wrongly make it eligible for compaction.
     """
     if value is None:
         return 0
@@ -1118,7 +1149,10 @@ def _entity_edge_count(value: Any) -> int:
             if separator in stripped:
                 return len([part for part in stripped.split(separator) if part])
         return 1
-    return 0
+    raise TypeError(
+        f"unexpected entity_edges cell shape {type(value).__name__!r}; "
+        "expected a list/tuple, a delimited str, or None"
+    )
 
 
 def _invalidate_edges_query(provider: GraphProvider) -> str:
