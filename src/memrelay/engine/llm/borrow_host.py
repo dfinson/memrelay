@@ -134,25 +134,43 @@ class BorrowHostLLMClient(LLMClient):
         )
 
 
-async def _complete_via_subprocess(command: str, extra_args: list[str], prompt: str) -> str:
-    """Run ``command`` non-interactively with ``prompt`` on stdin; return stdout text.
+async def _run_host_cli(
+    command: str,
+    argv: list[str],
+    *,
+    stdin_payload: bytes | None = None,
+) -> str:
+    """Launch the *resolved* host CLI ``command`` with ``argv``; return its stdout text.
 
-    Shared by the best-effort host-process implementations (Copilot, Claude). It is kept
-    out of the hermetic gate on purpose: the exact CLI invocation is environment- and
-    version-dependent, so tests fake the :class:`HostProcess` seam instead of spawning a
-    real subprocess.
+    Shared by the best-effort host-process implementations (Copilot, Claude). Two details it
+    deliberately gets right — both were the borrow-host wall (see ``docs/SMOKE.md`` Wall A):
+
+    * **Resolved path.** ``shutil.which`` is used both as the availability guard *and* as the
+      value handed to :func:`asyncio.create_subprocess_exec`. On Windows that resolves
+      ``copilot`` → ``copilot.CMD``; passing the bare name would raise ``FileNotFoundError``
+      (``WinError 2``) because ``create_subprocess_exec`` does no ``PATHEXT`` lookup.
+    * **Per-host prompt delivery.** The prompt is *not* assumed to arrive on stdin. Callers pass
+      the fully-built ``argv`` (so a host that wants the prompt as an argument — ``copilot -p
+      <text>`` — puts it there) and, only for a host that reads stdin (``claude -p``), a
+      ``stdin_payload``.
+
+    Kept out of the hermetic gate for the *real* subprocess on purpose (the exact CLI is
+    environment- and version-dependent), but the *invocation shape* — resolved path, argv, and
+    stdin-vs-arg prompt delivery — is asserted hermetically (patching ``create_subprocess_exec``
+    and ``shutil.which``) in ``tests/unit/test_borrow_host_invocation.py``.
     """
-    if shutil.which(command) is None:
+    resolved = shutil.which(command)
+    if resolved is None:
         raise HostProcessError(f"host command {command!r} not found on PATH")
     try:
         process = await asyncio.create_subprocess_exec(
-            command,
-            *extra_args,
+            resolved,
+            *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate(prompt.encode("utf-8"))
+        stdout, stderr = await process.communicate(stdin_payload)
     except OSError as exc:  # pragma: no cover - environment dependent
         raise HostProcessError(f"failed to launch host process: {exc}") from exc
     if process.returncode != 0:
@@ -165,38 +183,46 @@ async def _complete_via_subprocess(command: str, extra_args: list[str], prompt: 
 class CopilotHostProcess:
     """Best-effort Copilot CLI subprocess implementation of :class:`HostProcess`.
 
-    This wires borrow-host to a locally installed Copilot CLI by running it
-    non-interactively with the prompt on stdin. It is intentionally *best
-    effort*: the exact non-interactive invocation may vary by CLI version, so
-    the real subprocess path is NOT exercised by the hermetic gate (which uses a
-    deterministic mock). Availability is discovered via ``shutil.which`` so the
-    strategy layer can fall back cleanly when Copilot is not installed.
+    Wires borrow-host to a locally installed Copilot CLI. Copilot's ``-p/--prompt`` takes the
+    prompt as a **command-line argument** — bare ``-p`` exits 1 with
+    ``option '-p, --prompt <text>' argument missing`` and *ignores* stdin — so, unlike
+    :class:`ClaudeHostProcess`, the prompt is placed in ``argv`` rather than sent on stdin.
+    ``-s/--silent`` keeps stdout to just the agent response with no run stats, so the JSON parse
+    stays clean (``copilot --help``: "Output only the agent response (no stats), useful for
+    scripting with -p"). It is intentionally *best effort*: the real subprocess path is NOT
+    exercised by the hermetic gate (which uses a deterministic mock). Availability is discovered
+    via ``shutil.which`` so the strategy layer can fall back cleanly when Copilot is not installed.
     """
 
     def __init__(self, command: str = "copilot", extra_args: list[str] | None = None) -> None:
         self._command = command
-        # ``-p`` runs the Copilot CLI in one-shot prompt mode; kept overridable
-        # because this is best-effort and unverified across versions.
-        self._extra_args = extra_args if extra_args is not None else ["-p"]
+        # Flags placed AFTER the ``-p <prompt>`` pair. ``-s/--silent`` trims run stats so stdout
+        # is only the agent's response. Overridable because this is best-effort and unverified
+        # across CLI versions; the prompt itself is always injected right after ``-p``.
+        self._extra_args = extra_args if extra_args is not None else ["-s"]
 
     @classmethod
     def is_installed(cls, command: str = "copilot") -> bool:
         return shutil.which(command) is not None
 
     async def complete(self, prompt: str) -> str:
-        return await _complete_via_subprocess(self._command, self._extra_args, prompt)
+        # The prompt is the value of ``-p`` and MUST immediately follow it; extra flags (e.g.
+        # ``-s``) come after. Delivered as an argument, never on stdin (see class docstring).
+        argv = ["-p", prompt, *self._extra_args]
+        return await _run_host_cli(self._command, argv)
 
 
 class ClaudeHostProcess:
     """Best-effort Claude Code CLI subprocess implementation of :class:`HostProcess`.
 
-    Mirrors :class:`CopilotHostProcess` for Anthropic's ``claude`` CLI: it runs the CLI
-    non-interactively in print mode (``claude -p --output-format text``) with the prompt
-    on stdin and returns the plain-text completion. Like the Copilot impl this is *best
-    effort* — the exact headless invocation may vary by CLI version, so the real
-    subprocess path is NOT exercised by the hermetic gate (which fakes ``HostProcess``).
-    Availability is discovered via ``shutil.which`` so the strategy layer can fall back
-    cleanly when Claude is not installed.
+    Drives Anthropic's ``claude`` CLI non-interactively in print mode
+    (``claude -p --output-format text``). Unlike :class:`CopilotHostProcess`, ``claude -p`` *does*
+    read the prompt from **stdin**, so the prompt is fed there and ``argv`` carries only flags —
+    this per-host divergence is exactly why the two hosts don't share a prompt-delivery path. Like
+    the Copilot impl this is *best effort* — the exact headless invocation may vary by CLI version,
+    so the real subprocess path is NOT exercised by the hermetic gate (which fakes ``HostProcess``).
+    Availability is discovered via ``shutil.which`` so the strategy layer can fall back cleanly when
+    Claude is not installed.
     """
 
     def __init__(self, command: str = "claude", extra_args: list[str] | None = None) -> None:
@@ -214,7 +240,10 @@ class ClaudeHostProcess:
         return shutil.which(command) is not None
 
     async def complete(self, prompt: str) -> str:
-        return await _complete_via_subprocess(self._command, self._extra_args, prompt)
+        # ``claude -p`` reads the prompt from stdin; ``argv`` carries only the flags.
+        return await _run_host_cli(
+            self._command, list(self._extra_args), stdin_payload=prompt.encode("utf-8")
+        )
 
 
 class _UnknownHostProcess:
