@@ -156,6 +156,10 @@ class LadybugDriver(GraphDriver):
             self.db, max_concurrent_queries=max_concurrent_queries
         )
 
+        # Guards close() so a repeat call (e.g. from_config's construction-failure
+        # cleanup followed by GC) is a safe no-op. See close() for the details.
+        self._closed = False
+
         # Instantiate the (provider-agnostic) Kuzu-dialect operations.
         self._entity_node_ops = KuzuEntityNodeOperations()
         self._episode_node_ops = KuzuEpisodeNodeOperations()
@@ -252,8 +256,19 @@ class LadybugDriver(GraphDriver):
         return LadybugDriverSession(self)
 
     async def close(self):
-        # Do not explicitly close the connection, instead rely on GC.
-        pass
+        # Deterministically release the on-disk graph lock instead of leaving it to GC.
+        # Verified against the pinned ladybug 0.18.0: AsyncConnection.close() and
+        # Database.close() are synchronous and idempotent, and Database.close() drops the
+        # file-level lock (its docstring: "the lock on the database files is released").
+        # Order matters — Database.close() requires its Connections closed first, so close
+        # the AsyncConnection (its pooled Connections + thread pool) before the Database.
+        # Guarded so a repeat close() (e.g. from_config's failure-path cleanup, then GC via
+        # AsyncConnection.__del__) is a safe no-op.
+        if self._closed:
+            return
+        self._closed = True
+        self.client.close()
+        self.db.close()
 
     def delete_all_indexes(self, database_: str):
         pass
