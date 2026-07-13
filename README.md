@@ -30,7 +30,7 @@ The agent decides when to call these tools — you don't manage memory manually.
 
 ## Install
 
-> **Under active development (v0.0.1, not yet on PyPI).** Install from source for
+> **Under active development (v0.1.0, not yet on PyPI).** Install from source for
 > now — clone this repo and `pip install -e ".[dev]"` (see [Development](#development)).
 > The `pip install memrelay` flow below is the intended experience once published.
 
@@ -68,13 +68,18 @@ The default stack requires **zero API keys**:
 
 | Component | Default | What it does |
 | --- | --- | --- |
-| Graph database | Kuzu (embedded, local file) | Stores the knowledge graph |
+| Graph database | Ladybug (embedded, local file) | Stores the knowledge graph |
 | LLM | borrow-host — reuse an agent's own model (e.g. your Copilot subscription) | Entity extraction, summarization |
 | Embeddings | fastembed (ONNX, CPU, ~67MB) | Semantic similarity for retrieval |
 
 Everything runs locally. No Docker, no Neo4j, no cloud services. Prefer your own key? Switch the LLM strategy to `byo-key` (see Configuration). A fully local LLM strategy (`local` — Ollama/llama.cpp) is planned but **not yet implemented** ([#64](https://github.com/dfinson/memrelay/issues/64)).
 
-> **Backend note:** Kuzu is memrelay's committed graph backend today, but it is deprecated upstream in graphiti-core 0.29.2; a successor backend is tracked in [#76](https://github.com/dfinson/memrelay/issues/76).
+> **Backend note:** memrelay's default graph backend is **Ladybug** — the original Kuzu
+> developers' maintained, Kuzu-API/Cypher drop-in fork. It replaced the now-archived `kuzu`
+> as the out-of-the-box default in [#76](https://github.com/dfinson/memrelay/issues/76).
+> memrelay's storage driver still reports `provider = KUZU` to graphiti-core and reuses its
+> Kuzu-dialect Cypher verbatim, so the query language is unchanged (see
+> [ADR 0001](docs/adr/0001-graph-backends.md)).
 
 ## Architecture
 
@@ -86,16 +91,16 @@ Everything runs locally. No Docker, no Neo4j, no cloud services. Prefer your own
 │                          │          │  Provider watchers       │
 │  ┌────────────┐          │          │  → traceforge pipeline   │
 │  │ MCP Server │          ┼──socket──┤  → Graphiti ingestion    │
-│  │ (tools)    │          │          │  → Kuzu graph DB         │
+│  │ (tools)    │          │          │  → Ladybug graph DB      │
 │  └────────────┘          │          │                          │
 └──────────────────────────┘          └──────────────────────────┘
 ```
 
 **Two processes:**
-- **Daemon** — persistent background process that owns the Kuzu database and Graphiti instance. Watches session files, ingests events, answers queries via Unix socket.
+- **Daemon** — persistent background process that owns the Ladybug database and Graphiti instance. Watches session files, ingests events, answers queries via Unix socket.
 - **MCP server** — spawned by each agent as a stdio subprocess. Thin client that forwards tool calls to the daemon.
 
-This split exists because Kuzu requires exclusive file access — only one process can open the database.
+This split exists because Ladybug requires exclusive file access — only one process can open the database.
 
 ## CLI commands
 
@@ -124,7 +129,7 @@ Config lives at `~/.memrelay/config.toml`. Defaults work out of the box — only
 
 ```toml
 [graph]
-backend = "kuzu"
+backend = "ladybug"
 path = "~/.memrelay/graph.db"
 
 [llm]
@@ -188,7 +193,7 @@ memrelay depends on [TraceForge](https://github.com/dfinson/traceforge) (PyPI: `
 | --- | --- |
 | `traceforge-toolkit` | Multi-agent event normalization (~18 agents) |
 | `graphiti-core` | Knowledge graph engine |
-| `kuzu` | Embedded graph database |
+| `ladybug` | Embedded graph database |
 | `fastembed` | Local ONNX embeddings |
 | `mcp` | Model Context Protocol server |
 
@@ -236,13 +241,13 @@ traceforge 0.1.0 API used and the deltas from `SPEC.md`.
 ## Status
 
 🚧 **Pre-1.0 and under active development** — the core is functional but still being
-assembled epic by epic, and the package is unpublished (v0.0.1). What works today:
+assembled epic by epic, and the package is unpublished (v0.1.0). What works today:
 
 - **CLI** — `init`, `start`, `stop`, `status`, `observe`, `seed`, `guidance`, `mcp`, and `config`
   are all implemented (`forget` remains a stub).
-- **Engine (E4)** — a config-driven Graphiti wrapper over an embedded Kuzu database,
+- **Engine (E4)** — a config-driven Graphiti wrapper over an embedded Ladybug database,
   with local fastembed embeddings and the `borrow-host` / `byo-key` LLM strategies.
-- **Daemon (E6/E7)** — a background process that owns the Kuzu engine, hosts the
+- **Daemon (E6/E7)** — a background process that owns the Ladybug engine, hosts the
   spool → Graphiti ingester, and answers `search` / `detail` / `note` / `health` over
   a local socket.
 - **MCP server (E6/E7)** — a stdio server exposing `memory_recall`, `memory_detail`,
