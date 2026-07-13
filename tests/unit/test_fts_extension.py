@@ -157,6 +157,31 @@ def test_load_uses_prefetched_extension(monkeypatch):
     assert driver.queries == ["LOAD EXTENSION '/cache/linux_amd64/libfts.lbug_extension'"]
 
 
+def test_ladybug_string_literal_escapes_single_quote():
+    # Item 4 (rt-backends LOW): a cache path containing a single quote (e.g. a Windows user named
+    # O'Brien) must be BACKSLASH-escaped — Ladybug/Kuzu string-literal syntax — NOT SQL-doubled, so
+    # the emitted LOAD statement stays well-formed instead of crashing the load.
+    assert fx._ladybug_string_literal("/c/x/libfts") == "'/c/x/libfts'"
+    assert fx._ladybug_string_literal("/c/O'Brien/x") == "'/c/O\\'Brien/x'"
+    # A literal backslash is itself doubled, so the escaping is unambiguous.
+    assert fx._ladybug_string_literal("/c/a\\b") == "'/c/a\\\\b'"
+
+
+def test_load_escapes_single_quote_in_prefetched_path(monkeypatch):
+    # End to end: the LOAD statement for a quote-bearing cache path carries no bare quote, so the
+    # load no longer produces a malformed statement for unlucky install paths.
+    monkeypatch.setattr(fx, "_configure_ssl_cert_env", lambda: None)
+    monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ("linux_amd64",))
+    monkeypatch.setattr(
+        fx, "_ensure_extension_file", lambda plat: Path("/cache/O'Brien/libfts.lbug_extension")
+    )
+
+    driver = _RecordingDriver()
+    asyncio.run(fx.load_ladybug_fts_extension(driver))
+
+    assert driver.queries == ["LOAD EXTENSION '/cache/O\\'Brien/libfts.lbug_extension'"]
+
+
 def test_load_falls_back_to_native_when_no_prefetch(monkeypatch):
     monkeypatch.setattr(fx, "_configure_ssl_cert_env", lambda: None)
     monkeypatch.setattr(fx, "_ladybug_platform_candidates", lambda: ("linux_amd64",))

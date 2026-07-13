@@ -278,6 +278,22 @@ def prefetch_fts_extension() -> None:
             logger.warning("Ladybug FTS extension prefetch for %s failed: %s", plat, exc)
 
 
+def _ladybug_string_literal(value: str) -> str:
+    """Return ``value`` as a safely-escaped single-quoted Ladybug/Kuzu string literal.
+
+    ``LOAD EXTENSION '<path>'`` is one of the few statements that cannot bind a ``$param`` (it
+    is a utility statement, not Cypher that accepts parameters), so the path is interpolated.
+    Ladybug/Kuzu string literals use **backslash** escaping (``\\\\`` and ``\\'``) — NOT
+    SQL-style quote doubling, which raises a parser error — so a cache path containing a single
+    quote (e.g. a Windows user named ``O'Brien``) would otherwise produce a malformed statement
+    and crash the load. Escaping the backslash first, then the quote, keeps the literal
+    well-formed for any path. This is crash-safety, not injection defense: the path is
+    operator-local, never attacker-controlled.
+    """
+    escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
 async def load_ladybug_fts_extension(driver: GraphDriver) -> None:
     """Load Ladybug's FTS extension, robust to its native downloader's Linux TLS bug.
 
@@ -293,7 +309,7 @@ async def load_ladybug_fts_extension(driver: GraphDriver) -> None:
         if path is None:
             continue
         try:
-            await driver.execute_query(f"LOAD EXTENSION '{path.as_posix()}'")
+            await driver.execute_query(f"LOAD EXTENSION {_ladybug_string_literal(path.as_posix())}")
             return
         except Exception as exc:  # noqa: BLE001 - try the next tag, then native
             logger.warning("LOAD of prefetched %s FTS extension failed: %s", plat, exc)

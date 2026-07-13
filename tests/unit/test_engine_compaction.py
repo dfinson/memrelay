@@ -246,6 +246,35 @@ def test_entity_edge_count_handles_none() -> None:
     assert _entity_edge_count(None) == 0
 
 
+def test_entity_edge_count_counts_tuple() -> None:
+    # Some drivers hand back a tuple rather than a list; still a membership count, not len-of-str.
+    assert _entity_edge_count(("e1", "e2")) == 2
+    assert _entity_edge_count(()) == 0
+
+
+def test_entity_edge_count_counts_comma_joined_string() -> None:
+    # A ','-delimited join (tolerated alongside Neptune's '|') is counted by membership.
+    assert _entity_edge_count("e1,e2,e3,e4") == 4
+
+
+def test_entity_edge_count_single_uuid_string_is_one() -> None:
+    # A lone uuid with no delimiter is one reference, never its character length.
+    assert _entity_edge_count("a-single-uuid-with-no-delimiter") == 1
+
+
+def test_entity_edge_count_blank_string_is_zero() -> None:
+    assert _entity_edge_count("   ") == 0
+
+
+@pytest.mark.parametrize("bad", [{"e1": 1}, 3, 3.5, object()])
+def test_entity_edge_count_fails_loud_on_unexpected_shape(bad: Any) -> None:
+    # Item 3 (rt-backends LOW): an unknown provider serialization must FAIL LOUD, not silently
+    # return 0. A silent 0 would misreport a high-value episode as low-reference and wrongly make
+    # it eligible for compaction; a TypeError surfaces the wiring bug at the boundary instead.
+    with pytest.raises(TypeError, match="unexpected entity_edges cell shape"):
+        _entity_edge_count(bad)
+
+
 # --------------------------------------------------------------------------- fakes
 
 
@@ -510,6 +539,64 @@ def test_fired_pass_adds_one_summary_then_removes_eligible(monkeypatch) -> None:
     assert graphiti.added[0]["group_id"] == "ns"
     # exactly the eligible originals removed (high-ref "busy" and the protected hot set survive)
     assert graphiti.removed == ["old1", "old2", "old3"]
+
+
+def test_fired_pass_degrades_when_summary_write_fails(monkeypatch) -> None:
+    # Item 1 (rt-engine LOW): writing the summary runs graphiti's entity extraction, which needs
+    # the LLM; when it is unavailable ``add_episode`` raises. compact() must DEGRADE that namespace
+    # — no summary, its originals left in place, ``summaries_added == 0`` — rather than propagate,
+    # honoring its never-raises maintenance-sweep contract, while still reporting it as triggered.
+    rows = {"ns": [_row(f"u{i}", i, 0) for i in range(1, 9)]}  # E=8, oldest 4 eligible
+
+    class _LlmDownGraphiti(_FakeGraphiti):
+        async def add_episode(self, **kwargs: Any) -> None:
+            raise RuntimeError("LLM unavailable: entity extraction failed")
+
+    driver = _FakeDriver(GraphProvider.KUZU, rows)
+    graphiti = _LlmDownGraphiti()
+    engine = _engine(driver, graphiti, CompactionConfig(enabled=True, min_episodes=4))
+    _patch_edges(monkeypatch, [])
+
+    result = asyncio.run(engine.compact("ns"))  # must NOT raise
+
+    ns_metrics = result["namespaces"]["ns"]
+    assert ns_metrics["triggered"] is True
+    assert ns_metrics["eligible"] == 4  # the pass fired; the LLM only broke the summary write
+    assert ns_metrics["summaries_added"] == 0
+    assert ns_metrics["episodes_compacted"] == 0
+    assert result["summaries_added"] == 0 and result["episodes_compacted"] == 0
+    # No summary was written and — crucially — no original was removed without its summary.
+    assert graphiti.added == [] and graphiti.removed == []
+
+
+def test_llm_down_in_one_namespace_does_not_stop_the_sweep(monkeypatch) -> None:
+    # Item 1: one namespace whose summary write fails degrades in isolation — the per-namespace
+    # sweep still compacts the healthy namespaces. graphiti fails add_episode only for group "bad".
+    rows = {
+        "good": [_row(f"g{i}", i, 0) for i in range(1, 9)],
+        "bad": [_row(f"b{i}", i, 0) for i in range(1, 9)],
+    }
+
+    class _SelectiveGraphiti(_FakeGraphiti):
+        async def add_episode(self, **kwargs: Any) -> None:
+            if kwargs["group_id"] == "bad":
+                raise RuntimeError("LLM unavailable")
+            await super().add_episode(**kwargs)
+
+    driver = _FakeDriver(GraphProvider.KUZU, rows)
+    graphiti = _SelectiveGraphiti()
+    engine = _engine(driver, graphiti, CompactionConfig(enabled=True, min_episodes=4))
+    _patch_edges(monkeypatch, [])
+
+    result = asyncio.run(engine.compact())  # sweep every namespace; must NOT raise
+
+    assert result["namespaces"]["bad"]["summaries_added"] == 0
+    assert result["namespaces"]["bad"]["episodes_compacted"] == 0
+    assert result["namespaces"]["good"]["summaries_added"] == 1
+    assert result["namespaces"]["good"]["episodes_compacted"] == 4
+    # Exactly the healthy namespace's summary was added; no "bad" original was removed.
+    assert len(graphiti.added) == 1 and graphiti.added[0]["group_id"] == "good"
+    assert all(uuid.startswith("g") for uuid in graphiti.removed)
 
 
 def test_fired_pass_summary_key_matches_victims(monkeypatch) -> None:

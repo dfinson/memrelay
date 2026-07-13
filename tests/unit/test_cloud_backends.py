@@ -19,6 +19,7 @@ clear ``ValueError`` *before* importing any driver — mirroring #87's fail-loud
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 import types
 
@@ -254,3 +255,79 @@ def test_real_cloud_driver_module_imports_and_reports_provider(module_name: str)
 
     driver_cls = getattr(module, class_name)
     assert driver_cls.provider == GraphProvider[provider_name]
+
+
+# Representative connection config per backend — enough to drive each adapter's open_driver down
+# its success path so we capture the EXACT ctor args it emits (see the hermetic mapping tests above
+# for the same shapes pinned against fakes).
+_REAL_CTOR_CASES = {
+    "neo4j": {
+        "module": "graphiti_core.driver.neo4j_driver",
+        "graph": {
+            "backend": "neo4j",
+            "connection": {
+                "uri": "bolt://h:7687",
+                "user": "u",
+                "password": "p",
+                "database": "prod",
+            },
+        },
+    },
+    "falkordb": {
+        "module": "graphiti_core.driver.falkordb_driver",
+        "graph": {
+            "backend": "falkordb",
+            "connection": {
+                "host": "h",
+                "port": 6380,
+                "username": "u",
+                "password": "p",
+                "database": "g",
+            },
+        },
+    },
+    "neptune": {
+        "module": "graphiti_core.driver.neptune_driver",
+        "graph": {
+            "backend": "neptune",
+            "connection": {
+                "host": "neptune-db://c",
+                "aoss_host": "s",
+                "port": 9999,
+                "aoss_port": 8443,
+            },
+        },
+    },
+}
+
+
+@pytest.mark.parametrize("backend_id", list(_REAL_CTOR_CASES))
+def test_real_cloud_driver_ctor_accepts_adapter_args(
+    backend_id: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Item 5 (rt-backends LOW): the hermetic mapping tests assert each adapter's ctor args only
+    # against *fakes*, and the CI real-module test above checks only ``.provider`` — so a future
+    # graphiti-core ctor rename (e.g. ``aoss_port`` → something else) or positional-arity change
+    # would crash a real Neptune/FalkorDB/Neo4j user with NO test catching it. This binds the exact
+    # args the adapter emits against the REAL driver's ``inspect.signature`` — no construction, no
+    # server contact — so a signature drift fails loudly here. Skips cleanly where the extra is
+    # absent (falkordb locally); neo4j/neptune import and run.
+    case = _REAL_CTOR_CASES[backend_id]
+    class_name = _REAL_DRIVER_MODULES[case["module"]][0]
+
+    # 1. Capture EXACTLY the ctor args the adapter emits, via the same fake-injection seam the
+    #    hermetic tests use — no real client lib needed for this half. Scoped so the fake is gone
+    #    before we import the real module.
+    with monkeypatch.context() as m:
+        fake, captured, _ = _fake_driver_module(class_name)
+        m.setitem(sys.modules, case["module"], fake)
+        cfg = load_config(environ={}, graph=case["graph"])
+        _open(backend_id, cfg)
+
+    # 2. Bind those captured args against the REAL graphiti driver's signature. ``bind`` raises
+    #    TypeError on an unknown kwarg or a missing/renamed positional — exactly the drift we want
+    #    to catch — without ever calling __init__.
+    module = pytest.importorskip(case["module"], exc_type=ImportError)
+    driver_cls = getattr(module, class_name)
+    signature = inspect.signature(driver_cls)
+    signature.bind(*captured["args"], **captured["kwargs"])
