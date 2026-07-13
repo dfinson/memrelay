@@ -18,6 +18,7 @@ import click
 from memrelay import __version__, guidance
 from memrelay.config import (
     Config,
+    ConfigError,
     NamespaceConfigError,
     ensure_home,
     load_config,
@@ -284,9 +285,20 @@ def _load_config(path: str | None = None, *, recovery: str = _CONFIG_RECOVERY) -
     ``path`` is given it calls ``load_config()`` with no arguments (preserving the exact
     seam other call sites and tests patch), reserving ``path=`` for the ``config --path``
     case.
+
+    It also eagerly resolves ``home_path`` / ``graph_path`` so a config path that
+    references an unset environment variable (:class:`~memrelay.config.ConfigError`)
+    fails here as a clean error, not later as a raw traceback — and never silently as a
+    current-directory-relative path (see :func:`memrelay.config._expand`).
     """
     try:
-        return load_config(path=path) if path is not None else load_config()
+        cfg = load_config(path=path) if path is not None else load_config()
+        # Force path expansion now so an unresolved ${VAR} in home / graph.path fails
+        # loud here (clean error) instead of later as a raw traceback — or, worse, a
+        # silent current-directory-relative path (see config._expand / #153).
+        _ = cfg.home_path
+        _ = cfg.graph_path
+        return cfg
     except FileNotFoundError as exc:
         # Explicit --path pointing at a missing file; the message already names it.
         raise click.ClickException(str(exc)) from exc
@@ -295,7 +307,7 @@ def _load_config(path: str | None = None, *, recovery: str = _CONFIG_RECOVERY) -
         raise click.ClickException(
             f"could not parse config file {location}: {exc}. {recovery}"
         ) from exc
-    except NamespaceConfigError as exc:
+    except (NamespaceConfigError, ConfigError) as exc:
         location = path or resolve_config_path()
         raise click.ClickException(
             f"invalid configuration in {location}: {exc}. {recovery}"
@@ -476,9 +488,9 @@ def observe(session_id: str | None, spool_path: str | None, copilot_home: str | 
     ref = _select_session(provider, session_id)
     if ref is None:
         raise click.ClickException(
-            f"no Copilot session found with id {session_id!r}."
+            f"no {provider.id} session found with id {session_id!r}."
             if session_id
-            else "no Copilot sessions found to observe."
+            else f"no {provider.id} sessions found to observe."
         )
 
     home = ensure_home(cfg)
@@ -701,8 +713,9 @@ def seed(
     target_ns = namespace if namespace else resolve_namespace(repo_id, cfg.namespaces.repo_map)
 
     home = ensure_home(cfg)
-    # Same durable file the daemon ingester drains (note the "spool/" subdir); sqlite
-    # won't create the parent dir, so ensure it here exactly like ``observe``.
+    # Same durable file the daemon ingester drains (note the "spool/" subdir). ``Spool``
+    # creates its own parent directory when opened, so — unlike a bare sqlite connect —
+    # no explicit mkdir is needed here.
     db_path = Path(spool_path) if spool_path else home / "spool" / "spool.db"
 
     spool = None if dry_run else _open_spool(db_path)
@@ -751,7 +764,7 @@ def mcp() -> None:
     # configure_logging / run_stdio), never stdout, or the protocol stream corrupts.
     from memrelay.mcp.server import run_stdio
 
-    cfg = load_config()
+    cfg = _load_config()
     configure_logging(cfg.logging.level)
     run_stdio(cfg)
 
@@ -761,7 +774,7 @@ def serve() -> None:
     """(internal) Run the daemon in the foreground; spawned by `memrelay start`."""
     from memrelay.daemon.lifecycle import run_foreground
 
-    cfg = load_config()
+    cfg = _load_config()
     configure_logging(cfg.logging.level)
     run_foreground(cfg)
 

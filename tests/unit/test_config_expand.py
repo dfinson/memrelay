@@ -13,7 +13,9 @@ from __future__ import annotations
 import pytest
 
 from memrelay.config import (
+    ConfigError,
     GraphConnectionConfig,
+    _expand,
     _expanduser_with,
     _expandvars_with,
     _graph_from_dict,
@@ -94,3 +96,26 @@ def test_graph_from_dict_yields_none_connection_for_embedded_default() -> None:
     assert _graph_from_dict({"backend": "ladybug"}).connection is None
     # A non-dict, non-config value is also normalized to None rather than crashing.
     assert _graph_from_dict({"backend": "ladybug", "connection": "nonsense"}).connection is None
+
+
+# ─── _expand fail-loud on an unresolved variable (#153, F2) ──────────────────
+
+
+def test_expand_rejects_unset_variable_via_production_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unset ``${VAR}`` must be rejected on the *production* expandvars path.
+
+    ``_expand`` with ``environ=None`` uses ``os.path.expandvars`` against the real
+    process environment — the path the daemon actually takes (the ``home_path`` /
+    ``graph_path`` properties call it that way). An unset reference is left as a literal
+    token which, unguarded, ``Path.resolve()`` would silently turn into a
+    current-directory-relative path, misplacing the graph DB with no diagnostic. It must
+    instead fail loud, naming the offending variable.
+    """
+    monkeypatch.delenv("RT153_UNSET_DIR", raising=False)
+
+    with pytest.raises(ConfigError) as excinfo:
+        _expand("${RT153_UNSET_DIR}/graph.db")
+
+    assert "RT153_UNSET_DIR" in str(excinfo.value)
