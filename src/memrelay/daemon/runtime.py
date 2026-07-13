@@ -17,8 +17,10 @@ same orchestration is drivable in-process by tests. Responsibilities:
   spool. Off unless a factory is supplied (``run_foreground`` wires the real one), so
   in-process tests never scan a real agent home.
 * **Live health** — merge ``sessions_observed`` / ``active_sessions`` and the ingester's
-  ``episodes_ingested`` / ``spool_pending`` counters into the backend's health so
-  ``memrelay status`` reflects a live system, while keeping the stub health keys.
+  ``episodes_ingested`` / ``spool_pending`` counters (plus the ``notes_failed`` /
+  ``poison_skipped`` ingest-failure counters) into the backend's health so ``memrelay
+  status`` reflects a live system — surfacing otherwise-silent ingest failures — while
+  keeping the stub health keys.
 
 Shutdown order is listener → poller → ingester → engine: the server stops accepting
 work, session capture stops, the ingester drains and exits, and only then is the Kuzu
@@ -58,6 +60,8 @@ class SupportsIngest(Protocol):
     async def run(self, stop: asyncio.Event) -> None: ...
 
     def stats(self) -> JsonDict: ...
+
+    def metrics(self) -> JsonDict: ...
 
 
 #: Builds the ingester for a resolved engine, or returns ``None`` to run without one.
@@ -191,10 +195,12 @@ class LiveHealthBackend:
 
     ``search`` / ``detail`` / ``note`` pass straight through to the wrapped backend
     (the query answerer). ``health`` overlays the hosted poller's ``sessions_observed`` /
-    ``active_sessions`` (falling back to the daemon-owned counter when no poller runs) and
-    the ingester's ``episodes_ingested`` / ``spool_pending`` so ``memrelay status`` shows a
-    live system, while preserving every other key the wrapped backend reports and
-    guaranteeing the stub health keys are present.
+    ``active_sessions`` (falling back to the daemon-owned counter when no poller runs), the
+    ingester's ``episodes_ingested`` / ``spool_pending`` (from ``stats()``), and its
+    ``notes_failed`` / ``poison_skipped`` ingest-failure counters (from ``metrics()``) so
+    ``memrelay status`` shows a live system — surfacing otherwise-silent ingest failures —
+    while preserving every other key the wrapped backend reports and guaranteeing the stub
+    health keys are present.
     """
 
     def __init__(
@@ -233,6 +239,14 @@ class LiveHealthBackend:
             stats.get("episodes_ingested", report.get("episodes_ingested", 0))
         )
         report["spool_pending"] = int(stats.get("spool_pending", report.get("spool_pending", 0)))
+        # Overlay the ingest-failure counters (E3-S5 #32) so silent note failures and poison
+        # drops are visible in ``memrelay status``. Read from the richer ``metrics()`` accessor;
+        # ``stats()`` stays the frozen two-key shape.
+        metrics = self._ingester.metrics() if self._ingester is not None else {}
+        report["notes_failed"] = int(metrics.get("notes_failed", report.get("notes_failed", 0)))
+        report["poison_skipped"] = int(
+            metrics.get("poison_skipped", report.get("poison_skipped", 0))
+        )
         return report
 
 

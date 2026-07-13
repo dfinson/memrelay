@@ -32,7 +32,13 @@ def test_note_returns_a_status_string() -> None:
 def test_health_metrics_shape() -> None:
     health = asyncio.run(StubBackend().health())
     assert health["status"] == "running"
-    for key in ("sessions_observed", "episodes_ingested", "spool_pending"):
+    for key in (
+        "sessions_observed",
+        "episodes_ingested",
+        "spool_pending",
+        "notes_failed",
+        "poison_skipped",
+    ):
         assert isinstance(health[key], int)
 
 

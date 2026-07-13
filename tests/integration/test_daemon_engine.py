@@ -114,6 +114,14 @@ class _FakeIngester:
     def stats(self) -> dict:
         return {"episodes_ingested": self._ingested, "spool_pending": self._spool.pending()}
 
+    def metrics(self) -> dict:
+        # The daemon reads metrics() in health(); this fake reports no ingest failures.
+        return {
+            "episodes_ingested": self._ingested,
+            "notes_failed": 0,
+            "poison_skipped": 0,
+        }
+
 
 def test_daemon_serves_real_engine_and_hosts_ingester(
     tmp_path: Path, gate_embedder, mock_llm_factory

@@ -430,7 +430,7 @@ def stop() -> None:
 
 @main.command()
 def status() -> None:
-    """Show daemon health: sessions observed, episodes ingested, spool depth."""
+    """Show daemon health: sessions observed, episodes ingested, spool depth, ingest failures."""
     from memrelay.daemon import lifecycle
 
     cfg = _load_config()
@@ -445,6 +445,8 @@ def status() -> None:
     click.echo(f"  sessions_observed: {health.get('sessions_observed', 0)}")
     click.echo(f"  episodes_ingested: {health.get('episodes_ingested', 0)}")
     click.echo(f"  spool_pending:     {health.get('spool_pending', 0)}")
+    click.echo(f"  notes_failed:      {health.get('notes_failed', 0)}")
+    click.echo(f"  poison_skipped:    {health.get('poison_skipped', 0)}")
 
 
 @main.command()

@@ -92,12 +92,20 @@ class _FakeIngester:
     """Drains a ``_FakeSpool`` into the shared backend, then idles until ``stop``."""
 
     def __init__(
-        self, backend: _RecordingBackend, spool: _FakeSpool, namespace: str = "ns"
+        self,
+        backend: _RecordingBackend,
+        spool: _FakeSpool,
+        namespace: str = "ns",
+        *,
+        notes_failed: int = 0,
+        poison_skipped: int = 0,
     ) -> None:
         self._backend = backend
         self._spool = spool
         self._namespace = namespace
         self._ingested = 0
+        self._notes_failed = notes_failed
+        self._poison_skipped = poison_skipped
         self.drained = asyncio.Event()
 
     async def run(self, stop: asyncio.Event) -> None:
@@ -110,6 +118,14 @@ class _FakeIngester:
 
     def stats(self) -> dict:
         return {"episodes_ingested": self._ingested, "spool_pending": self._spool.pending()}
+
+    def metrics(self) -> dict:
+        # Richer than stats(): carries the ingest-failure counters the daemon surfaces in status.
+        return {
+            "episodes_ingested": self._ingested,
+            "notes_failed": self._notes_failed,
+            "poison_skipped": self._poison_skipped,
+        }
 
 
 def test_injected_stub_backend_serves_and_is_not_closed(tmp_path: Path) -> None:
@@ -190,6 +206,50 @@ def test_hosted_ingester_drains_into_shared_backend_and_health_reflects_it(tmp_p
     assert health["episodes_ingested"] == 2
     assert health["spool_pending"] == 0
     assert health["sessions_observed"] == 0
+    # Failure counters are always present (zero here); Wall E surfaces them in status.
+    assert health["notes_failed"] == 0
+    assert health["poison_skipped"] == 0
+
+
+def test_hosted_ingester_failure_counters_surface_through_health(tmp_path: Path) -> None:
+    """notes_failed / poison_skipped from the ingester's ``metrics()`` reach ``health`` (Wall E).
+
+    Before this wiring ``memrelay status`` rendered only episodes_ingested / spool_pending, so a
+    session whose notes silently failed showed no signal. The hosted ingester tracks the failures
+    in ``metrics()`` (distinct from the frozen two-key ``stats()``); the runtime must overlay them
+    onto the health report the daemon serves over the socket.
+    """
+    endpoint = resolve_endpoint(tmp_path)
+
+    async def scenario() -> dict:
+        backend = _RecordingBackend()
+        spool = _FakeSpool([{"content": "a note"}])
+        created: dict = {}
+
+        def factory(engine, cfg):
+            ingester = _FakeIngester(engine, spool, notes_failed=3, poison_skipped=2)
+            created["ingester"] = ingester
+            return ingester
+
+        runtime = DaemonRuntime(
+            _config(tmp_path), endpoint, backend=backend, ingester_factory=factory
+        )
+        await runtime.start()
+        serve_task = asyncio.create_task(runtime.serve())
+        try:
+            await asyncio.wait_for(created["ingester"].drained.wait(), timeout=5.0)
+            health = await _roundtrip(endpoint, {"method": "health"})
+        finally:
+            runtime.request_shutdown()
+            await asyncio.wait_for(serve_task, timeout=5.0)
+        return health
+
+    health = asyncio.run(scenario())
+    # The failure counters flow agent→daemon over the socket, alongside the frozen stats keys.
+    assert health["notes_failed"] == 3
+    assert health["poison_skipped"] == 2
+    assert health["episodes_ingested"] == 1
+    assert health["spool_pending"] == 0
 
 
 def test_default_ingester_factory_wires_real_seams_or_degrades(tmp_path: Path) -> None:
