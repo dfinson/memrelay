@@ -15,6 +15,7 @@ neither the graph engine nor the daemon's server internals.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 
 from memrelay.daemon import transport
@@ -99,6 +100,13 @@ class DaemonClient:
             response = await asyncio.wait_for(transport.read_message(reader), timeout=self._timeout)
         finally:
             writer.close()
+            # Await the transport's full teardown so the socket is actually closed before this
+            # coroutine returns — StreamWriter.close() only *starts* the close, and skipping
+            # wait_closed() leaks the connection and emits a ResourceWarning per tool call. Suppress
+            # teardown errors: a peer that already dropped the connection must not mask the real
+            # response (or the original exception) propagating from the try block.
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
         if response is None:
             raise DaemonError("daemon closed the connection without responding")
