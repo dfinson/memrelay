@@ -398,3 +398,74 @@ daemon log. Consider surfacing failure counters in `status`.
 
 The real host agent is **reachable and capable** here (probes C/F succeed); memrelay's
 wiring to it is what fails, before a real inference is ever billed.
+
+---
+
+# memrelay self-observation loop smoke (borrow-host Copilot)
+
+A second, **narrowly scoped** live driver that proves the fix for the borrow-host
+**self-observation feedback loop**: on a Copilot box the daemon observes
+`~/.copilot/session-state/`, but each `copilot -p` extraction call *creates a new session
+there*, which the daemon would otherwise re-observe ~2 s later and re-extract — an exponential
+fan-out that burns Copilot (Opus-tier) quota and pollutes the graph with memrelay's own
+extraction prompts.
+
+- **Automated driver:** [`scripts/smoke_selfobserve_e2e.py`](../scripts/smoke_selfobserve_e2e.py)
+- **Additive:** lives under `scripts/` (pytest `testpaths = ["tests"]`), so it is **never**
+  collected as a test. The committed regression proof is the hermetic unit suite
+  (`tests/unit/test_internal_sessions.py`, the exclusion + guard tests in
+  `tests/unit/test_session_discovery.py`, and the `--session-id` assertions in
+  `tests/unit/test_borrow_host_invocation.py`). This script is *validation evidence you run by
+  hand* with a real, authenticated `copilot` CLI.
+
+## What it proves (with the real `copilot` CLI, no mocks)
+
+1. **Guard (Part B):** `warn_on_self_observation("copilot", cfg)` fires for the zero-key
+   `borrow-host` + `host=copilot` default.
+2. **Exclusion (Part A):** against a **real** `CopilotProvider` rooted at a scratch home, a
+   fresh session id that has been `register`ed (exactly what the borrow-host path does before
+   spawning `copilot`) is dropped by `active_sessions`, while a genuine observed session stays
+   active.
+3. **Happy path + live registration:** one synthetic fixture session is observed → spooled →
+   the daemon's `Ingester` is drained **once** (performing the REAL Copilot extraction) → the
+   fact is recalled from the graph; and the real extraction is shown to have **registered its
+   own Copilot session id** (`internal_sessions.snapshot()` grows), i.e. the loop is closed
+   live.
+
+## ⚠️ HARD SAFETY RULE (why this is safe on a real Copilot box)
+
+The driver **never starts a live daemon/poller** against the real `~/.copilot` (tens of
+thousands of sessions — observing it *is* the loop). It:
+
+- sets `MEMRELAY_COPILOT_HOME` to a throwaway scratch dir (hard-asserted **≠** real
+  `~/.copilot`) holding exactly **one** synthetic fixture session, and a scratch `MEMRELAY_HOME`
+  for the spool/graph;
+- drives the pipeline **deterministically and once** in-process (`run_observe` → spool →
+  `Ingester` drained once → `search`).
+
+The real `copilot -p` extraction still writes *its* session-state under the real `~/.copilot`
+(the CLI ignores `MEMRELAY_COPILOT_HOME` — that var only steers what memrelay **observes**), but
+nothing observes the real home here, so there is no cadence, no re-observation, and no loop.
+Cost is bounded to one fixture session = a handful of real premium/Opus-tier Copilot calls. It
+also strips every `*_API_KEY` from the process env so a green can only come from the host
+agent, never an inherited key.
+
+## Run it
+
+```powershell
+# from the repo root, against THIS worktree's source
+$env:PYTHONPATH = (Resolve-Path .\src).Path
+python scripts\smoke_selfobserve_e2e.py
+```
+
+**Exit codes:** `0` = success (fixture observed + extracted + recalled, **and** memrelay
+registered its own extraction session id); non-zero on any failure or missing prerequisite
+(no `copilot` on PATH, or the scratch home resolving to the real `~/.copilot`). There is no
+forced green. On success it prints an **EVIDENCE** block with the namespace,
+`episodes_ingested`, recalled node/edge counts, the number of newly-registered internal ids,
+and the recalled node names + edge facts.
+
+> **Runtime:** a single real `add_episode` drives several sequential `copilot` calls, so expect
+> **~10–20 min** end to end (bounded to the first episode within a 900 s drain budget). This is
+> a manual validation run, not CI.
+

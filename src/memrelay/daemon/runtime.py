@@ -125,6 +125,7 @@ def default_poller_factory(engine: Any, config: Config) -> SupportsPoller | None
             SessionCapture,
             SessionDiscoveryPoller,
             active_sessions,
+            warn_on_self_observation,
         )
         from memrelay.ingest.spool import Spool
         from memrelay.providers.base import SessionRef
@@ -137,6 +138,12 @@ def default_poller_factory(engine: Any, config: Config) -> SupportsPoller | None
     except Exception:  # noqa: BLE001 - provider resolution must never crash daemon startup
         logger.debug("no provider resolved; daemon will run without a poller", exc_info=True)
         return None
+
+    # Circular-config guard (borrow-host loop fix): if the daemon is about to observe the very
+    # agent whose model borrow-host extraction borrows, warn once at start. Safe because
+    # ``active_sessions`` excludes memrelay's own extraction sessions; loud because it spends
+    # real Copilot quota. Runs only here (the live ``_serve`` path), so it fires once per start.
+    warn_on_self_observation(provider.id, config)
 
     spool_dir = config.home_path / "spool"
     spool_dir.mkdir(parents=True, exist_ok=True)

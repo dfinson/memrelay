@@ -11,17 +11,31 @@ cadence, a final drain on stop, and no leaked task — is asserted without the p
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
+from memrelay import internal_sessions
 from memrelay.daemon.session_discovery import (
     RunObserveCapture,
     SessionDiscoveryPoller,
     active_sessions,
+    warn_on_self_observation,
 )
 from memrelay.providers.base import SessionRef
+
+
+@pytest.fixture(autouse=True)
+def _reset_internal_sessions() -> None:
+    """Isolate the process-wide internal-session registry between tests."""
+    internal_sessions.reset()
+    yield
+    internal_sessions.reset()
 
 
 def _ref(session_id: str, path: str | None = None) -> SessionRef:
@@ -250,6 +264,98 @@ def test_active_sessions_filters_by_events_mtime(tmp_path: Path) -> None:
     ]
     got = active_sessions(_StubProvider(refs), now=time.time(), freshness_s=30.0)
     assert [r.session_id for r in got] == ["fresh"]
+
+
+def test_active_sessions_excludes_internal_extraction_sessions(tmp_path: Path) -> None:
+    """A session id registered by memrelay's own borrow-host extraction is never re-observed.
+
+    This closes the self-observation loop (Part A): when the Copilot borrow-host path shells out
+    to ``copilot --session-id <uuid> -p ...`` it registers ``<uuid>`` as internal. That id's
+    ``events.jsonl`` is brand-new (well within the freshness window), so without the exclusion the
+    poller would re-observe memrelay's own extraction call ~2s later and fan out exponentially.
+    """
+    internal_dir = tmp_path / "internal"
+    external_dir = tmp_path / "external"
+    internal_dir.mkdir()
+    external_dir.mkdir()
+    internal_events = internal_dir / "events.jsonl"
+    external_events = external_dir / "events.jsonl"
+    internal_events.write_text("{}\n", encoding="utf-8")
+    external_events.write_text("{}\n", encoding="utf-8")
+
+    # Both traces are fresh; only the internal one is memrelay's own extraction session.
+    internal_sessions.register("extraction-uuid")
+
+    refs = [
+        _ref("extraction-uuid", str(internal_events)),
+        _ref("external", str(external_events)),
+    ]
+    got = active_sessions(_StubProvider(refs), now=time.time(), freshness_s=30.0)
+
+    # The registered extraction id is dropped even though its trace is fresh; the genuine
+    # observed session is kept.
+    assert [r.session_id for r in got] == ["external"]
+
+
+def test_active_sessions_exclusion_is_a_noop_without_registration(tmp_path: Path) -> None:
+    """The exclusion only touches registered ids, so ordinary sessions are unaffected."""
+    events = tmp_path / "events.jsonl"
+    events.write_text("{}\n", encoding="utf-8")
+    refs = [_ref("ordinary", str(events))]
+
+    got = active_sessions(_StubProvider(refs), now=time.time(), freshness_s=30.0)
+    assert [r.session_id for r in got] == ["ordinary"]
+
+
+def _cfg(strategy: str = "borrow-host", host: str = "copilot") -> Any:
+    """A minimal stand-in exposing the two fields the guard reads (``config.llm.*``)."""
+    return SimpleNamespace(llm=SimpleNamespace(strategy=strategy, host=host))
+
+
+def test_warn_on_self_observation_fires_on_the_circular_copilot_config(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The guard warns exactly once when the observed provider == the borrowed host (Part B)."""
+    with caplog.at_level(logging.WARNING, logger="memrelay.daemon.session_discovery"):
+        warned = warn_on_self_observation("copilot", _cfg(strategy="borrow-host", host="copilot"))
+
+    assert warned is True
+    records = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(records) == 1
+    # Actionable: names the observed provider/host and the quota cost.
+    assert "copilot" in records[0].getMessage().lower()
+
+
+def test_warn_on_self_observation_silent_for_byo_key_and_local(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Non-borrow-host strategies never shell out to the observed agent → no warning."""
+    with caplog.at_level(logging.WARNING, logger="memrelay.daemon.session_discovery"):
+        byo = warn_on_self_observation("copilot", _cfg(strategy="byo-key", host="copilot"))
+        local = warn_on_self_observation("copilot", _cfg(strategy="local", host="copilot"))
+
+    assert byo is False
+    assert local is False
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
+
+
+def test_warn_on_self_observation_silent_when_host_differs_from_provider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Borrowing a *different* agent than the one observed is not a loop → no warning."""
+    with caplog.at_level(logging.WARNING, logger="memrelay.daemon.session_discovery"):
+        # Observed provider is copilot but the borrowed host is claude (writes to ~/.claude).
+        other_host = warn_on_self_observation(
+            "copilot", _cfg(strategy="borrow-host", host="claude")
+        )
+        # Observed provider is claude but the borrowed host is copilot.
+        other_provider = warn_on_self_observation(
+            "claude", _cfg(strategy="borrow-host", host="copilot")
+        )
+
+    assert other_host is False
+    assert other_provider is False
+    assert [r for r in caplog.records if r.levelno == logging.WARNING] == []
 
 
 def test_run_observe_capture_observes_on_cadence_and_final_drains(monkeypatch: Any) -> None:

@@ -18,15 +18,44 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import uuid
 
 import pytest
 
+from memrelay import internal_sessions
 from memrelay.engine.llm import borrow_host
 from memrelay.engine.llm.borrow_host import (
     ClaudeHostProcess,
     CopilotHostProcess,
     HostProcessError,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_internal_sessions() -> None:
+    """Isolate the process-wide internal-session registry between tests."""
+    internal_sessions.reset()
+    yield
+    internal_sessions.reset()
+
+
+def _assert_copilot_argv(
+    argv: list[str], resolved: str, prompt: str, *, extra: tuple[str, ...] = ("-s",)
+) -> str:
+    """Assert ``argv == [resolved, --session-id, <uuid4>, -p, prompt, *extra]``; return the uuid.
+
+    Encodes the post-fix Copilot invocation shape in one place: memrelay pins the extraction
+    session's id with ``--session-id <uuid>`` (so it can exclude that session from observation),
+    the prompt is still the ``-p`` argument, and the trailing flags are unchanged. The id must be
+    a valid ``uuid4`` string.
+    """
+    assert argv[0] == resolved
+    assert argv[1] == "--session-id"
+    session_id = argv[2]
+    parsed = uuid.UUID(session_id)  # raises if not a valid UUID string
+    assert parsed.version == 4
+    assert argv[3:] == ["-p", prompt, *extra]
+    return session_id
 
 
 class _FakeProcess:
@@ -85,15 +114,17 @@ def test_copilot_uses_resolved_path_and_prompt_as_argument(monkeypatch: pytest.M
 
     out = asyncio.run(CopilotHostProcess().complete(prompt))
 
-    # (a) the RESOLVED .CMD path reaches exec — not the bare "copilot".
-    assert recorder.args[0] == r"C:\fake\bin\copilot.CMD"
-    # (b) full argv is the proven probe-C shape: prompt is the -p ARGUMENT, then -s.
-    assert list(recorder.args) == [r"C:\fake\bin\copilot.CMD", "-p", prompt, "-s"]
-    # the prompt sits immediately after -p (it is that flag's value).
+    # (a) the RESOLVED .CMD path reaches exec — not the bare "copilot", and (b) the full argv is
+    # the proven probe-C shape with memrelay's pinned --session-id prefix: prompt is the -p
+    # ARGUMENT, then -s.
     argv = list(recorder.args)
+    session_id = _assert_copilot_argv(argv, r"C:\fake\bin\copilot.CMD", prompt)
+    # the prompt sits immediately after -p (it is that flag's value).
     assert argv[argv.index("-p") + 1] == prompt
     # (b) and it is NOT delivered on stdin.
     assert process.stdin_payload is None
+    # the pinned extraction session id is registered so the daemon excludes it from observation.
+    assert internal_sessions.is_internal(session_id)
     # rc==0 path returns stdout verbatim (JSON is parsed by the client layer, not here).
     assert out == '{"nodes": []}'
 
@@ -112,6 +143,10 @@ def test_claude_uses_resolved_path_and_prompt_on_stdin(monkeypatch: pytest.Monke
     assert prompt not in recorder.args
     # (c) the prompt is delivered on stdin.
     assert process.stdin_payload == prompt.encode("utf-8")
+    # Claude writes to ~/.claude (not the observed Copilot tree), so it is deliberately left out
+    # of the self-observation fix: no --session-id is threaded and nothing is registered.
+    assert "--session-id" not in recorder.args
+    assert internal_sessions.snapshot() == frozenset()
 
 
 def test_both_hosts_forward_the_windows_cmd_suffix(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -167,6 +202,36 @@ def test_counterfactual_pins_the_origin_main_defects(monkeypatch: pytest.MonkeyP
     assert process.stdin_payload is None
 
 
+def test_copilot_threads_and_registers_a_unique_session_id_per_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each Copilot extraction pins a fresh ``--session-id <uuid>`` and registers it (loop fix).
+
+    This is the committed proof for Part A of the borrow-host self-observation fix: memrelay
+    controls the extraction session's id and records it as internal, so the daemon's
+    ``active_sessions`` can exclude it. Two calls must mint two *distinct* ids and register both,
+    so no extraction call is ever re-observed under a shared id.
+    """
+    host = CopilotHostProcess()
+
+    first_recorder = _patch(monkeypatch, _FakeProcess())
+    asyncio.run(host.complete("PROMPT-ONE"))
+    first_id = _assert_copilot_argv(
+        list(first_recorder.args), r"C:\fake\bin\copilot.CMD", "PROMPT-ONE"
+    )
+
+    second_recorder = _patch(monkeypatch, _FakeProcess())
+    asyncio.run(host.complete("PROMPT-TWO"))
+    second_id = _assert_copilot_argv(
+        list(second_recorder.args), r"C:\fake\bin\copilot.CMD", "PROMPT-TWO"
+    )
+
+    assert first_id != second_id
+    assert internal_sessions.is_internal(first_id)
+    assert internal_sessions.is_internal(second_id)
+    assert {first_id, second_id} <= internal_sessions.snapshot()
+
+
 # ---------------------------------------------------------------------------
 # Windows cmd.exe command-line overflow fix (#… borrow-host node-direct launch)
 #
@@ -200,11 +265,13 @@ def test_windows_cmd_shim_redirects_copilot_through_node(monkeypatch: pytest.Mon
     # program is node (from which('node')), NOT the .CMD shim.
     assert recorder.args[0] == r"C:\nodedir\node.exe"
     assert not recorder.args[0].lower().endswith(".cmd")
-    # first arg is the npm loader .js, then the unchanged Copilot argv.
+    # first arg is the npm loader .js, then the unchanged Copilot argv (with memrelay's pinned
+    # --session-id prefix). The loader stands in for "resolved" in the shared shape helper.
     assert recorder.args[1].endswith("npm-loader.js")
-    assert list(recorder.args[2:]) == ["-p", prompt, "-s"]
-    # prompt is still the -p argument, never stdin.
+    session_id = _assert_copilot_argv(list(recorder.args[1:]), recorder.args[1], prompt)
+    # prompt is still the -p argument, never stdin; the pinned id is registered for exclusion.
     assert process.stdin_payload is None
+    assert internal_sessions.is_internal(session_id)
     assert out == '{"nodes": []}'
 
 
@@ -238,7 +305,7 @@ def test_non_windows_copilot_execs_resolved_directly(monkeypatch: pytest.MonkeyP
 
     asyncio.run(CopilotHostProcess().complete(prompt))
 
-    assert list(recorder.args) == ["/usr/bin/copilot", "-p", prompt, "-s"]
+    assert _assert_copilot_argv(list(recorder.args), "/usr/bin/copilot", prompt)
     assert process.stdin_payload is None
 
 
@@ -253,7 +320,7 @@ def test_windows_non_shim_copilot_execs_directly(monkeypatch: pytest.MonkeyPatch
 
     asyncio.run(CopilotHostProcess().complete(prompt))
 
-    assert list(recorder.args) == [r"C:\tools\copilot.exe", "-p", prompt, "-s"]
+    assert _assert_copilot_argv(list(recorder.args), r"C:\tools\copilot.exe", prompt)
 
 
 def test_windows_shim_without_loader_falls_back_to_direct(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -268,8 +335,9 @@ def test_windows_shim_without_loader_falls_back_to_direct(monkeypatch: pytest.Mo
 
     asyncio.run(CopilotHostProcess().complete(prompt))
 
-    # unchanged pre-fix behavior: the resolved .CMD reaches exec with the same argv.
-    assert list(recorder.args) == [r"C:\fake\bin\copilot.CMD", "-p", prompt, "-s"]
+    # unchanged pre-fix fallback: the resolved .CMD reaches exec directly, with the same argv
+    # (now carrying memrelay's --session-id prefix).
+    assert _assert_copilot_argv(list(recorder.args), r"C:\fake\bin\copilot.CMD", prompt)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="cmd.exe 8191-char cap is Windows-specific")
