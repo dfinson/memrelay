@@ -23,12 +23,15 @@ import os
 import re
 import shutil
 import sys
+import uuid
 from typing import Any, Protocol, runtime_checkable
 
 from graphiti_core.llm_client.client import LLMClient, ModelSize
 from graphiti_core.llm_client.config import LLMConfig as GraphitiLLMConfig
 from graphiti_core.prompts.models import Message
 from pydantic import BaseModel
+
+from memrelay import internal_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -297,6 +300,15 @@ class CopilotHostProcess:
     On Windows ``shutil.which`` resolves ``copilot`` to an npm ``copilot.CMD`` shim; since the
     prompt rides in ``argv`` and extraction prompts exceed cmd.exe's 8191-char limit, this host
     opts into a node-direct launch (``bypass_windows_shim=True``) so large prompts don't overflow.
+
+    **Self-observation break.** Each ``complete`` mints a fresh ``uuid4`` and invokes
+    ``copilot --session-id <uuid> -p <prompt> -s``, registering that id via
+    :mod:`memrelay.internal_sessions` *before* the CLI runs. Because every ``copilot -p`` creates
+    a new ``~/.copilot/session-state/<id>/events.jsonl`` in the very tree the daemon observes,
+    controlling and registering the id lets the poller's
+    :func:`~memrelay.daemon.session_discovery.active_sessions` skip memrelay's own extraction
+    sessions — the fix for the borrow-host feedback loop. This is Copilot-specific;
+    :class:`ClaudeHostProcess` writes to ``~/.claude`` (unobserved) and is left untouched.
     """
 
     def __init__(self, command: str = "copilot", extra_args: list[str] | None = None) -> None:
@@ -315,7 +327,18 @@ class CopilotHostProcess:
         # ``-s``) come after. Delivered as an argument, never on stdin (see class docstring).
         # ``bypass_windows_shim`` routes a Windows ``copilot.CMD`` shim through node directly so
         # the >8 KB prompt argv clears cmd.exe's 8191-char limit (see :func:`_run_host_cli`).
-        argv = ["-p", prompt, *self._extra_args]
+        #
+        # Self-observation break (borrow-host loop fix): every ``copilot -p`` creates a fresh
+        # ``~/.copilot/session-state/<id>/events.jsonl`` — the exact tree the daemon observes on
+        # a Copilot box. We pin that id ourselves with ``--session-id <uuid>`` and register it as
+        # an internal extraction session *before* spawning, so the poller's ``active_sessions``
+        # skips it and can never re-observe (and re-extract from) our own extraction call.
+        # Registering before the spawn guarantees the id is known before its ``events.jsonl`` can
+        # exist, closing any poller race. Copilot-only: Claude writes to ``~/.claude`` (not the
+        # observed Copilot tree), so :class:`ClaudeHostProcess` is intentionally left untouched.
+        session_id = str(uuid.uuid4())
+        internal_sessions.register(session_id)
+        argv = ["--session-id", session_id, "-p", prompt, *self._extra_args]
         return await _run_host_cli(self._command, argv, bypass_windows_shim=True)
 
 

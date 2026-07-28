@@ -40,6 +40,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from memrelay import internal_sessions
 from memrelay.providers.base import SessionRef
 
 if TYPE_CHECKING:
@@ -98,9 +99,20 @@ def active_sessions(
     so we keep only those whose ``events.jsonl`` mtime is within the freshness window of
     ``now`` (a caller-supplied clock reading, so the whole thing stays deterministic). A
     ref with no path, or whose file has vanished, is treated as not-active.
+
+    **Self-observation exclusion (borrow-host loop fix).** A session id registered in
+    :mod:`memrelay.internal_sessions` is one memrelay's *own* borrow-host Copilot extraction
+    created (``copilot --session-id <uuid> -p ...``); it is skipped here so the daemon never
+    re-observes — and re-extracts from — its own extraction call, which would otherwise fan out
+    into a self-feeding loop on a Copilot box. This is the single choke point the poller loops on.
+    The registry only ever holds Copilot-created ids, so the check is a harmless no-op for every
+    other provider, and ``provider.discover_sessions()``'s "enumerate everything" contract (relied
+    on by the manual ``memrelay observe`` path) is left untouched.
     """
     fresh: list[SessionRef] = []
     for ref in provider.discover_sessions():
+        if internal_sessions.is_internal(ref.session_id):
+            continue
         if ref.path is None:
             continue
         try:
@@ -110,6 +122,36 @@ def active_sessions(
         if now - mtime <= freshness_s:
             fresh.append(ref)
     return fresh
+
+
+def warn_on_self_observation(provider_id: str, config: Config) -> bool:
+    """Warn once (per call) if the daemon is configured to observe the agent it borrows.
+
+    The circular ("self-observation") config is: the daemon observes provider ``provider_id``
+    while zero-key extraction borrows that *same* agent's model — i.e. ``llm.strategy`` is
+    ``borrow-host`` and ``llm.host == provider_id`` (both ``copilot`` in the zero-key default on a
+    Copilot box). In that setup every extraction shells out to the real host CLI, so ingestion is
+    not free: it spends real Copilot quota (the default model is a premium/Opus tier).
+
+    memrelay makes this **safe** — :func:`active_sessions` excludes memrelay's own extraction
+    sessions, so it does not loop — so this is a loud, actionable WARNING, not a refusal: refusing
+    would break the legitimate zero-key Copilot default that is memrelay's whole reason to exist.
+    Returns ``True`` iff it warned, so callers/tests can assert the decision. It is called once per
+    daemon start (from :func:`~memrelay.daemon.runtime.default_poller_factory`), so it is not noisy.
+    """
+    if config.llm.strategy != "borrow-host" or config.llm.host != provider_id:
+        return False
+    logger.warning(
+        "Circular config: the daemon observes the %r provider while borrow-host extraction "
+        "borrows the %r model, so every ingested session triggers real %s CLI calls that spend "
+        "Copilot quota (a premium/Opus-tier model by default). memrelay excludes its own "
+        "extraction sessions from observation, so it will NOT feed back into a loop — but to "
+        "avoid spending Copilot quota on ingestion, set llm.strategy to 'byo-key' or 'local'.",
+        provider_id,
+        config.llm.host,
+        config.llm.host,
+    )
+    return True
 
 
 class RunObserveCapture:
