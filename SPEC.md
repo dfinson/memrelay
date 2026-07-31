@@ -600,9 +600,10 @@ Graphiti requires an LLM for entity extraction, edge extraction, deduplication, 
 | --- | --- | --- | --- |
 | `borrow-host` | Reuse the host agent's own model via a background process (e.g. Copilot CLI) | None | Anyone already running a subscription agent |
 | `byo-key` | Call OpenAI (or any OpenAI-compatible endpoint via `OPENAI_BASE_URL`) directly through graphiti-core's native `OpenAIClient` | Yes | Users wanting native structured output / lowest latency |
+| `litellm` | Call any [LiteLLM](https://docs.litellm.ai)-supported provider **in-process** (Azure, OpenAI, Bedrock, Vertex, Ollama, …) through the litellm SDK, using schema-in-prompt JSON | Provider-dependent | Azure AI Foundry / non-OpenAI providers, with no proxy or sidecar |
 | `local` *(planned — [#64](https://github.com/dfinson/memrelay/issues/64))* | Local model server (Ollama / llama.cpp) | None | Offline / privacy-sensitive setups |
 
-All three share the same `LLMClient` interface, so nothing downstream of extraction cares which is active (the `local` client is a deferred stub today — [#64](https://github.com/dfinson/memrelay/issues/64)). The reference `borrow-host` implementation spawns a background agent process:
+All four share the same `LLMClient` interface, so nothing downstream of extraction cares which is active (the `local` client is a deferred stub today — [#64](https://github.com/dfinson/memrelay/issues/64)). The reference `borrow-host` implementation spawns a background agent process:
 
 ```python
 class BorrowHostLLMClient(LLMClient):
@@ -661,9 +662,9 @@ class LocalEmbedder(EmbedderClient):
 
 fastembed uses ONNX Runtime (C++ inference) — fast even on modest hardware. No GPU needed.
 
-### 6.4 Override: byo-key Strategy
+### 6.4 Override: byo-key & litellm Strategies
 
-For users who want faster inference or native structured output:
+For users who want faster inference or native structured output (`byo-key`):
 
 ```toml
 [llm]
@@ -677,6 +678,19 @@ provider = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "text-embedding-3-small"
 ```
+
+**`litellm` — any provider, in-process.** To run extraction against Azure AI Foundry, Bedrock, Vertex, Ollama, or any other [LiteLLM](https://docs.litellm.ai)-supported provider **with no proxy or sidecar**, set `strategy = "litellm"` and put the litellm model string in `model` (the provider is encoded in the prefix). Example — Azure AI Foundry `gpt-4.1-mini` as a cheap, non-looping extraction model:
+
+```toml
+[llm]
+strategy = "litellm"
+model = "azure/gpt-4.1-mini"    # azure/<your-deployment-name>
+# Optional: pass an explicit key through to litellm. Omit it and litellm reads the
+# provider's native credentials from the environment instead.
+# api_key_env = "AZURE_API_KEY"
+```
+
+For Azure, litellm reads `AZURE_API_KEY`, `AZURE_API_BASE` (your Foundry / Azure OpenAI endpoint), and `AZURE_API_VERSION` from the environment. Other providers follow the same convention — `openai/gpt-4.1-mini` (`OPENAI_API_KEY`), `bedrock/…`, `vertex_ai/…`, `ollama/llama3.1` — just change the `model` prefix. Structured output uses schema-in-prompt + robust JSON parsing, so it works uniformly across providers without a provider-native JSON mode. Embeddings stay on the local fastembed default (litellm-backed embeddings are a planned fast-follow).
 
 ### 6.5 Concurrency
 

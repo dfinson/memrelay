@@ -145,7 +145,7 @@ enable_phase = false
 enable_boundary = false
 ```
 
-**Override the LLM strategy** — `byo-key` for direct API keys (faster inference, native structured output). A `local` fully-offline strategy (Ollama/llama.cpp) is planned but not yet implemented ([#64](https://github.com/dfinson/memrelay/issues/64)):
+**Override the LLM strategy** — `byo-key` for direct API keys (faster inference, native structured output), or `litellm` to reach any [LiteLLM](https://docs.litellm.ai) provider (Azure, Bedrock, Vertex, Ollama, …) in-process. A `local` fully-offline strategy (Ollama/llama.cpp) is planned but not yet implemented ([#64](https://github.com/dfinson/memrelay/issues/64)):
 
 ```toml
 [llm]
@@ -154,6 +154,16 @@ provider = "openai"
 api_key_env = "OPENAI_API_KEY"
 model = "gpt-4o-mini"
 ```
+
+**Use any provider via LiteLLM** *(in-process, no proxy or sidecar)* — for example Azure AI Foundry `gpt-4.1-mini` as a cheap, non-looping extraction model. Set `strategy = "litellm"` and encode the provider in the `model` prefix:
+
+```toml
+[llm]
+strategy = "litellm"
+model = "azure/gpt-4.1-mini"    # azure/<your-deployment-name>
+```
+
+litellm reads Azure credentials from the environment (`AZURE_API_KEY`, `AZURE_API_BASE`, `AZURE_API_VERSION`); other providers follow the same convention (`openai/…`, `bedrock/…`, `ollama/llama3.1`). Set `api_key_env` to pass an explicit key through instead.
 
 **Group repos into a shared namespace** *(optional)* — memories are grouped by *namespace*. Add `[namespaces.<name>]` sections to make several repos share one namespace (and therefore one pool of memory). Omit this entirely and grouping is unchanged from the zero-config default:
 

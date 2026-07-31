@@ -2,9 +2,9 @@
 
 Everything downstream of graphiti's entity/edge extraction only ever sees an
 ``LLMClient``; this module decides *which* concrete client backs it, driven by
-``config.llm.strategy`` (``borrow-host`` | ``byo-key`` | ``local``) with a
-fallback chain so a misconfigured or unavailable primary degrades gracefully
-instead of hard-failing engine construction.
+``config.llm.strategy`` (``borrow-host`` | ``byo-key`` | ``litellm`` | ``local``)
+with a fallback chain so a misconfigured or unavailable primary degrades
+gracefully instead of hard-failing engine construction.
 
 Design notes:
 - Each :class:`LLMStrategy` reports ``is_available(cfg)`` cheaply (PATH check,
@@ -29,10 +29,15 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_BORROW_HOST = "borrow-host"
 STRATEGY_BYO_KEY = "byo-key"
+STRATEGY_LITELLM = "litellm"
 STRATEGY_LOCAL = "local"
 
 # Order the chain falls through after the requested strategy is tried first.
-_FALLBACK_ORDER = (STRATEGY_BORROW_HOST, STRATEGY_BYO_KEY, STRATEGY_LOCAL)
+# litellm sits after byo-key (both are keyed, network strategies) and before the
+# offline local fallback. NOTE: membership here is load-bearing — ``_fallback_chain``
+# seeds ``[requested] if requested in _FALLBACK_ORDER else []``, so a strategy left
+# out of this tuple is silently dropped when explicitly requested.
+_FALLBACK_ORDER = (STRATEGY_BORROW_HOST, STRATEGY_BYO_KEY, STRATEGY_LITELLM, STRATEGY_LOCAL)
 
 
 class LLMStrategy(ABC):
@@ -88,6 +93,25 @@ class ByoKeyStrategy(LLMStrategy):
         return ByoKeyLLMClient(cfg)
 
 
+class LiteLLMStrategy(LLMStrategy):
+    name = STRATEGY_LITELLM
+
+    def is_available(self, cfg: Config) -> bool:
+        # Explicit opt-in only (like LocalStrategy): litellm is a broad meta-provider,
+        # so it is selected only when the user asks for it by name. This keeps the
+        # zero-config default (borrow-host) byte-identical and never auto-selects
+        # litellm. A key-presence auto-select branch would be redundant anyway — byo-key
+        # precedes litellm in _FALLBACK_ORDER and already auto-selects on key presence.
+        return cfg.llm.strategy == STRATEGY_LITELLM
+
+    def build_client(self, cfg: Config) -> LLMClient:
+        from .litellm_client import LiteLLMLLMClient
+
+        # Cheap: records the model string / key-env name only. litellm is imported and
+        # the network is touched lazily inside the first extraction call.
+        return LiteLLMLLMClient(model=cfg.llm.model, api_key_env=cfg.llm.api_key_env)
+
+
 class LocalStrategy(LLMStrategy):
     name = STRATEGY_LOCAL
 
@@ -111,6 +135,7 @@ def default_registry() -> dict[str, LLMStrategy]:
     return {
         STRATEGY_BORROW_HOST: BorrowHostStrategy(),
         STRATEGY_BYO_KEY: ByoKeyStrategy(),
+        STRATEGY_LITELLM: LiteLLMStrategy(),
         STRATEGY_LOCAL: LocalStrategy(),
     }
 

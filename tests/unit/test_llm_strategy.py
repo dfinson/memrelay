@@ -15,9 +15,11 @@ from memrelay.engine.llm.borrow_host import (
     HostProcessError,
 )
 from memrelay.engine.llm.byo_key import ByoKeyConfigError, ByoKeyLLMClient
+from memrelay.engine.llm.litellm_client import LiteLLMLLMClient
 from memrelay.engine.llm.strategy import (
     STRATEGY_BORROW_HOST,
     STRATEGY_BYO_KEY,
+    STRATEGY_LITELLM,
     BorrowHostStrategy,
     ByoKeyStrategy,
     LLMStrategy,
@@ -72,6 +74,15 @@ def test_builds_requested_lazily_when_none_available():
     cfg = load_config(environ={}, llm={"strategy": STRATEGY_BYO_KEY})
     client = select_llm_client(cfg, registry=_registry(borrow=False, byo=False, local=False))
     assert client.tag == "byo"
+
+
+def test_requesting_litellm_builds_litellm_client_via_real_registry():
+    # Pins the _FALLBACK_ORDER trap: a strategy registered in default_registry() but
+    # missing from _FALLBACK_ORDER would silently fall through to borrow-host when
+    # requested. Uses the REAL registry + chain (no injected registry) on purpose.
+    cfg = load_config(environ={}, llm={"strategy": STRATEGY_LITELLM, "model": "azure/gpt-4.1-mini"})
+    client = select_llm_client(cfg)
+    assert isinstance(client, LiteLLMLLMClient)
 
 
 def test_byokey_strategy_availability_follows_env(monkeypatch):
