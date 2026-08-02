@@ -28,22 +28,22 @@ classifiers = [
 # Runtime dependencies (SPEC §8). traceforge-toolkit pins Python <3.14, which is
 # why requires-python caps there.
 dependencies = [
-    "traceforge-toolkit>=0.1,<0.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent; capped <0.2 because the walking-skeleton test asserts exact 0.1.x mapping/enrich behavior
+    "traceforge-toolkit>=0.1,<0.1.2",  # import name: traceforge — normalizes ~18 agents to SessionEvent. Capped <0.1.2 (not just <0.2): the 0.1.2 patch changed the canonical-kind taxonomy (the copilot fixture now parses 15 events instead of 14, and agent "reasoning" turns map to new reasoning.started/llm.reasoning kinds instead of message.assistant), which breaks the walking-skeleton + provider-conformance fixture assertions. 0.1.0/0.1.1 hold the exact tested mapping/enrich behavior. Adopting 0.1.2's taxonomy is a deliberate migration (update fixtures + expected-kind constants), tracked as a follow-up.
     "litellm>=1.0,<1.92",  # pulled in transitively by traceforge-toolkit (which pins litellm>=1.0 with NO upper bound). Declared DIRECT + capped here so pip can never select litellm 1.92.0+, which dropped the universal py3-none-any wheel and now ships ONLY Linux manylinux_2_28 wheels + a Rust sdist — so an uncapped fresh install needs a Rust/Cargo toolchain on Windows/macOS/musl/older-glibc/other arches and fails there (docs/SMOKE.md Wall B). 1.91.3 is the last release with a universal wheel, so <1.92 resolves Rust-free on every platform. The durable fix belongs UPSTREAM (an upper bound in traceforge-toolkit, or litellm restoring a universal wheel); this cap is memrelay defending its own zero-config installability. Drop/raise it once upstream ships a wheel-complete release.
     "graphiti-core>=0.29,<0.30",  # knowledge graph engine (bitemporal facts, LLM extraction, dedup, RRF); capped <0.30 for CI determinism. We keep graphiti's brain but inject our own storage driver reporting provider=KUZU, so its Kuzu-dialect Cypher is reused verbatim (see docs/adr/0001-graph-backends.md, #76)
     "ladybug>=0.18,<0.18.1",     # embedded graph database — the original Kuzu devs' maintained, Kuzu-API/Cypher drop-in fork. Replaces the archived `kuzu` as the OOTB default storage backend (#76). Upper bound: upstream yanked v0.18.1's FTS extension from the CDN (404); 0.18.0's is still hosted. See #114. Drop the bound once 0.18.1 (or later) republishes its extension.
     "certifi>=2023.7",            # CA bundle used to reliably prefetch Ladybug's FTS extension over TLS; its manylinux native downloader fails SSL verification on Linux (#76, see engine/backends/_fts_extension.py)
-    "fastembed>=0.3",             # local ONNX embeddings
-    "mcp>=1.0",                   # Model Context Protocol server
-    "click>=8.0",                 # CLI
-    "structlog>=23.0",            # structured logging
+    "fastembed>=0.3,<1",          # local ONNX embeddings (cap <1: pre-1.0, next major may break)
+    "mcp>=1.0,<2",               # Model Context Protocol server (cap <2: mcp 2.0 removed mcp.server.fastmcp, imported by mcp/server.py + mcp/tools.py; 2.0 API migration tracked in a follow-up issue)
+    "click>=8.0,<9",              # CLI
+    "structlog>=23.0,<27",        # structured logging (cap below the next CalVer year to bound drift)
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "ruff>=0.6",
-    "pre-commit>=3.5",
+    "pytest>=8.0,<10",
+    "ruff>=0.16,<0.17",  # pinned minor for CI determinism: unpinned ruff jumped to 0.16 and turned Markdown formatting default-on, silently breaking `ruff format --check`
+    "pre-commit>=3.5,<5",
 ]
 # Cloud opt-in backends (#76): each extra pulls the client stack that graphiti-core's
 # own native driver hard-imports. NOT part of the default install — OOTB memrelay ships
@@ -96,6 +96,11 @@ include = ["src/memrelay", "README.md", "SPEC.md", "LICENSE", "docs", "tests"]
 line-length = 100
 target-version = "py311"
 src = ["src", "tests", "scripts"]
+# The Markdown in SPEC.md / README.md / docs/ contains illustrative pseudo-code blocks
+# (they use `...`, prose comments and compact one-line examples). ruff 0.16 formats
+# Markdown by default; exclude it so neither `ruff format` nor `ruff check` ever rewrites
+# that intentional pseudo-code. Keeps the format check deterministic across ruff versions.
+extend-exclude = ["**/*.md"]
 
 [tool.ruff.lint]
 select = [
