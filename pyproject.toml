@@ -122,6 +122,11 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The repo root, so `from scripts import ...` resolves under CI's bare `pytest`.
+# `scripts/` is not part of the installed distribution, and unlike `python -m pytest`,
+# a bare `pytest` never puts the CWD on sys.path — without this, collecting
+# tests/unit/test_smoke_selfobserve_e2e.py aborts the whole run.
+pythonpath = ["."]
 addopts = "-ra"
 markers = [
     "integration: end-to-end tests that exercise the traceforge pipeline",
