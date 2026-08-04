@@ -22,6 +22,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from memrelay import cli
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
 from memrelay.config import Config
 from memrelay.ingest.episode import from_row
 
@@ -57,6 +58,7 @@ def _git(repo: Path, *args: str) -> None:
         text=True,
         env={**_GIT_ENV, "PATH": _path_env()},
         check=False,
+        creationflags=NO_WINDOW_CREATION_FLAGS,
     )
     if result.returncode != 0:
         raise AssertionError(f"git {args} failed: {result.stderr}")
@@ -81,6 +83,7 @@ def _build_repo(repo: Path) -> list[str]:
         capture_output=True,
         text=True,
         check=True,
+        creationflags=NO_WINDOW_CREATION_FLAGS,
     )
     return result.stdout.split()
 

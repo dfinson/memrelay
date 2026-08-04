@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
+
 #: Default bound on how many most-recent commits ``seed`` ingests. Keeps a huge history
 #: from blowing up memory / the spool; overridable via ``--max-count``.
 DEFAULT_MAX_COUNT = 500
@@ -250,6 +252,7 @@ def stream_git_log(
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=NO_WINDOW_CREATION_FLAGS,
         )
     except OSError as exc:  # git binary absent, path unusable, etc.
         raise GitSeedError(f"could not run git at {path!r}: {exc}") from exc

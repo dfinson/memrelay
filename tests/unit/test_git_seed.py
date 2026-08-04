@@ -246,6 +246,7 @@ def test_stream_git_log_yields_commits_via_injected_popen() -> None:
 
     def fake_popen(argv, **kwargs):
         captured["argv"] = argv
+        captured["kwargs"] = kwargs
         return _FakeProc(raw)
 
     commits = list(git_seed.stream_git_log("/repo", 10, popen=fake_popen))
@@ -253,6 +254,7 @@ def test_stream_git_log_yields_commits_via_injected_popen() -> None:
     assert [c.sha for c in commits] == ["abc"]
     assert captured["argv"][:3] == ["git", "-C", "/repo"]
     assert "--max-count=10" in captured["argv"]
+    assert captured["kwargs"]["creationflags"] == git_seed.NO_WINDOW_CREATION_FLAGS
 
 
 def test_stream_git_log_raises_on_nonzero_exit() -> None:

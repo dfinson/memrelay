@@ -13,6 +13,8 @@ import os
 import subprocess
 from collections.abc import Mapping
 
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
+
 
 def current_repo(cwd: str | os.PathLike[str] | None = None) -> str | None:
     """Return ``owner/name`` for the git repo at ``cwd``, or ``None``.
@@ -28,6 +30,7 @@ def current_repo(cwd: str | os.PathLike[str] | None = None) -> str | None:
             capture_output=True,
             text=True,
             timeout=5,
+            creationflags=NO_WINDOW_CREATION_FLAGS,
             # Detach the child's stdin from ours (issue #94). The MCP server runs on
             # stdio, so on Windows its own stdin is the read end of the long-lived
             # agent->server pipe; a git child that inherits that handle makes this

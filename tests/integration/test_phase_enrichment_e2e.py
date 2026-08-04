@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 from traceforge.classify.workflow import Phase
 
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
 from memrelay.config import load_config
 from memrelay.daemon.runtime import default_ingester_factory
 from memrelay.engine.graphiti import MemoryEngine
@@ -48,7 +49,14 @@ PHASES: tuple[str, ...] = ("planning", "implementation", "verification", "explor
 
 
 def _git(*args: str, cwd: Path) -> None:
-    subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        check=True,
+        capture_output=True,
+        text=True,
+        creationflags=NO_WINDOW_CREATION_FLAGS,
+    )
 
 
 def _make_repo(path: Path) -> Path:
