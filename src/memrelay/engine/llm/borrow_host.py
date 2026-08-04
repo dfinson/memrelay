@@ -391,15 +391,19 @@ async def _terminate_process_tree(
             except OSError:
                 logger.debug("taskkill unavailable while cancelling host PID %s", process.pid)
     else:
-        # Signal the group unconditionally. A reaped ``returncode`` does NOT mean
-        # there is nothing left to kill: asyncio's child watcher sets it as soon as
-        # the direct child exits, independent of pipe EOF, so a shim that forks a
-        # worker and returns immediately leaves a live descendant behind — the exact
-        # leak this function exists to close. Guarding on ``returncode is None``
-        # would skip the kill precisely then. PID recycling is not a hazard here:
-        # a live process group holds a reference to its leader's pid, so that pid
-        # cannot be reallocated while any member survives, and once the group is
-        # genuinely empty ``killpg`` raises ``ProcessLookupError``.
+        # Signal the group unconditionally. Keying on ``process.pid`` is only valid
+        # because ``_run_host_cli`` spawns with ``start_new_session=True``, which
+        # makes the child a group leader so pid == pgid; without that flag this would
+        # signal memrelay's own group, including the daemon and the launching shell.
+        # A reaped ``returncode`` does NOT mean there is nothing left to kill:
+        # asyncio's child watcher sets it as soon as the direct child exits,
+        # independent of pipe EOF, so a shim that forks a worker and returns
+        # immediately leaves a live descendant behind — the exact leak this function
+        # exists to close. Guarding on ``returncode is None`` would skip the kill
+        # precisely then. PID recycling is not a hazard here: a live process group
+        # holds a reference to its leader's pid, so that pid cannot be reallocated
+        # while any member survives, and once the group is genuinely empty
+        # ``killpg`` raises ``ProcessLookupError``.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
