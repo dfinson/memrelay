@@ -64,7 +64,7 @@ path. If it reports that the daemon is still starting:
 
 ```powershell
 memrelay status
-Get-Content "$env:MEMRELAY_HOME\logs\daemon-startup.log"
+Get-Content "$env:MEMRELAY_HOME\logs\daemon-startup.log"   # MEMRELAY_HOME is set above
 ```
 
 Set a larger positive readiness window only when the log shows healthy progress on a slow

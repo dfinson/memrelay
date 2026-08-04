@@ -281,6 +281,38 @@ def test_job_termination_error_falls_back_to_exact_pid_taskkill(
     assert calls == [("taskkill", "/PID", "4242", "/T", "/F")]
 
 
+def test_job_creation_never_raises_into_the_spawn_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_create_windows_job`` must degrade to ``None``, never propagate.
+
+    It is called after the host process has already been spawned, so an escaping
+    exception would leave that process neither terminated nor reaped. pywin32 API
+    drift is the realistic trigger: a renamed constant raises ``AttributeError`` and
+    an unexpected ``QueryInformationJobObject`` shape raises ``KeyError`` — neither is
+    an ``OSError``.
+    """
+
+    class ExplodingWin32Job:
+        def __getattr__(self, name: str):
+            raise AttributeError(f"pywin32 renamed {name}")
+
+    monkeypatch.setattr(borrow_host.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "win32api", object())
+    monkeypatch.setitem(sys.modules, "win32job", ExplodingWin32Job())
+
+    assert borrow_host._create_windows_job(4242) is None
+
+
+def test_closing_a_broken_job_handle_is_swallowed() -> None:
+    """Cleanup of the Job Object handle is best-effort and must not raise."""
+
+    class ExplodingJob:
+        def Close(self) -> None:
+            raise RuntimeError("handle already invalid")
+
+    borrow_host._close_windows_job(ExplodingJob())  # must not raise
+    borrow_host._close_windows_job(None)
+
+
 def test_missing_binary_raises_before_exec(monkeypatch: pytest.MonkeyPatch) -> None:
     # ``which`` returns None (not installed): the runner must fail loud WITHOUT ever
     # reaching ``create_subprocess_exec``.

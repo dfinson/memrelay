@@ -51,7 +51,8 @@ Inspect the detached daemon's captured log first:
 
 ```bash
 # PowerShell
-Get-Content "$env:MEMRELAY_HOME\logs\daemon-startup.log"
+$home_ = if ($env:MEMRELAY_HOME) { $env:MEMRELAY_HOME } else { "$env:USERPROFILE\.memrelay" }
+Get-Content "$home_\logs\daemon-startup.log"
 
 # bash / zsh
 cat "${MEMRELAY_HOME:-$HOME/.memrelay}/logs/daemon-startup.log"

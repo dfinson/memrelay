@@ -10,6 +10,25 @@ releases without a deprecation cycle.
 
 ## [Unreleased]
 
+### Changed
+- **The embedded graph now lives under the resolved memrelay home.** `[graph] path`
+  defaults to `<MEMRELAY_HOME>/graph.db` instead of a hard-coded `~/.memrelay/graph.db`.
+  For a default install (`MEMRELAY_HOME` and `XDG_DATA_HOME` both unset) the resolved
+  location is unchanged, and an explicit `[graph] path` or `MEMRELAY_GRAPH__PATH` still
+  wins. **If you set `MEMRELAY_HOME` or `XDG_DATA_HOME` and never pinned `[graph] path`,
+  your graph moves** (`~/.memrelay/graph.db` → `$MEMRELAY_HOME/graph.db` or
+  `$XDG_DATA_HOME/memrelay/graph.db`) and memrelay will start on an empty graph. To keep
+  the old location, set `[graph] path = "~/.memrelay/graph.db"` in your `config.toml` or
+  move the existing `graph.db` to the new home. Anyone who ran `memrelay init` before this
+  release already has the path pinned in their config and is unaffected.
+- **`MEMRELAY_HOME` now scopes config-file discovery** to `<MEMRELAY_HOME>/config.toml`,
+  so an isolated invocation cannot be redirected back at user data by a global config.
+  `memrelay start` forwards the config file the CLI resolved to the detached daemon as
+  `MEMRELAY_CONFIG`, so parent and daemon always agree on the active configuration.
+- **`MEMRELAY_HOME` now outranks a `home = ...` key in a config file**, matching the
+  documented precedence (environment above config file). An explicit
+  `load_config(home=...)` still wins over both.
+
 ## [0.1.0] - 2026-07-09
 
 First public release to PyPI — `pip install memrelay`.

@@ -48,7 +48,11 @@ logger = logging.getLogger(__name__)
 # idempotent and a no-op when the bundled build already has it statically linked.
 _FTS_EXTENSION_STATEMENTS = ("INSTALL FTS;", "LOAD FTS;")
 _SHOW_INDEXES_QUERY = "CALL SHOW_INDEXES() RETURN index_name"
+_SHOW_FUNCTIONS_QUERY = "CALL SHOW_FUNCTIONS() RETURN name"
 _FTS_INDEX_NAME = re.compile(r"CREATE_FTS_INDEX\('[^']+',\s*'([^']+)'")
+# The catalog function the index DDL below calls. Its presence is the authoritative
+# signal that the FTS extension actually loaded (see ``_fts_is_available``).
+_FTS_DDL_FUNCTION = "CREATE_FTS_INDEX"
 
 # A callable that makes FTS available on ``driver`` (loads the extension). The
 # default (``load_fts_extension_native``) uses the engine's own ``INSTALL FTS``;
@@ -95,17 +99,49 @@ async def load_fts_extension_native(driver: GraphDriver) -> None:
             logger.debug("FTS extension statement %r skipped: %s", statement, exc)
 
 
+async def _fts_is_available(driver: GraphDriver) -> bool:
+    """Whether the FTS extension actually loaded, via the engine's function catalog.
+
+    ``load_fts_extension`` is best-effort by design: every path in
+    ``_fts_extension.load_ladybug_fts_extension`` — CDN 404 on a yanked build (#118),
+    a proxied/offline first run, the native downloader's Linux TLS bug (#76) — ends
+    in ``load_fts_extension_native``, which swallows its own failures at debug level.
+    So "the loader returned" does not mean "FTS is usable", and the caller has to ask
+    the catalog. Querying it beats matching on the driver's error text, which is an
+    engine-version-dependent string.
+    """
+    rows, _, _ = await driver.execute_query(_SHOW_FUNCTIONS_QUERY)
+    return any(
+        isinstance(row, dict) and str(row.get("name", "")).upper() == _FTS_DDL_FUNCTION
+        for row in rows
+    )
+
+
 async def ensure_fulltext_indices(driver: GraphDriver) -> None:
     """Create the full-text indexes graphiti queries, idempotently.
 
-    Assumes the FTS extension is already loaded (see ``apply_graphiti_deltas``).
+    Assumes ``apply_graphiti_deltas`` already *attempted* to load the FTS extension.
     Safe to call on both a fresh and a re-opened database: existing index names are
     queried before issuing DDL, avoiding Ladybug's ERROR-level diagnostic for an
-    expected duplicate. Metadata and creation failures propagate so genuine FTS
-    problems remain visible. The index DDL is provider-keyed on
-    ``GraphProvider.KUZU`` because Ladybug reports (and speaks) that dialect
-    deliberately (#76).
+    expected duplicate. Genuine DDL failures propagate so real FTS problems remain
+    visible. The index DDL is provider-keyed on ``GraphProvider.KUZU`` because
+    Ladybug reports (and speaks) that dialect deliberately (#76).
+
+    When the extension is unavailable entirely we warn and skip the DDL rather than
+    raise. That is not a *failure* to create an index, it is the long-standing
+    degraded mode this project already tolerates and provisions around (the offline
+    prefetch step in CI, ``_FALLBACK_VERSIONS`` in ``_fts_extension``): retrieval
+    falls back to non-FTS search instead of the daemon refusing to start on a
+    machine that simply cannot reach the extension CDN.
     """
+    if not await _fts_is_available(driver):
+        logger.warning(
+            "FTS extension unavailable: skipping full-text index creation. Hybrid "
+            "(RRF) search will fall back to non-FTS retrieval until %s is loadable.",
+            _FTS_DDL_FUNCTION,
+        )
+        return
+
     rows, _, _ = await driver.execute_query(_SHOW_INDEXES_QUERY)
     existing = {
         str(row["index_name"])

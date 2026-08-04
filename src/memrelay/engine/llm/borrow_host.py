@@ -54,11 +54,18 @@ def _warn_shim_fallback_once(reason: str, message: str, *args: object) -> None:
 
 
 def _create_windows_job(pid: int) -> Any | None:
-    """Assign ``pid`` to an owned kill-on-close Job Object when available."""
+    """Assign ``pid`` to an owned kill-on-close Job Object when available.
+
+    Contract: never raises. The caller has already spawned the host process, so an
+    exception escaping here would leave that process neither terminated nor reaped.
+    Job Objects are an optimization over the exact-PID ``taskkill /T`` fallback, so
+    any failure — a pywin32 API/constant change, an unexpected
+    ``QueryInformationJobObject`` shape, a job the parent may not nest under —
+    degrades to ``None`` rather than breaking the call.
+    """
     if os.name != "nt":
         return None
     try:
-        import pywintypes
         import win32api
         import win32job
     except ImportError:
@@ -81,12 +88,12 @@ def _create_windows_job(pid: int) -> Any | None:
         finally:
             process_handle.Close()
         return job
-    except (OSError, pywintypes.error):
+    except Exception:  # noqa: BLE001 - fall back to exact-PID taskkill, never break the call
         logger.debug("Windows Job Object unavailable for host PID %s", pid, exc_info=True)
         if job is not None:
             try:
                 job.Close()
-            except (OSError, pywintypes.error):
+            except Exception:  # noqa: BLE001 - nothing left to salvage
                 pass
         return None
 
@@ -94,14 +101,8 @@ def _create_windows_job(pid: int) -> Any | None:
 def _close_windows_job(job: Any | None) -> None:
     if job is not None:
         try:
-            import pywintypes
-        except ImportError:
-            job_errors: tuple[type[BaseException], ...] = (OSError,)
-        else:
-            job_errors = (OSError, pywintypes.error)
-        try:
             job.Close()
-        except job_errors:
+        except Exception:  # noqa: BLE001 - closing is best-effort cleanup
             logger.debug("failed to close host Job Object", exc_info=True)
 
 
@@ -366,7 +367,6 @@ async def _terminate_process_tree(
         terminated_job = False
         if windows_job is not None:
             try:
-                import pywintypes
                 import win32job
             except ImportError:
                 logger.debug("failed to terminate host Job Object", exc_info=True)
@@ -374,7 +374,7 @@ async def _terminate_process_tree(
                 try:
                     win32job.TerminateJobObject(windows_job, 1)
                     terminated_job = True
-                except (OSError, pywintypes.error):
+                except Exception:  # noqa: BLE001 - fall through to exact-PID taskkill
                     logger.debug("failed to terminate host Job Object", exc_info=True)
         if not terminated_job:
             try:
@@ -390,10 +390,17 @@ async def _terminate_process_tree(
                 await killer.wait()
             except OSError:
                 logger.debug("taskkill unavailable while cancelling host PID %s", process.pid)
-    else:
+    elif process.returncode is None:
+        # Only signal the group while the child is unreaped. Once asyncio has
+        # reaped it, the PID (and therefore the PGID, since ``start_new_session``
+        # makes them equal) is back in the OS pool and could name an unrelated
+        # group — signalling it would be exactly the broad kill this path exists
+        # to avoid. Nothing is leaked by skipping: the child is already gone, and
+        # its descendants keep the stdout/stderr pipes open, so ``communicate()``
+        # would not have returned while any of them were alive.
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             pass
 
     if process.returncode is None:

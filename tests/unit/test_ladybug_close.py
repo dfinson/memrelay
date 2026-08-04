@@ -103,3 +103,36 @@ def test_backend_closes_driver_when_delta_setup_fails(tmp_path, monkeypatch) -> 
 
     reopened = LadybugDriver(db=str(graph), max_concurrent_queries=1)
     asyncio.run(reopened.close())
+
+
+def test_backend_close_failure_does_not_mask_the_setup_error(tmp_path, monkeypatch, caplog) -> None:
+    """A failing cleanup must not replace the error that caused the cleanup.
+
+    ``open_driver`` closes the driver on a delta-setup failure to release the
+    engine's file-level READ_WRITE lock. If ``close()`` itself raises, the original
+    diagnostic — the only one that explains *why* startup failed — would be lost.
+    """
+    import logging
+
+    cfg = load_config(
+        environ={},
+        home=str(tmp_path),
+        graph={"backend": "ladybug", "path": str(tmp_path / "graph.db")},
+    )
+
+    async def fail_deltas(*args, **kwargs) -> None:
+        raise RuntimeError("simulated FTS setup failure")
+
+    async def fail_close(self) -> None:
+        raise RuntimeError("close blew up too")
+
+    monkeypatch.setattr(ladybug_backend, "apply_graphiti_deltas", fail_deltas)
+    monkeypatch.setattr(LadybugDriver, "close", fail_close)
+
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="simulated FTS setup failure"),
+    ):
+        asyncio.run(LadybugBackend().open_driver(cfg))
+
+    assert any("failed to close Ladybug driver" in r.getMessage() for r in caplog.records)

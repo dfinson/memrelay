@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from graphiti_core.embedder.openai import OpenAIEmbedder
+    from graphiti_core.tracer import Tracer
 
     from memrelay.config import Config
 
@@ -62,8 +63,23 @@ class ByoKeyLLMClient(LLMClient):
     def _get_delegate(self) -> OpenAIClient:
         if self._delegate is None:
             self._delegate = self._build_delegate()
+            # ``set_tracer`` may have been called before the delegate existed
+            # (graphiti wires it at ``Graphiti`` construction, we build lazily).
+            self._delegate.set_tracer(self.tracer)
         self.token_tracker = self._delegate.token_tracker
         return self._delegate
+
+    def set_tracer(self, tracer: Tracer) -> None:
+        """Keep the delegate's tracer in step with ours.
+
+        ``generate_response`` delegates rather than running the base implementation,
+        so ``self.tracer`` is never read on the call path — without this override the
+        tracer graphiti installs would land on the wrapper while the delegate kept its
+        own ``NoOpTracer``, and every span would be silently dropped.
+        """
+        super().set_tracer(tracer)
+        if self._delegate is not None:
+            self._delegate.set_tracer(tracer)
 
     async def generate_response(
         self,

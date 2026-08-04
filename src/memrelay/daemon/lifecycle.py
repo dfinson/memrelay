@@ -23,7 +23,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from memrelay.config import Config, ensure_home
+from memrelay.config import Config, ensure_home, resolve_config_path
 from memrelay.daemon import transport
 from memrelay.daemon.protocol import SHUTDOWN, Backend
 from memrelay.daemon.runtime import (
@@ -171,11 +171,20 @@ def startup_log_path(home: Path) -> Path:
 def spawn_detached(home: Path) -> int:
     """Launch ``memrelay _serve`` as a detached background process; return its PID.
 
-    ``MEMRELAY_HOME`` pins the child to the same home directory. The child's
-    stdout+stderr are redirected to :func:`startup_log_path` (append) rather than
-    ``DEVNULL``. The daemon logs to stderr for its whole life, so this captures all
-    of it; the point is that a *startup* death — previously invisible under
-    ``DEVNULL`` — now leaves a diagnosable trace.
+    ``MEMRELAY_HOME`` pins the child to the same home directory, and the parent's
+    *resolved* config file is forwarded as ``MEMRELAY_CONFIG``. Both are required:
+    ``MEMRELAY_HOME`` alone scopes the child's config discovery to
+    ``<home>/config.toml`` (:func:`memrelay.config.candidate_config_paths`), so a
+    user whose ``config.toml`` lives at an XDG path would get a daemon silently
+    running on built-in defaults while ``memrelay config`` printed their real
+    settings. Pinning the exact file the parent resolved keeps the two in agreement
+    without weakening the isolation boundary for callers who set ``MEMRELAY_HOME``
+    themselves.
+
+    The child's stdout+stderr are redirected to :func:`startup_log_path` (append)
+    rather than ``DEVNULL``. The daemon logs to stderr for its whole life, so this
+    captures all of it; the point is that a *startup* death — previously invisible
+    under ``DEVNULL`` — now leaves a diagnosable trace.
 
     The capture target is a real *file*, never a pipe the parent holds open: a
     parent-held pipe would tie the child's lifetime to the CLI and hang it. The
@@ -184,7 +193,10 @@ def spawn_detached(home: Path) -> int:
     child.
     """
     env = dict(os.environ)
+    resolved_config = resolve_config_path()
     env["MEMRELAY_HOME"] = str(home)
+    if resolved_config is not None:
+        env["MEMRELAY_CONFIG"] = str(resolved_config)
     log_path = startup_log_path(home)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     kwargs: dict = {

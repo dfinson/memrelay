@@ -171,6 +171,49 @@ def test_byokey_uses_delegate_public_contract(monkeypatch):
     assert client.token_tracker is token_tracker
 
 
+def test_byokey_forwards_tracer_to_the_delegate():
+    """The tracer graphiti installs must reach the object that actually runs the call.
+
+    ``Graphiti`` calls ``set_tracer`` at construction, before the delegate is built
+    (it is lazy). Since ``generate_response`` delegates rather than running the base
+    implementation, ``self.tracer`` is never read — a tracer left on the wrapper means
+    every span is silently dropped, which would contradict this PR's claim that
+    delegation preserves tracing.
+    """
+    cfg = load_config(
+        environ={},
+        llm={
+            "strategy": "byo-key",
+            "provider": "openai",
+            "api_key_env": "MEMRELAY_UT_KEY",
+            "model": "gpt-4o-mini",
+        },
+    )
+    tracer = object()
+
+    class _Delegate:
+        def __init__(self) -> None:
+            self.token_tracker = object()
+            self.tracer = None
+
+        def set_tracer(self, value) -> None:
+            self.tracer = value
+
+    # set_tracer before the delegate exists — graphiti's actual ordering.
+    client = ByoKeyLLMClient(cfg)
+    delegate = _Delegate()
+    client.set_tracer(tracer)
+    client._build_delegate = lambda: delegate  # type: ignore[method-assign]
+    assert client._get_delegate() is delegate
+    assert delegate.tracer is tracer
+
+    # ...and set_tracer after it exists still propagates.
+    later = object()
+    client.set_tracer(later)
+    assert delegate.tracer is later
+    assert client.tracer is later
+
+
 def test_valid_byokey_selection_never_falls_back_to_borrow_host(monkeypatch):
     monkeypatch.setenv("MEMRELAY_UT_KEY", "sk-not-real")
     cfg = load_config(
