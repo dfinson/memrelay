@@ -22,6 +22,8 @@ import logging
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import uuid
 from typing import Any, Protocol, runtime_checkable
@@ -49,6 +51,58 @@ def _warn_shim_fallback_once(reason: str, message: str, *args: object) -> None:
         return
     _warned_shim_fallbacks.add(reason)
     logger.warning(message, *args)
+
+
+def _create_windows_job(pid: int) -> Any | None:
+    """Assign ``pid`` to an owned kill-on-close Job Object when available."""
+    if os.name != "nt":
+        return None
+    try:
+        import pywintypes
+        import win32api
+        import win32job
+    except ImportError:
+        logger.debug("pywin32 unavailable for host PID %s", pid)
+        return None
+
+    job = None
+    try:
+        job = win32job.CreateJobObject(None, "")
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(
+            job,
+            win32job.JobObjectExtendedLimitInformation,
+            info,
+        )
+        process_handle = win32api.OpenProcess(0x0001 | 0x0100, False, pid)
+        try:
+            win32job.AssignProcessToJobObject(job, process_handle)
+        finally:
+            process_handle.Close()
+        return job
+    except (OSError, pywintypes.error):
+        logger.debug("Windows Job Object unavailable for host PID %s", pid, exc_info=True)
+        if job is not None:
+            try:
+                job.Close()
+            except (OSError, pywintypes.error):
+                pass
+        return None
+
+
+def _close_windows_job(job: Any | None) -> None:
+    if job is not None:
+        try:
+            import pywintypes
+        except ImportError:
+            job_errors: tuple[type[BaseException], ...] = (OSError,)
+        else:
+            job_errors = (OSError, pywintypes.error)
+        try:
+            job.Close()
+        except job_errors:
+            logger.debug("failed to close host Job Object", exc_info=True)
 
 
 DEFAULT_MAX_TOKENS = 16384
@@ -266,6 +320,12 @@ async def _run_host_cli(
         node_loader = _node_shim_launch(resolved)
         if node_loader is not None:
             launch = [node_loader[0], node_loader[1]]
+    spawn_kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        spawn_kwargs["start_new_session"] = True
+    process_job: Any | None = None
     try:
         process = await asyncio.create_subprocess_exec(
             *launch,
@@ -273,15 +333,80 @@ async def _run_host_cli(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **spawn_kwargs,
         )
-        stdout, stderr = await process.communicate(stdin_payload)
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int):
+            process_job = _create_windows_job(pid)
     except OSError as exc:  # pragma: no cover - environment dependent
         raise HostProcessError(f"failed to launch host process: {exc}") from exc
+    try:
+        stdout, stderr = await process.communicate(stdin_payload)
+    except asyncio.CancelledError:
+        await _terminate_process_tree(process, windows_job=process_job)
+        raise
+    except OSError as exc:  # pragma: no cover - environment dependent
+        raise HostProcessError(f"failed to communicate with host process: {exc}") from exc
+    finally:
+        _close_windows_job(process_job)
     if process.returncode != 0:
         raise HostProcessError(
             f"host process exited {process.returncode}: {stderr.decode('utf-8', 'replace').strip()}"
         )
     return stdout.decode("utf-8", "replace")
+
+
+async def _terminate_process_tree(
+    process: asyncio.subprocess.Process,
+    *,
+    windows_job: Any | None = None,
+) -> None:
+    """Terminate only the process tree rooted at memrelay's spawned host PID."""
+    if os.name == "nt":
+        terminated_job = False
+        if windows_job is not None:
+            try:
+                import pywintypes
+                import win32job
+            except ImportError:
+                logger.debug("failed to terminate host Job Object", exc_info=True)
+            else:
+                try:
+                    win32job.TerminateJobObject(windows_job, 1)
+                    terminated_job = True
+                except (OSError, pywintypes.error):
+                    logger.debug("failed to terminate host Job Object", exc_info=True)
+        if not terminated_job:
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await killer.wait()
+            except OSError:
+                logger.debug("taskkill unavailable while cancelling host PID %s", process.pid)
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    if process.returncode is None:
+        await process.wait()
+    try:
+        await process.communicate()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 class CopilotHostProcess:

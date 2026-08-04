@@ -32,6 +32,7 @@ Delta 2 — full-text indexes:
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,8 @@ logger = logging.getLogger(__name__)
 # The embedded engine ships full-text search as an extension; loading it is
 # idempotent and a no-op when the bundled build already has it statically linked.
 _FTS_EXTENSION_STATEMENTS = ("INSTALL FTS;", "LOAD FTS;")
+_SHOW_INDEXES_QUERY = "CALL SHOW_INDEXES() RETURN index_name"
+_FTS_INDEX_NAME = re.compile(r"CREATE_FTS_INDEX\('[^']+',\s*'([^']+)'")
 
 # A callable that makes FTS available on ``driver`` (loads the extension). The
 # default (``load_fts_extension_native``) uses the engine's own ``INSTALL FTS``;
@@ -96,13 +99,25 @@ async def ensure_fulltext_indices(driver: GraphDriver) -> None:
     """Create the full-text indexes graphiti queries, idempotently.
 
     Assumes the FTS extension is already loaded (see ``apply_graphiti_deltas``).
-    Safe to call on both a fresh and a re-opened database: on re-open the
-    ``CREATE_FTS_INDEX`` calls raise "already exists", which we swallow. The index
-    DDL is provider-keyed on ``GraphProvider.KUZU`` because Ladybug reports (and
-    speaks) that dialect deliberately (#76).
+    Safe to call on both a fresh and a re-opened database: existing index names are
+    queried before issuing DDL, avoiding Ladybug's ERROR-level diagnostic for an
+    expected duplicate. Metadata and creation failures propagate so genuine FTS
+    problems remain visible. The index DDL is provider-keyed on
+    ``GraphProvider.KUZU`` because Ladybug reports (and speaks) that dialect
+    deliberately (#76).
     """
+    rows, _, _ = await driver.execute_query(_SHOW_INDEXES_QUERY)
+    existing = {
+        str(row["index_name"])
+        for row in rows
+        if isinstance(row, dict) and row.get("index_name") is not None
+    }
     for query in get_fulltext_indices(GraphProvider.KUZU):
-        try:
-            await driver.execute_query(query)
-        except Exception as exc:  # noqa: BLE001 - index likely already exists on re-open
-            logger.debug("FTS index creation skipped (already exists?): %s", exc)
+        match = _FTS_INDEX_NAME.search(query)
+        if match is None:
+            raise RuntimeError(f"could not determine FTS index name from graphiti DDL: {query}")
+        index_name = match.group(1)
+        if index_name in existing:
+            logger.debug("FTS index %r already exists", index_name)
+            continue
+        await driver.execute_query(query)

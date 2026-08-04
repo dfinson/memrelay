@@ -43,12 +43,21 @@ keeping logs on stderr makes them safe to read while the server is running.
 | --- | --- | --- |
 | **MCP server** (`memrelay mcp`) | Spawned by your agent over stdio | The agent inherits the server's **stderr**, so these logs are visible in your agent/host's logs. |
 | **Daemon, foreground** (`memrelay _serve`) | Run it yourself in a terminal | Printed straight to your terminal's **stderr**. This is the runner `memrelay start` uses internally. |
-| **Daemon, detached** (`memrelay start`) | Backgrounded, fully detached | stdout/stderr are routed to the OS null device, so these logs are **not captured**. |
+| **Daemon, detached** (`memrelay start`) | Backgrounded, fully detached | stdout/stderr are appended to `<MEMRELAY_HOME>/logs/daemon-startup.log`. |
 
 ### Diagnosing the background daemon
 
-Because `memrelay start` detaches the daemon and discards its output, the way to *see*
-daemon logs is to run the same daemon **in the foreground** instead:
+Inspect the detached daemon's captured log first:
+
+```bash
+# PowerShell
+Get-Content "$env:MEMRELAY_HOME\logs\daemon-startup.log"
+
+# bash / zsh
+cat "${MEMRELAY_HOME:-$HOME/.memrelay}/logs/daemon-startup.log"
+```
+
+For an interactive trace, run the same daemon **in the foreground** instead:
 
 ```bash
 # stop the detached daemon first if one is running

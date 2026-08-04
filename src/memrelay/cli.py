@@ -43,7 +43,7 @@ _CONFIG_TEMPLATE = """\
 
 [graph]
 backend = "ladybug"
-path = "~/.memrelay/graph.db"
+# path defaults to <MEMRELAY_HOME>/graph.db; set it only to override that location.
 
 [llm]
 # borrow-host reuses the host agent's own model (no API keys). See SPEC §6.2.

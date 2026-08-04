@@ -6,6 +6,8 @@ import asyncio
 
 import pytest
 from graphiti_core.llm_client.client import LLMClient
+from graphiti_core.prompts.models import Message
+from pydantic import BaseModel
 
 from memrelay.config import load_config
 from memrelay.engine.llm.borrow_host import (
@@ -112,6 +114,80 @@ def test_byokey_client_is_lazy_and_needs_key(monkeypatch):
     # Building the delegate without a key raises a clear config error (no network).
     with pytest.raises(ByoKeyConfigError):
         client._build_delegate()
+
+
+class _StructuredResponse(BaseModel):
+    entities: list[str]
+
+
+def test_byokey_uses_delegate_public_contract(monkeypatch):
+    cfg = load_config(
+        environ={},
+        llm={
+            "strategy": "byo-key",
+            "provider": "openai",
+            "api_key_env": "MEMRELAY_UT_KEY",
+            "model": "gpt-4o-mini",
+        },
+    )
+    client = ByoKeyLLMClient(cfg)
+    calls: list[dict] = []
+    token_tracker = object()
+
+    class _Delegate:
+        def __init__(self) -> None:
+            self.token_tracker = token_tracker
+
+        async def generate_response(self, messages, **kwargs):
+            calls.append({"messages": messages, **kwargs})
+            response, input_tokens, output_tokens = await self._generate_response()
+            assert (input_tokens, output_tokens) == (12, 4)
+            return response
+
+        async def _generate_response(self, *args, **kwargs):
+            return {"entities": ["Ada"]}, 12, 4
+
+    client._delegate = _Delegate()
+    messages = [Message(role="user", content="Extract Ada")]
+    response = asyncio.run(
+        client.generate_response(
+            messages,
+            response_model=_StructuredResponse,
+            max_tokens=512,
+            group_id="owner/repo",
+            prompt_name="extract_nodes",
+            attribute_extraction=True,
+        )
+    )
+
+    assert response == {"entities": ["Ada"]}
+    assert len(calls) == 1
+    assert calls[0]["messages"] == messages
+    assert calls[0]["response_model"] is _StructuredResponse
+    assert calls[0]["max_tokens"] == 512
+    assert calls[0]["group_id"] == "owner/repo"
+    assert calls[0]["prompt_name"] == "extract_nodes"
+    assert calls[0]["attribute_extraction"] is True
+    assert client.token_tracker is token_tracker
+
+
+def test_valid_byokey_selection_never_falls_back_to_borrow_host(monkeypatch):
+    monkeypatch.setenv("MEMRELAY_UT_KEY", "sk-not-real")
+    cfg = load_config(
+        environ={},
+        llm={
+            "strategy": "byo-key",
+            "provider": "openai",
+            "api_key_env": "MEMRELAY_UT_KEY",
+            "model": "gpt-4o-mini",
+        },
+    )
+
+    def fail_if_probed(self, cfg):
+        raise AssertionError("borrow-host must not be probed after valid byo-key selection")
+
+    monkeypatch.setattr(BorrowHostStrategy, "is_available", fail_if_probed)
+    assert isinstance(select_llm_client(cfg), ByoKeyLLMClient)
 
 
 # ── BorrowHostStrategy host→process registry (E4 / #87) ──────────────────────────

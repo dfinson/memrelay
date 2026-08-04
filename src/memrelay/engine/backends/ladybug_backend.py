@@ -40,5 +40,9 @@ class LadybugBackend(Backend):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         driver = LadybugDriver(db=str(path), max_concurrent_queries=max_concurrent_queries)
-        await apply_graphiti_deltas(driver, load_fts_extension=load_ladybug_fts_extension)
+        try:
+            await apply_graphiti_deltas(driver, load_fts_extension=load_ladybug_fts_extension)
+        except BaseException:
+            await driver.close()
+            raise
         return driver

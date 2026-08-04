@@ -28,7 +28,8 @@ def test_defaults_with_no_file_or_env(tmp_path: Path) -> None:
     }
     cfg = load_config(environ=env)
     assert cfg.graph.backend == "ladybug"
-    assert cfg.graph.path == "~/.memrelay/graph.db"
+    assert cfg.graph.path is None
+    assert cfg.graph_path == (tmp_path / "data" / "memrelay" / "graph.db").resolve()
     assert cfg.llm.strategy == "borrow-host"
     assert cfg.llm.host == "copilot"
     assert cfg.embeddings.provider == "local"
@@ -39,6 +40,92 @@ def test_home_resolution_prefers_memrelay_home(tmp_path: Path) -> None:
     target = tmp_path / "data"
     home = default_home({"MEMRELAY_HOME": str(target)})
     assert home == target.resolve()
+
+
+def test_memrelay_home_scopes_config_discovery(tmp_path: Path) -> None:
+    target = tmp_path / "isolated"
+    paths = candidate_config_paths(
+        {
+            "MEMRELAY_HOME": str(target),
+            "HOME": str(tmp_path / "user"),
+            "USERPROFILE": str(tmp_path / "user"),
+        }
+    )
+    assert paths == [target.resolve() / "config.toml"]
+
+
+def test_memrelay_home_config_is_loaded_without_global_fallback(tmp_path: Path) -> None:
+    target = tmp_path / "isolated"
+    target.mkdir()
+    (target / "config.toml").write_text('[llm]\nhost = "claude"\n', encoding="utf-8")
+    user_home = tmp_path / "user"
+    (user_home / ".memrelay").mkdir(parents=True)
+    (user_home / ".memrelay" / "config.toml").write_text(
+        '[graph]\npath = "user-graph.db"\n',
+        encoding="utf-8",
+    )
+
+    cfg = load_config(
+        environ={
+            "MEMRELAY_HOME": str(target),
+            "HOME": str(user_home),
+            "USERPROFILE": str(user_home),
+        }
+    )
+
+    assert cfg.llm.host == "claude"
+    assert cfg.graph.path is None
+    assert cfg.graph_path == (target / "graph.db").resolve()
+
+
+def test_memrelay_home_overrides_file_home_but_not_explicit_kwarg(tmp_path: Path) -> None:
+    target = tmp_path / "isolated"
+    target.mkdir()
+    (target / "config.toml").write_text(
+        f'home = "{(tmp_path / "from-file").as_posix()}"\n',
+        encoding="utf-8",
+    )
+    env = {"MEMRELAY_HOME": str(target)}
+
+    assert load_config(environ=env).home_path == target.resolve()
+    explicit = tmp_path / "explicit"
+    assert load_config(environ=env, home=str(explicit)).home_path == explicit.resolve()
+
+
+def test_default_graph_path_derives_from_default_home(tmp_path: Path) -> None:
+    env = {"HOME": str(tmp_path), "USERPROFILE": str(tmp_path)}
+    cfg = load_config(environ=env)
+    assert cfg.graph.path is None
+    assert cfg.graph_path == (tmp_path / ".memrelay" / "graph.db").resolve()
+
+
+def test_default_graph_path_moves_with_memrelay_home(tmp_path: Path) -> None:
+    target = tmp_path / "isolated"
+    cfg = load_config(environ={"MEMRELAY_HOME": str(target)})
+    assert cfg.graph.path is None
+    assert cfg.graph_path == (target / "graph.db").resolve()
+
+
+def test_explicit_config_graph_path_is_preserved(tmp_path: Path) -> None:
+    explicit = tmp_path / "custom" / "graph.db"
+    cfg_file = tmp_path / "config.toml"
+    cfg_file.write_text(f'[graph]\npath = "{explicit.as_posix()}"\n', encoding="utf-8")
+    cfg = load_config(
+        path=cfg_file,
+        environ={"MEMRELAY_HOME": str(tmp_path / "isolated")},
+    )
+    assert cfg.graph_path == explicit.resolve()
+
+
+def test_graph_path_env_override_wins_over_memrelay_home(tmp_path: Path) -> None:
+    explicit = tmp_path / "env-graph.db"
+    cfg = load_config(
+        environ={
+            "MEMRELAY_HOME": str(tmp_path / "isolated"),
+            "MEMRELAY_GRAPH__PATH": str(explicit),
+        }
+    )
+    assert cfg.graph_path == explicit.resolve()
 
 
 def test_home_resolution_falls_back_to_xdg(tmp_path: Path) -> None:

@@ -5,9 +5,9 @@ is present. Overrides layer in this precedence (highest wins):
 
 1. explicit keyword overrides passed to :func:`load_config`
 2. ``MEMRELAY_*`` environment variables (``__`` nests, e.g. ``MEMRELAY_LLM__STRATEGY``)
-3. a config file — ``MEMRELAY_CONFIG`` path, else the first that exists of
-   ``$XDG_CONFIG_HOME/memrelay/config.toml``, ``~/.config/memrelay/config.toml``,
-   ``~/.memrelay/config.toml``
+3. a config file — ``MEMRELAY_CONFIG`` path; otherwise
+   ``$MEMRELAY_HOME/config.toml`` when that relocation is set; otherwise the first
+   existing standard XDG/user config path
 4. built-in defaults (below)
 
 The env-override convention mirrors traceforge's ``TRACEFORGE_*`` scheme (prefix +
@@ -96,8 +96,9 @@ class GraphConfig:
     #: is the embedded, zero-config OOTB default; ``"neo4j"``/``"falkordb"``/``"neptune"``
     #: are server-based opt-ins that additionally read ``connection`` (below).
     backend: str = "ladybug"
-    #: On-disk path for the embedded (``ladybug``) backend; ignored by the cloud backends.
-    path: str = "~/.memrelay/graph.db"
+    #: Explicit on-disk path for the embedded backend. ``None`` derives
+    #: ``graph.db`` from the resolved memrelay home.
+    path: str | None = None
     #: Connection settings for the cloud opt-in backends; unused by ``ladybug``.
     connection: GraphConnectionConfig | None = None
 
@@ -329,6 +330,8 @@ class Config:
     @property
     def graph_path(self) -> Path:
         """Absolute path to the embedded graph database file."""
+        if self.graph.path is None:
+            return (self.home_path / "graph.db").resolve()
         return _expand(self.graph.path)
 
     def to_dict(self) -> dict[str, Any]:
@@ -413,11 +416,15 @@ def default_home(environ: dict[str, str] | None = None) -> Path:
 def candidate_config_paths(environ: dict[str, str] | None = None) -> list[Path]:
     """Config file locations in precedence order (first existing one wins).
 
-    An explicit ``MEMRELAY_CONFIG`` short-circuits discovery.
+    An explicit ``MEMRELAY_CONFIG`` short-circuits discovery. ``MEMRELAY_HOME``
+    scopes discovery to that isolated data home so a global config cannot redirect
+    an isolated invocation back to user data.
     """
     env = os.environ if environ is None else environ
     if env.get("MEMRELAY_CONFIG"):
         return [_expand(env["MEMRELAY_CONFIG"], environ)]
+    if env.get("MEMRELAY_HOME"):
+        return [default_home(environ) / "config.toml"]
 
     paths: list[Path] = []
     if env.get("XDG_CONFIG_HOME"):
@@ -660,7 +667,12 @@ def load_config(
     if overrides:
         data = _deep_merge(data, overrides)
 
-    if "home" not in data:
+    env = os.environ if environ is None else environ
+    if "home" not in overrides and env.get("MEMRELAY_HOME"):
+        # MEMRELAY_HOME is an environment-level relocation boundary. It must
+        # override a file's home while remaining below an explicit keyword override.
+        data["home"] = str(default_home(environ))
+    elif "home" not in data:
         # Reflect MEMRELAY_HOME / XDG_DATA_HOME in the resolved home directory.
         data["home"] = str(default_home(environ))
 
