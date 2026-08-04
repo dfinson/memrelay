@@ -272,7 +272,6 @@ def test_job_termination_error_falls_back_to_exact_pid_taskkill(
         return FakeKiller()
 
     monkeypatch.setattr(borrow_host.os, "name", "nt")
-    monkeypatch.setitem(sys.modules, "pywintypes", type("PyWinTypes", (), {"error": FakeWinError}))
     monkeypatch.setitem(sys.modules, "win32job", FakeWin32Job)
     monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", fake_exec)
 

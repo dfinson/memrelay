@@ -390,14 +390,16 @@ async def _terminate_process_tree(
                 await killer.wait()
             except OSError:
                 logger.debug("taskkill unavailable while cancelling host PID %s", process.pid)
-    elif process.returncode is None:
-        # Only signal the group while the child is unreaped. Once asyncio has
-        # reaped it, the PID (and therefore the PGID, since ``start_new_session``
-        # makes them equal) is back in the OS pool and could name an unrelated
-        # group — signalling it would be exactly the broad kill this path exists
-        # to avoid. Nothing is leaked by skipping: the child is already gone, and
-        # its descendants keep the stdout/stderr pipes open, so ``communicate()``
-        # would not have returned while any of them were alive.
+    else:
+        # Signal the group unconditionally. A reaped ``returncode`` does NOT mean
+        # there is nothing left to kill: asyncio's child watcher sets it as soon as
+        # the direct child exits, independent of pipe EOF, so a shim that forks a
+        # worker and returns immediately leaves a live descendant behind — the exact
+        # leak this function exists to close. Guarding on ``returncode is None``
+        # would skip the kill precisely then. PID recycling is not a hazard here:
+        # a live process group holds a reference to its leader's pid, so that pid
+        # cannot be reallocated while any member survives, and once the group is
+        # genuinely empty ``killpg`` raises ``ProcessLookupError``.
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):

@@ -442,7 +442,7 @@ def start() -> None:
         click.echo(f"memrelay daemon already running{suffix}.")
         return
     try:
-        st = lifecycle.start_daemon(cfg)
+        st = lifecycle.start_daemon(cfg, config_path=resolve_config_path())
     except lifecycle.DaemonStartError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"memrelay daemon started (pid {st.pid}).")

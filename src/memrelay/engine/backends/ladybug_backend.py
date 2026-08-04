@@ -49,7 +49,7 @@ class LadybugBackend(Backend):
             # mirrors rather than imports — importing it here would be circular).
             try:
                 await driver.close()
-            except Exception:  # noqa: BLE001 - the original failure is the real story
+            except BaseException:  # noqa: BLE001 - the original failure is the real story
                 logger.warning("failed to close Ladybug driver after setup error", exc_info=True)
             raise
         return driver

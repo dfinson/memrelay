@@ -101,17 +101,24 @@ def test_fts_availability_probe_matches_live_ladybug_catalog(tmp_path) -> None:
     from memrelay.engine.backends._fts_extension import load_ladybug_fts_extension
     from memrelay.engine.backends.ladybug_driver import LadybugDriver
 
-    async def scenario() -> tuple[bool, bool]:
+    async def scenario() -> tuple[bool, set[str]]:
         driver = LadybugDriver(db=str(tmp_path / "graph.db"), max_concurrent_queries=1)
         try:
             before = await _deltas._fts_is_available(driver)
             await load_ladybug_fts_extension(driver)
-            return before, await _deltas._fts_is_available(driver)
+            rows, _, _ = await driver.execute_query(_deltas._SHOW_FUNCTIONS_QUERY)
+            return before, {str(row.get("name", "")) for row in rows}
         finally:
             await driver.close()
 
-    before, after = asyncio.run(scenario())
+    before, names = asyncio.run(scenario())
 
     assert before is False, "a fresh DB must not report FTS before the extension loads"
-    if not after:
+    # Skip only when the extension genuinely could not be provisioned. Skipping on
+    # ``_fts_is_available()`` being False would swallow both rot modes this test
+    # exists to catch: a renamed result column and a re-cased function name both
+    # make the probe return False everywhere, which would silently disable FTS
+    # index creation on every machine behind an offline-looking WARNING.
+    if not any("FTS" in name.upper() for name in names):
         pytest.skip("FTS extension could not be provisioned in this environment")
+    assert _deltas._FTS_DDL_FUNCTION in names, "SHOW_FUNCTIONS re-cased the FTS DDL function"

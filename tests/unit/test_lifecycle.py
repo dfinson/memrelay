@@ -102,7 +102,7 @@ def test_slow_but_eventually_healthy_start_does_not_raise(
     the outcome.
     """
     cfg = _config(tmp_path)
-    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home: 4242)
+    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home, **_kwargs: 4242)
 
     calls = {"n": 0}
     healthy = {"status": "ok"}
@@ -126,7 +126,7 @@ def test_timeout_message_is_honest_and_names_status(
 ) -> None:
     """When the window is exhausted the error is honest and points at ``memrelay status``."""
     cfg = _config(tmp_path)
-    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home: 4242)
+    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home, **_kwargs: 4242)
     monkeypatch.setattr(
         lifecycle, "probe_health", lambda home, timeout=lifecycle.PROBE_TIMEOUT: None
     )
@@ -149,7 +149,7 @@ def test_start_daemon_resolves_timeout_when_none_given(
     benefit only lands if the *default* path runs :func:`_resolve_ready_timeout`.
     """
     cfg = _config(tmp_path)
-    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home: 4242)
+    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home, **_kwargs: 4242)
 
     calls = {"n": 0}
 
@@ -375,3 +375,39 @@ def test_spawn_detached_omits_config_pin_when_no_config_file_exists(
 
     assert "MEMRELAY_CONFIG" not in captured["env"]
     assert captured["env"]["MEMRELAY_HOME"] == str(home)
+
+
+def test_start_daemon_forwards_the_config_it_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start_daemon`` must pin the caller's config, not re-derive one from the env.
+
+    Re-deriving is only exact when the caller happens to have loaded its ``Config``
+    from the same ambient environment in the same process. A programmatic caller that
+    built a ``Config`` explicitly would otherwise hand the daemon a *different* file
+    than the one it is itself running on.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    explicit = tmp_path / "elsewhere" / "config.toml"
+    explicit.parent.mkdir()
+    explicit.write_text("", encoding="utf-8")
+
+    seen: dict = {}
+
+    def fake_spawn(spawn_home: Path, *, config_path: Path | None = None) -> int:
+        seen["config_path"] = config_path
+        return 4242
+
+    monkeypatch.setattr(lifecycle, "spawn_detached", fake_spawn)
+    monkeypatch.setattr(lifecycle, "write_pid", lambda *a, **k: None)
+    monkeypatch.setattr(lifecycle, "clear_pid", lambda *a, **k: None)
+    monkeypatch.setattr(
+        lifecycle, "probe_health", lambda home, timeout=lifecycle.PROBE_TIMEOUT: None
+    )
+
+    cfg = load_config(environ={"MEMRELAY_HOME": str(home)})
+    with pytest.raises(lifecycle.DaemonStartError):
+        lifecycle.start_daemon(cfg, ready_timeout=0.01, config_path=explicit)
+
+    assert seen["config_path"] == explicit
