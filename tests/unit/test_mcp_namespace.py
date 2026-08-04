@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import subprocess
 
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
 from memrelay.mcp import namespace
 
 
@@ -43,3 +44,4 @@ def test_current_repo_detaches_git_stdin(monkeypatch) -> None:
     assert kwargs.get("capture_output") is True
     assert kwargs.get("text") is True
     assert kwargs.get("timeout") == 5
+    assert kwargs.get("creationflags") == NO_WINDOW_CREATION_FLAGS

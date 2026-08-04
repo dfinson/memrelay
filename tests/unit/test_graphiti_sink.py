@@ -29,6 +29,7 @@ import pytest
 from traceforge.classify.workflow import Phase
 from traceforge.types import EventMetadata, SessionEvent, ToolMotivation
 
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
 from memrelay.ingest.graphiti_sink import (
     DEFAULT_SOURCE,
     MAX_EPISODE_CHARS,
@@ -906,10 +907,12 @@ class FakeGit:
         self.numstat = numstat or {}
         self.fail = fail
         self.calls: list[list[str]] = []
+        self.kwargs: list[dict] = []
 
-    def __call__(self, argv, **_kwargs) -> _FakeProc:
+    def __call__(self, argv, **kwargs) -> _FakeProc:
         argv = list(argv)
         self.calls.append(argv)
+        self.kwargs.append(kwargs)
         if "rev-parse" in argv:
             if self.fail:
                 return _FakeProc("", returncode=1)
@@ -936,6 +939,7 @@ def test_refactor_provenance_stamped_when_enabled() -> None:
     record = spool.records[0]
     assert record["last_commit_sha"] == "sha-new"
     assert record["file_change_lines"] == {"src/a.py": 150}
+    assert all(kwargs["creationflags"] == NO_WINDOW_CREATION_FLAGS for kwargs in git.kwargs)
 
 
 def test_provenance_absent_and_git_unused_when_disabled() -> None:

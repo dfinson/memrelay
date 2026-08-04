@@ -69,6 +69,8 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from traceforge import StorageSink
 
+from memrelay._subprocess import NO_WINDOW_CREATION_FLAGS
+
 if TYPE_CHECKING:
     from traceforge import SessionEvent
 
@@ -472,6 +474,7 @@ def _run_git(cwd: str | Path, args: list[str], *, popen: PopenFactory | None) ->
             text=True,
             encoding="utf-8",
             errors="replace",
+            creationflags=NO_WINDOW_CREATION_FLAGS,
         )
         stdout, _stderr = proc.communicate()
     except OSError:
