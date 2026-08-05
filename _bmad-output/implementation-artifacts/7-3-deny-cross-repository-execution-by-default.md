@@ -135,6 +135,7 @@ GPT-5.6 Terra
 - Made the external governance port own an atomic synchronous or asynchronous admit-and-start boundary so revocation cannot race a newly started operation.
 - Kept the future Story 7.4 qualification path absent; no provider, private repository, Copilot, or OpenAI call is introduced.
 - Added synthetic fake-provider tests for rejection ordering, malformed values, malformed authority results, revocation, async admission, and CLI privacy.
+- Added a Python 3.13 CI conformance job that installs and tests the separate evaluator project without provider credentials or external adapters.
 - Moved to `review` after independent review and corrective hardening.
 
 ### File List
@@ -153,3 +154,4 @@ GPT-5.6 Terra
 - `evaluation/tests/contract/test_pre_discovery_authorization.py`
 - `evaluation/tests/fault/test_governance_revocation.py`
 - `evaluation/tests/unit/domain/test_cross_repository_deny.py`
+- `.github/workflows/ci.yml`
