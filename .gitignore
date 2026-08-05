@@ -19,6 +19,11 @@ env/
 .coverage
 htmlcov/
 
+# Local BMAD framework installation and generated skill boilerplate
+.agents/
+.github/agents/
+_bmad/
+
 # memrelay runtime data (never commit)
 .memrelay/
 
