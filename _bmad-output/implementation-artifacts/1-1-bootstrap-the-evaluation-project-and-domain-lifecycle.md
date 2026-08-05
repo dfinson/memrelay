@@ -41,25 +41,25 @@ So that I can plan studies without coupling evaluator dependencies or arm labels
 
 ## Tasks / Subtasks
 
-- [ ] Create the isolated evaluator project and lock (AC: 1)
-  - [ ] Add the `evaluation/` package tree, Python 3.13 project metadata, independent `uv.lock`, README, schemas, catalog, collector, test, and artifact roots.
-  - [ ] Register `memrelay-eval` through the evaluator package composition root.
-  - [ ] Prove product wheel/sdist metadata and root runtime dependencies are unchanged.
-- [ ] Implement standard-library-only domain values (AC: 2, 4)
-  - [ ] Add immutable typed IDs and frozen records for every entity named in AC2.
-  - [ ] Add `ArtifactRef`, manifest `1.0.0` domain projection, error/reason types, and `LedgerPort`, `ArtifactStorePort`, `ExecutionAuthorityPort`, `AgentRuntimePort`, `TreatmentPort`, `WorkspacePort`, `AssignmentPort`, `GraderPort`, `TelemetryPort`, and `ReconciliationPort`.
-  - [ ] Make the manifest `1.0.0` projection cover `artifact_id`, `kind`, lowercase `sha256`, `size_bytes`, `media_type`, UTC `created_at`, producer component/version, classification, `contains_secrets`, source artifact IDs, retention policy ID, and encryption metadata.
-  - [ ] Define `attempt_id` as optional and valid only for attempt-scoped evidence. Pre-attempt experiment/run artifacts, including the Story 1.5 effective-configuration freeze, carry ownership through authoritative ledger `ArtifactLink` records rather than a fabricated attempt identity.
-  - [ ] Add an import-boundary test rejecting non-stdlib imports from `domain`.
-- [ ] Implement lifecycle and attempt-terminal policies (AC: 3)
-  - [ ] Validate only the frozen run transition graph.
-  - [ ] Keep attempt terminal records independent from run transitions and use: `succeeded`, `agent_failed`, `timed_out`, `provider_unavailable`, `quota_exhausted`, `grader_failed`, `evidence_incomplete`, `infrastructure_failed_pre_exposure`, `infrastructure_failed_post_exposure`, `cancelled_by_circuit_breaker`.
-  - [ ] Return typed failures; never silently coerce or skip a transition.
-- [ ] Implement explicitly non-durable deterministic adapters (AC: 4, 5)
-  - [ ] Provide in-memory artifact, ledger, and telemetry adapters with stable ordering and deterministic outputs.
-  - [ ] Mark their evidence provenance `unpaid_conformance` and make inclusion eligibility fail closed.
-  - [ ] Ensure telemetry redaction excludes prompts, code, repository/user names, credentials, provider payloads, and treatment labels by default.
-- [ ] Add focused unit and contract tests (AC: 1-5)
+- [x] Create the isolated evaluator project and lock (AC: 1)
+  - [x] Add the `evaluation/` package tree, Python 3.13 project metadata, independent `uv.lock`, README, schemas, catalog, collector, test, and artifact roots.
+  - [x] Register `memrelay-eval` through the evaluator package composition root.
+  - [x] Prove product wheel/sdist metadata and root runtime dependencies are unchanged.
+- [x] Implement standard-library-only domain values (AC: 2, 4)
+  - [x] Add immutable typed IDs and frozen records for every entity named in AC2.
+  - [x] Add `ArtifactRef`, manifest `1.0.0` domain projection, error/reason types, and `LedgerPort`, `ArtifactStorePort`, `ExecutionAuthorityPort`, `AgentRuntimePort`, `TreatmentPort`, `WorkspacePort`, `AssignmentPort`, `GraderPort`, `TelemetryPort`, and `ReconciliationPort`.
+  - [x] Make the manifest `1.0.0` projection cover `artifact_id`, `kind`, lowercase `sha256`, `size_bytes`, `media_type`, UTC `created_at`, producer component/version, classification, `contains_secrets`, source artifact IDs, retention policy ID, and encryption metadata.
+  - [x] Define `attempt_id` as optional and valid only for attempt-scoped evidence. Pre-attempt experiment/run artifacts, including the Story 1.5 effective-configuration freeze, carry ownership through authoritative ledger `ArtifactLink` records rather than a fabricated attempt identity.
+  - [x] Add an import-boundary test rejecting non-stdlib imports from `domain`.
+- [x] Implement lifecycle and attempt-terminal policies (AC: 3)
+  - [x] Validate only the frozen run transition graph.
+  - [x] Keep attempt terminal records independent from run transitions and use: `succeeded`, `agent_failed`, `timed_out`, `provider_unavailable`, `quota_exhausted`, `grader_failed`, `evidence_incomplete`, `infrastructure_failed_pre_exposure`, `infrastructure_failed_post_exposure`, `cancelled_by_circuit_breaker`.
+  - [x] Return typed failures; never silently coerce or skip a transition.
+- [x] Implement explicitly non-durable deterministic adapters (AC: 4, 5)
+  - [x] Provide in-memory artifact, ledger, and telemetry adapters with stable ordering and deterministic outputs.
+  - [x] Mark their evidence provenance `unpaid_conformance` and make inclusion eligibility fail closed.
+  - [x] Ensure telemetry redaction excludes prompts, code, repository/user names, credentials, provider payloads, and treatment labels by default.
+- [x] Add focused unit and contract tests (AC: 1-5)
 
 ## Developer Context
 

@@ -44,7 +44,7 @@
     "contains_secrets": {"type": "boolean"},
     "source_artifact_ids": {
       "type": "array",
-      "items": {"type": "string", "pattern": "^artifact_[a-f0-9]{32}$"}
+      "items": {"type": "string", "pattern": "^art_[a-f0-9]{32}$"}
     },
     "retention_policy_id": {"type": "string", "pattern": "^ret_[a-f0-9]{32}$"},
     "encryption": {"type": ["object", "null"]},
