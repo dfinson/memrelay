@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from memrelay_eval.domain.governance import (
     EvaluationStage,
@@ -38,7 +38,7 @@ def refuse_cross_repository_stage() -> None:
         purpose_version=PurposeVersionId.new(),
         policy_version=PolicyVersionId.new(),
         valid_from=now,
-        valid_until=now.replace(year=now.year + 1),
+        valid_until=now + timedelta(days=365),
         revocation_state=RevocationState.ACTIVE,
         stage=EvaluationStage.CROSS_REPOSITORY,
     )

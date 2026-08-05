@@ -4,8 +4,10 @@ from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from memrelay_eval.domain.errors import InvalidGovernanceRequestError
 from memrelay_eval.domain.governance import (
     AuthorizationDecision,
+    AuthorizationResult,
     DenialEvidence,
     DenyByDefaultRepositoryAuthorization,
     EvaluationStage,
@@ -133,3 +135,49 @@ def test_denial_evidence_has_only_the_privacy_minimized_contract() -> None:
         "policy_version": str(access_request.policy_version),
         "reason": "repository_mismatch",
     }
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("request_id", "private/repository-name"),
+        ("revocation_state", "revoked"),
+        ("stage", "cross-repo"),
+    ),
+)
+def test_repository_request_rejects_untyped_or_nonopaque_values(field: str, value: object) -> None:
+    arguments = {
+        "request_id": GovernanceRequestId.new(),
+        "task_repository_id": RepositoryId.new(),
+        "requested_repository_id": RepositoryId.new(),
+        "principal_id": PrincipalId.new(),
+        "authorization_id": AuthorizationId.new(),
+        "authorization_version": AuthorizationVersionId.new(),
+        "purpose_id": PurposeId.new(),
+        "purpose_version": PurposeVersionId.new(),
+        "policy_version": PolicyVersionId.new(),
+        "valid_from": datetime(2026, 8, 5, tzinfo=UTC),
+        "valid_until": datetime(2026, 8, 5, 0, 1, tzinfo=UTC),
+        "revocation_state": RevocationState.ACTIVE,
+        "stage": EvaluationStage.ORDINARY,
+    }
+    arguments[field] = value
+
+    with pytest.raises(InvalidGovernanceRequestError):
+        RepositoryAccessRequest(**arguments)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("decision", "reason"),
+    (
+        ("permitted", None),
+        (AuthorizationDecision.DENIED, "repository_mismatch"),
+    ),
+)
+def test_authorization_result_rejects_untyped_enums(decision: object, reason: object) -> None:
+    with pytest.raises(InvalidGovernanceRequestError):
+        AuthorizationResult(
+            decision=decision,  # type: ignore[arg-type]
+            policy_version=PolicyVersionId.new(),
+            reason=reason,  # type: ignore[arg-type]
+        )

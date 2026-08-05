@@ -50,6 +50,11 @@ def _require_utc(value: datetime, field_name: str) -> None:
         raise InvalidGovernanceRequestError(f"{field_name} must be UTC")
 
 
+def _require_instance(value: object, expected_type: type[object], field_name: str) -> None:
+    if not isinstance(value, expected_type):
+        raise InvalidGovernanceRequestError(f"{field_name} must be a {expected_type.__name__}")
+
+
 @dataclass(frozen=True, slots=True)
 class RepositoryAccessRequest:
     """Authorization data, distinct from namespace, remote, cache, and assignment."""
@@ -69,6 +74,20 @@ class RepositoryAccessRequest:
     stage: EvaluationStage
 
     def __post_init__(self) -> None:
+        for value, expected_type, field_name in (
+            (self.request_id, GovernanceRequestId, "request_id"),
+            (self.task_repository_id, RepositoryId, "task_repository_id"),
+            (self.requested_repository_id, RepositoryId, "requested_repository_id"),
+            (self.principal_id, PrincipalId, "principal_id"),
+            (self.authorization_id, AuthorizationId, "authorization_id"),
+            (self.authorization_version, AuthorizationVersionId, "authorization_version"),
+            (self.purpose_id, PurposeId, "purpose_id"),
+            (self.purpose_version, PurposeVersionId, "purpose_version"),
+            (self.policy_version, PolicyVersionId, "policy_version"),
+            (self.revocation_state, RevocationState, "revocation_state"),
+            (self.stage, EvaluationStage, "stage"),
+        ):
+            _require_instance(value, expected_type, field_name)
         _require_utc(self.valid_from, "valid_from")
         _require_utc(self.valid_until, "valid_until")
         if self.valid_until <= self.valid_from:
@@ -84,6 +103,10 @@ class AuthorizationResult:
     reason: GovernanceDenialReason | None = None
 
     def __post_init__(self) -> None:
+        _require_instance(self.decision, AuthorizationDecision, "decision")
+        _require_instance(self.policy_version, PolicyVersionId, "policy_version")
+        if self.reason is not None:
+            _require_instance(self.reason, GovernanceDenialReason, "reason")
         if self.decision is AuthorizationDecision.DENIED and self.reason is None:
             raise InvalidGovernanceRequestError("denials require a typed reason")
         if self.decision is AuthorizationDecision.PERMITTED and self.reason is not None:
@@ -100,6 +123,10 @@ class DenialEvidence:
     reason: GovernanceDenialReason
 
     def __post_init__(self) -> None:
+        _require_instance(self.request_id, GovernanceRequestId, "request_id")
+        _require_instance(self.decision, AuthorizationDecision, "decision")
+        _require_instance(self.policy_version, PolicyVersionId, "policy_version")
+        _require_instance(self.reason, GovernanceDenialReason, "reason")
         if self.decision is not AuthorizationDecision.DENIED:
             raise InvalidGovernanceRequestError("denial evidence requires a denied decision")
 

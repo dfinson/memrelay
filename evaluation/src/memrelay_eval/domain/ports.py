@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Protocol
+from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime
+from typing import Protocol, TypeVar
 
 from .entities import (
     ArtifactLink,
@@ -16,6 +17,8 @@ from .entities import (
 )
 from .governance import AuthorizationResult, DenialEvidence, RepositoryAccessRequest
 from .ids import AssignmentId, RunId
+
+_Result = TypeVar("_Result")
 
 
 class LedgerPort(Protocol):
@@ -74,9 +77,27 @@ class ReconciliationPort(Protocol):
 
 
 class RepositoryAuthorizationPort(Protocol):
-    """Authorizes an opaque request before any repository operation."""
+    """Owns the atomic governance admission boundary for repository work."""
 
-    def authorize(self, request: RepositoryAccessRequest, now: object) -> AuthorizationResult: ...
+    def authorize(self, request: RepositoryAccessRequest, now: datetime) -> AuthorizationResult: ...
+
+    def admit_and_start(
+        self,
+        request: RepositoryAccessRequest,
+        now: datetime,
+        operation: Callable[[], _Result],
+    ) -> tuple[AuthorizationResult, _Result | None]:
+        """Recheck revocation and invoke operation while admission remains closed."""
+        ...
+
+    async def admit_and_start_async(
+        self,
+        request: RepositoryAccessRequest,
+        now: datetime,
+        operation: Callable[[], Awaitable[_Result]],
+    ) -> tuple[AuthorizationResult, _Result | None]:
+        """Recheck revocation and await operation while admission remains closed."""
+        ...
 
 
 class DenialEvidencePort(Protocol):

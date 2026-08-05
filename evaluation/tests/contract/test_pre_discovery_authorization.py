@@ -124,6 +124,50 @@ def test_custom_authority_cannot_bypass_cross_repository_denial() -> None:
     assert operations.calls == []
 
 
+class MalformedAuthority:
+    def authorize(self, request: RepositoryAccessRequest, now: datetime) -> object:
+        del request, now
+        return "permitted"
+
+    def admit_and_start(
+        self,
+        request: RepositoryAccessRequest,
+        now: datetime,
+        operation: object,
+    ) -> tuple[object, None]:
+        del request, now, operation
+        return "permitted", None
+
+
+def test_malformed_authority_result_fails_closed_before_repository_operation() -> None:
+    operations = ForbiddenRepositoryOperations()
+    controller = CrossRepositoryAdmissionController(authority=MalformedAuthority())
+    request = cross_repository_request()
+    request = RepositoryAccessRequest(
+        request_id=request.request_id,
+        task_repository_id=request.task_repository_id,
+        requested_repository_id=request.task_repository_id,
+        principal_id=request.principal_id,
+        authorization_id=request.authorization_id,
+        authorization_version=request.authorization_version,
+        purpose_id=request.purpose_id,
+        purpose_version=request.purpose_version,
+        policy_version=request.policy_version,
+        valid_from=request.valid_from,
+        valid_until=request.valid_until,
+        revocation_state=request.revocation_state,
+        stage=request.stage,
+    )
+
+    with pytest.raises(CrossRepositoryDeniedError) as failure:
+        controller.start_repository_operation(
+            request, datetime(2026, 8, 5, tzinfo=UTC), operations.discover
+        )
+
+    assert failure.value.reason.value == "authorization_not_current"
+    assert operations.calls == []
+
+
 def test_cross_repository_cli_refusal_contains_no_repository_information(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
