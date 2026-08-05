@@ -1,6 +1,6 @@
 # Story 1.2: Author and Validate the Executable Catalog
 
-Status: review
+Status: done
 
 ## Story
 
@@ -128,6 +128,8 @@ GPT-5.6 Terra
 - Added the `memrelay-eval validate-catalog` command; it validates only and never compiles tasks, generates a lock, or calls a provider.
 - Preserved evaluator isolation with direct `jsonschema==4.26.0` and `PyYAML==6.0.3` dependencies locked for Python 3.13.
 - Added source-located golden and unit coverage for malformed, unsafe, composite, duplicate, treatment-revealing, unresolved, and version-invalid catalogs.
+- Added dedicated loader coverage for successful parsing, typed parser diagnostics, source locations, nested duplicate keys, scalar mapping-key rejection, and prior-lock immutability.
+- Added full required-scenario-field and grader-reference closure matrices.
 
 ### File List
 
@@ -145,3 +147,4 @@ GPT-5.6 Terra
 - `evaluation/tests/golden/catalog/invalid-duplicate-key.yaml`
 - `evaluation/tests/golden/catalog/invalid-duplicate-key.txt`
 - `evaluation/tests/unit/catalog/test_validation.py`
+- `evaluation/tests/unit/catalog/test_loader.py`

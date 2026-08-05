@@ -114,6 +114,12 @@ def diagnostics_for(
     return list(raised.value.diagnostics)
 
 
+def remove_last(content: str, block: str) -> str:
+    prefix, separator, suffix = content.rpartition(block)
+    assert separator
+    return prefix + suffix
+
+
 def test_valid_catalog_is_schema_2020_12_and_semantically_closed(tmp_path: Path) -> None:
     result = validate_catalog(write_catalog(tmp_path, valid_catalog()))
 
@@ -305,34 +311,83 @@ def test_non_scalar_mapping_keys_are_typed_yaml_diagnostics(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("field", "namespace", "identifier"),
     [
+        ("protocol_ids", "protocols", opaque("protocol", "9")),
         ("fixture_refs", "fixtures", opaque("fixture", "9")),
         ("risk_ids", "risks", opaque("risk", "9")),
         ("gate_ids", "gates", opaque("gate", "9")),
         ("endpoint_ids", "endpoints", opaque("endpoint", "9")),
         ("expected_evidence", "evidence", opaque("evidence", "9")),
         ("claim_ids", "claims", opaque("claim", "9")),
+        ("grader_ref", "graders", opaque("grader", "9")),
     ],
 )
 def test_every_reference_namespace_requires_closure(
     tmp_path: Path, field: str, namespace: str, identifier: str
 ) -> None:
     original = {
+        "protocol_ids": opaque("protocol", "b"),
         "fixture_refs": opaque("fixture", "c"),
         "risk_ids": opaque("risk", "e"),
         "gate_ids": opaque("gate", "f"),
         "endpoint_ids": opaque("endpoint", "1"),
         "expected_evidence": opaque("evidence", "2"),
         "claim_ids": opaque("claim", "3"),
+        "grader_ref": opaque("grader", "4"),
     }[field]
-    content = valid_catalog().replace(
-        f'{field}: ["{original}"]',
-        f'{field}: ["{identifier}"]',
+    replacement = (
+        f'{field}: "{identifier}"' if field == "grader_ref" else f'{field}: ["{identifier}"]'
     )
+    original_block = (
+        f'{field}: "{original}"' if field == "grader_ref" else f'{field}: ["{original}"]'
+    )
+    content = valid_catalog().replace(original_block, replacement)
 
     diagnostics = diagnostics_for(tmp_path, content)
 
     assert diagnostics[0].code == "CATALOG_UNRESOLVED_REFERENCE"
     assert namespace in diagnostics[0].message
+
+
+@pytest.mark.parametrize(
+    ("field", "block"),
+    [
+        ("id", f'  - id: "{opaque("scenario", "5")}"\n'),
+        ("title", '    title: "Verify synthetic catalog validation"\n'),
+        ("protocol_ids", f'    protocol_ids: ["{opaque("protocol", "b")}"]\n'),
+        ("priority", '    priority: "P0"\n'),
+        ("owner", '    owner: "evaluation"\n'),
+        ("preconditions", '    preconditions: ["clean evaluator environment"]\n'),
+        ("fixture_refs", f'    fixture_refs: ["{opaque("fixture", "c")}"]\n'),
+        ("injected_conditions", "    " + single_condition_block() + "\n"),
+        ("procedure", "    " + procedure_block() + "\n"),
+        (
+            "expected_evidence",
+            f'    expected_evidence: ["{opaque("evidence", "2")}"]\n',
+        ),
+        ("pass_criteria", "    " + pass_criteria_block() + "\n"),
+        ("allowed_retries", "    allowed_retries: 0\n"),
+        ("risk_ids", f'    risk_ids: ["{opaque("risk", "e")}"]\n'),
+        ("gate_ids", f'    gate_ids: ["{opaque("gate", "f")}"]\n'),
+        ("endpoint_ids", f'    endpoint_ids: ["{opaque("endpoint", "1")}"]\n'),
+        ("claim_ids", f'    claim_ids: ["{opaque("claim", "3")}"]\n'),
+        ("data_classification", '    data_classification: "synthetic"\n'),
+        ("network_policy", '    network_policy: "deny"\n'),
+        (
+            "resource_limits",
+            "    resource_limits:\n      wall_seconds: 30\n      memory_mb: 256\n",
+        ),
+        ("grader_ref", f'    grader_ref: "{opaque("grader", "4")}"\n'),
+    ],
+)
+def test_every_required_scenario_field_is_enforced_by_schema(
+    tmp_path: Path, field: str, block: str
+) -> None:
+    diagnostics = diagnostics_for(tmp_path, remove_last(valid_catalog(), block))
+
+    assert diagnostics[0].code == "CATALOG_SCHEMA"
+    assert diagnostics[0].path == "catalog.yaml"
+    assert diagnostics[0].line is not None
+    assert diagnostics[0].column is not None
 
 
 def test_validation_is_no_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
