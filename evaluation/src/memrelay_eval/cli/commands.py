@@ -11,6 +11,7 @@ from typing import Any
 from memrelay_eval.adapters.copilot.catalog import eligible_models
 from memrelay_eval.adapters.copilot.client import CopilotSdkClient, bootstrap_runtime
 from memrelay_eval.adapters.copilot.session import qualify_native_catalog
+from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
 from memrelay_eval.domain.entities import QualificationCaps
 from memrelay_eval.domain.errors import ConformancePauseError
 from memrelay_eval.orchestration.control import (
@@ -94,3 +95,20 @@ def lock_models(
     write_model_lock(repository, runtime_lock, archive, caps, qualifications, consumption)
     print("Native model catalog and qualification lock written")
     return 0
+
+
+def validate_authored_catalog(args: Namespace) -> int:
+    """Validate source YAML without compiling tasks, emitting a lock, or using a provider."""
+
+    try:
+        result = validate_catalog(Path(args.catalog), prior_lock=_optional_path(args.prior_lock))
+    except CatalogValidationError as error:
+        for diagnostic in error.diagnostics:
+            print(diagnostic)
+        return 1
+    print(f"{result.source_path}: valid ({result.change_kind} change)")
+    return 0
+
+
+def _optional_path(value: str | None) -> Path | None:
+    return Path(value) if value is not None else None

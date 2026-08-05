@@ -5,7 +5,12 @@ from __future__ import annotations
 import argparse
 
 from memrelay_eval import __version__
-from memrelay_eval.cli.commands import bootstrap, lock_models, show_foundation_status
+from memrelay_eval.cli.commands import (
+    bootstrap,
+    lock_models,
+    show_foundation_status,
+    validate_authored_catalog,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -29,6 +34,20 @@ def build_parser() -> argparse.ArgumentParser:
     lock_models_parser.add_argument("--active-seconds-cap", type=float, required=True)
     lock_models_parser.add_argument("--wall-seconds-cap", type=float, required=True)
     lock_models_parser.set_defaults(handler=lock_models)
+    validate_catalog = subcommands.add_parser(
+        "validate-catalog",
+        help="validate authored catalog YAML without generating execution artifacts",
+    )
+    validate_catalog.add_argument(
+        "--catalog",
+        default="catalog/catalog.yaml",
+        help="path to the authored YAML catalog",
+    )
+    validate_catalog.add_argument(
+        "--prior-lock",
+        help="prior valid catalog lock used only for semantic version validation",
+    )
+    validate_catalog.set_defaults(handler=validate_authored_catalog)
     return parser
 
 

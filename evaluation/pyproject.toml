@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Offline, treatment-neutral evaluation foundation for memrelay."
 readme = "README.md"
 requires-python = "==3.13.*"
-dependencies = ["github-copilot-sdk==1.0.8"]
+dependencies = [
+    "github-copilot-sdk==1.0.8",
+    "jsonschema==4.26.0",
+    "PyYAML==6.0.3",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
