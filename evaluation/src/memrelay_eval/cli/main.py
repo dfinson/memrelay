@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from memrelay_eval import __version__
-from memrelay_eval.cli.commands import show_foundation_status
+from memrelay_eval.cli.commands import show_foundation_status, validate_authored_catalog
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +16,20 @@ def build_parser() -> argparse.ArgumentParser:
         "foundation", help="show current evaluator foundation status"
     )
     foundation.set_defaults(handler=show_foundation_status)
+    validate_catalog = subcommands.add_parser(
+        "validate-catalog",
+        help="validate authored catalog YAML without generating execution artifacts",
+    )
+    validate_catalog.add_argument(
+        "--catalog",
+        default="catalog/catalog.yaml",
+        help="path to the authored YAML catalog",
+    )
+    validate_catalog.add_argument(
+        "--prior-lock",
+        help="prior valid catalog lock used only for semantic version validation",
+    )
+    validate_catalog.set_defaults(handler=validate_authored_catalog)
     return parser
 
 

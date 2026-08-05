@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/scenario.schema.json",
+  "title": "memrelay executable scenario catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "catalog_version", "catalog_id", "references", "scenarios"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "catalog_version": {"type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"},
+    "catalog_id": {"$ref": "#/$defs/catalogId"},
+    "references": {"$ref": "#/$defs/references"},
+    "scenarios": {"type": "array", "items": {"$ref": "#/$defs/scenario"}}
+  },
+  "$defs": {
+    "opaque": {"type": "string", "pattern": "^(?!(?:arm|treatment)_[a-f0-9]{32}$)[a-z][a-z0-9]*_[a-f0-9]{32}$"},
+    "catalogId": {"type": "string", "pattern": "^cat_[a-f0-9]{32}$"},
+    "idList": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/opaque"}},
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocols", "fixtures", "risks", "gates", "endpoints", "evidence", "claims", "graders"],
+      "properties": {
+        "protocols": {"$ref": "#/$defs/idList"},
+        "fixtures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fixture"}},
+        "risks": {"$ref": "#/$defs/idList"},
+        "gates": {"$ref": "#/$defs/idList"},
+        "endpoints": {"$ref": "#/$defs/idList"},
+        "evidence": {"$ref": "#/$defs/idList"},
+        "claims": {"$ref": "#/$defs/idList"},
+        "graders": {"$ref": "#/$defs/idList"}
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "source_path", "sha256", "media_type", "license", "provenance", "repository_revision", "extraction_path", "data_classification", "redistribution_policy"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaque"},
+        "source_path": {"type": "string", "minLength": 1, "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9][A-Za-z0-9._/-]*$"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "media_type": {"type": "string", "minLength": 1},
+        "license": {"type": "string", "minLength": 1},
+        "provenance": {"type": "string", "minLength": 1},
+        "repository_revision": {"type": ["string", "null"]},
+        "extraction_path": {"type": "string", "minLength": 1},
+        "data_classification": {"type": "string", "minLength": 1},
+        "redistribution_policy": {"type": "string", "minLength": 1}
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {"id": {"$ref": "#/$defs/opaque"}, "description": {"type": "string", "minLength": 1}}
+    },
+    "procedure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {"id": {"$ref": "#/$defs/opaque"}, "description": {"type": "string", "minLength": 1}}
+    },
+    "verdict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "assertion"],
+      "properties": {"id": {"$ref": "#/$defs/opaque"}, "assertion": {"type": "string", "minLength": 1}}
+    },
+    "scenario": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "protocol_ids", "priority", "owner", "preconditions", "fixture_refs", "injected_conditions", "procedure", "expected_evidence", "pass_criteria", "allowed_retries", "risk_ids", "gate_ids", "endpoint_ids", "claim_ids", "data_classification", "network_policy", "resource_limits", "grader_ref"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^scenario_[a-f0-9]{32}$"},
+        "title": {"type": "string", "minLength": 1},
+        "protocol_ids": {"$ref": "#/$defs/idList"},
+        "priority": {"enum": ["P0", "P1", "P2"]},
+        "owner": {"type": "string", "minLength": 1},
+        "preconditions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "fixture_refs": {"$ref": "#/$defs/idList"},
+        "injected_conditions": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "procedure": {"$ref": "#/$defs/procedure"},
+        "expected_evidence": {"$ref": "#/$defs/idList"},
+        "pass_criteria": {"$ref": "#/$defs/verdict"},
+        "allowed_retries": {"type": "integer", "minimum": 0, "maximum": 1},
+        "risk_ids": {"$ref": "#/$defs/idList"},
+        "gate_ids": {"$ref": "#/$defs/idList"},
+        "endpoint_ids": {"$ref": "#/$defs/idList"},
+        "claim_ids": {"$ref": "#/$defs/idList"},
+        "data_classification": {"type": "string", "minLength": 1},
+        "network_policy": {"enum": ["deny", "allow-listed"]},
+        "resource_limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["wall_seconds", "memory_mb"],
+          "properties": {
+            "wall_seconds": {"type": "integer", "minimum": 1},
+            "memory_mb": {"type": "integer", "minimum": 1}
+          }
+        },
+        "grader_ref": {"$ref": "#/$defs/opaque"}
+      }
+    }
+  }
+}
