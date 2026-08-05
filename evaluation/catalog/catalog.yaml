@@ -1,4 +1,66 @@
 schema_version: "1.0.0"
-catalog_version: "0.0.0"
-catalog_id: "catalog_placeholder"
-scenarios: []
+catalog_version: "1.0.0"
+catalog_id: "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+references:
+  protocols:
+    - "protocol_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  fixtures:
+    - id: "fixture_cccccccccccccccccccccccccccccccc"
+      source_path: "fixtures/catalog-validation.txt"
+      sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      media_type: "text/plain"
+      license: "CC0-1.0"
+      provenance: "synthetic"
+      repository_revision: null
+      extraction_path: "catalog-validation.txt"
+      data_classification: "synthetic"
+      redistribution_policy: "allowed"
+  risks:
+    - "risk_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  gates:
+    - "gate_ffffffffffffffffffffffffffffffff"
+  endpoints:
+    - "endpoint_11111111111111111111111111111111"
+  evidence:
+    - "evidence_22222222222222222222222222222222"
+  claims:
+    - "claim_33333333333333333333333333333333"
+  graders:
+    - "grader_44444444444444444444444444444444"
+scenarios:
+  - id: "scenario_55555555555555555555555555555555"
+    title: "Validate the executable catalog"
+    protocol_ids:
+      - "protocol_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    priority: "P0"
+    owner: "evaluation"
+    preconditions:
+      - "The evaluator is running in its isolated Python 3.13 environment."
+    fixture_refs:
+      - "fixture_cccccccccccccccccccccccccccccccc"
+    injected_conditions:
+      - id: "condition_66666666666666666666666666666666"
+        description: "A synthetically authored catalog is available."
+    procedure:
+      id: "procedure_77777777777777777777777777777777"
+      description: "Run structural and semantic catalog validation."
+    expected_evidence:
+      - "evidence_22222222222222222222222222222222"
+    pass_criteria:
+      id: "verdict_88888888888888888888888888888888"
+      assertion: "The catalog validates without diagnostics."
+    allowed_retries: 0
+    risk_ids:
+      - "risk_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    gate_ids:
+      - "gate_ffffffffffffffffffffffffffffffff"
+    endpoint_ids:
+      - "endpoint_11111111111111111111111111111111"
+    claim_ids:
+      - "claim_33333333333333333333333333333333"
+    data_classification: "synthetic"
+    network_policy: "deny"
+    resource_limits:
+      wall_seconds: 30
+      memory_mb: 256
+    grader_ref: "grader_44444444444444444444444444444444"
