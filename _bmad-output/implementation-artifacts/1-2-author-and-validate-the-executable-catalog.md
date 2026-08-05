@@ -1,6 +1,6 @@
 # Story 1.2: Author and Validate the Executable Catalog
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -32,23 +32,23 @@ So that only atomic, closed, reviewable scenarios can become executable tasks.
 
 ## Tasks / Subtasks
 
-- [ ] Define catalog schema `1.0.0` and authoritative YAML shape (AC: 1)
-  - [ ] Require catalog `schema_version`, semantic `catalog_version`, opaque `catalog_id`, and scenarios.
-  - [ ] Require each scenario to carry `id`, `title`, `protocol_ids`, `priority`, `owner`, `preconditions`, `fixture_refs`, `procedure`, `expected_evidence`, `pass_criteria`, `allowed_retries`, `risk_ids`, `gate_ids`, `endpoint_ids`, `claim_ids`, `data_classification`, `network_policy`, `resource_limits`, and `grader_ref`, plus an unambiguous single injected condition.
-  - [ ] Forbid YAML anchors, aliases, merge keys, environment substitution, duplicate keys, non-UTF-8 input, NaN, and Infinity.
-- [ ] Implement structural validation (AC: 1, 2)
-  - [ ] Validate against a locally pinned JSON Schema draft 2020-12 schema.
-  - [ ] Convert parser/schema failures to source-located domain diagnostics with stable codes.
-  - [ ] Accumulate deterministic diagnostics where safe; write no output on any failure.
-- [ ] Implement semantic and referential-closure validation (AC: 1, 2)
-  - [ ] Enforce exactly one injected condition, one procedure, and one objective verdict.
-  - [ ] Reject duplicate and treatment-revealing IDs.
-  - [ ] Resolve protocol, fixture, risk, gate, endpoint, expected-evidence, claim, grader, and other declared references.
-- [ ] Implement catalog version policy against the prior valid lock (AC: 3)
-  - [ ] Classify breaking, additive, and content-only changes from the validated semantic source projection, not YAML formatting, comments, or parser-specific objects.
-  - [ ] Require major, minor, and patch movement respectively and reject unrelated over/under movement.
-  - [ ] Keep digest generation out of this story except reading a prior lock contract.
-- [ ] Add CLI validation command and unit/contract/golden tests (AC: 1-3)
+- [x] Define catalog schema `1.0.0` and authoritative YAML shape (AC: 1)
+  - [x] Require catalog `schema_version`, semantic `catalog_version`, opaque `catalog_id`, and scenarios.
+  - [x] Require each scenario to carry `id`, `title`, `protocol_ids`, `priority`, `owner`, `preconditions`, `fixture_refs`, `procedure`, `expected_evidence`, `pass_criteria`, `allowed_retries`, `risk_ids`, `gate_ids`, `endpoint_ids`, `claim_ids`, `data_classification`, `network_policy`, `resource_limits`, and `grader_ref`, plus an unambiguous single injected condition.
+  - [x] Forbid YAML anchors, aliases, merge keys, environment substitution, duplicate keys, non-UTF-8 input, NaN, and Infinity.
+- [x] Implement structural validation (AC: 1, 2)
+  - [x] Validate against a locally pinned JSON Schema draft 2020-12 schema.
+  - [x] Convert parser/schema failures to source-located domain diagnostics with stable codes.
+  - [x] Accumulate deterministic diagnostics where safe; write no output on any failure.
+- [x] Implement semantic and referential-closure validation (AC: 1, 2)
+  - [x] Enforce exactly one injected condition, one procedure, and one objective verdict.
+  - [x] Reject duplicate and treatment-revealing IDs.
+  - [x] Resolve protocol, fixture, risk, gate, endpoint, expected-evidence, claim, grader, and other declared references.
+- [x] Implement catalog version policy against the prior valid lock (AC: 3)
+  - [x] Classify breaking, additive, and content-only changes from the validated semantic source projection, not YAML formatting, comments, or parser-specific objects.
+  - [x] Require major, minor, and patch movement respectively and reject unrelated over/under movement.
+  - [x] Keep digest generation out of this story except reading a prior lock contract.
+- [x] Add CLI validation command and unit/contract/golden tests (AC: 1-3)
 
 ## Developer Context
 
@@ -118,12 +118,30 @@ The executable source is new `evaluation/catalog/catalog.yaml`; it is not the TE
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a pinned Draft 2020-12 schema, safe YAML loader, semantic reference closure, and strict semantic version policy.
+- Added the `memrelay-eval validate-catalog` command; it validates only and never compiles tasks, generates a lock, or calls a provider.
+- Preserved evaluator isolation with direct `jsonschema==4.26.0` and `PyYAML==6.0.3` dependencies locked for Python 3.13.
+- Added source-located golden and unit coverage for malformed, unsafe, composite, duplicate, treatment-revealing, unresolved, and version-invalid catalogs.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/1-2-author-and-validate-the-executable-catalog.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/catalog/catalog.yaml`
+- `evaluation/pyproject.toml`
+- `evaluation/uv.lock`
+- `evaluation/schemas/scenario.schema.json`
+- `evaluation/src/memrelay_eval/catalog/__init__.py`
+- `evaluation/src/memrelay_eval/catalog/loader.py`
+- `evaluation/src/memrelay_eval/catalog/validation.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/tests/golden/catalog/invalid-duplicate-key.yaml`
+- `evaluation/tests/golden/catalog/invalid-duplicate-key.txt`
+- `evaluation/tests/unit/catalog/test_validation.py`
