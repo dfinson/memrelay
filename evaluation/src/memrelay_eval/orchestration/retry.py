@@ -35,10 +35,7 @@ class ExposureDecision:
 
     @property
     def is_conclusively_unexposed(self) -> bool:
-        return (
-            self.classification is ExposureClassification.UNEXPOSED
-            and bool(self.evidence_refs)
-        )
+        return self.classification is ExposureClassification.UNEXPOSED and bool(self.evidence_refs)
 
 
 class RetryAuthorizer:
@@ -74,9 +71,7 @@ class RetryAuthorizer:
             parent_terminal.classification
             is not AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE
         ):
-            raise RetryDeniedError(
-                "retry_terminal_not_pre_exposure_infrastructure_failure"
-            )
+            raise RetryDeniedError("retry_terminal_not_pre_exposure_infrastructure_failure")
         if exposure is None or not exposure.is_conclusively_unexposed:
             raise RetryDeniedError("retry_exposure_not_conclusively_unexposed")
         if isolation is None or not isolation.is_conclusive:

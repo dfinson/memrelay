@@ -159,9 +159,7 @@ class InMemoryLedger:
         return tuple(item for item in self._transitions if item.run_id == run_id)
 
     def retry_authorizations_for(self, run_id: RunId) -> tuple[RetryAuthorization, ...]:
-        return tuple(
-            item for item in self._retry_authorizations if item.run_id == run_id
-        )
+        return tuple(item for item in self._retry_authorizations if item.run_id == run_id)
 
     @property
     def artifact_links(self) -> tuple[ArtifactLink, ...]:

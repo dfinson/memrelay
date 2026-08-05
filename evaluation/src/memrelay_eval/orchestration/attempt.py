@@ -32,9 +32,7 @@ class AttemptTerminalRecorder:
             terminal.attempt_id in self._terminals
             or self._ledger.attempt_terminal_for(terminal.attempt_id) is not None
         ):
-            raise AttemptTerminalAlreadyRecordedError(
-                AttemptTerminalAlreadyRecordedError.code
-            )
+            raise AttemptTerminalAlreadyRecordedError(AttemptTerminalAlreadyRecordedError.code)
         self._ledger.append_attempt_terminal(terminal)
         self._telemetry.finish_attempt(terminal)
         self._terminals[terminal.attempt_id] = terminal

@@ -47,13 +47,22 @@ class _InternalRetryRaceLedger(InMemoryLedger):
         super().__init__()
         self._count_barrier = Barrier(2)
 
-    def internal_retries_for(self, attempt_id: AttemptId, subsystem: InternalRetrySubsystem) -> tuple[object, ...]:
+    def internal_retries_for(
+        self, attempt_id: AttemptId, subsystem: InternalRetrySubsystem
+    ) -> tuple[object, ...]:
         records = super().internal_retries_for(attempt_id, subsystem)
         self._count_barrier.wait(timeout=2)
         return records
 
 
-def _inputs() -> tuple[Protocol, Run, Attempt, AttemptTerminal, ExposureDecision, FreshIsolationAttestation]:
+def _inputs() -> tuple[
+    Protocol,
+    Run,
+    Attempt,
+    AttemptTerminal,
+    ExposureDecision,
+    FreshIsolationAttestation,
+]:
     run = Run(RunId.new(), AssignmentId.new())
     attempt = Attempt(AttemptId.new(), run.id)
     terminal = AttemptTerminal(

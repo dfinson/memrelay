@@ -24,7 +24,14 @@ from memrelay_eval.orchestration.attempt import InternalRetryRecorder
 from memrelay_eval.orchestration.retry import ExposureDecision, RetryAuthorizer
 
 
-def _inputs() -> tuple[Protocol, Run, Attempt, AttemptTerminal, ExposureDecision, FreshIsolationAttestation]:
+def _inputs() -> tuple[
+    Protocol,
+    Run,
+    Attempt,
+    AttemptTerminal,
+    ExposureDecision,
+    FreshIsolationAttestation,
+]:
     run = Run(RunId.new(), AssignmentId.new())
     attempt = Attempt(AttemptId.new(), run.id)
     terminal = AttemptTerminal(
