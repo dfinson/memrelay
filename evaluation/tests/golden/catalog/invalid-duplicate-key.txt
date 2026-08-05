@@ -1,0 +1,1 @@
+invalid-duplicate-key.yaml:2:1: CATALOG_DUPLICATE_KEY: duplicate key 'schema_version'

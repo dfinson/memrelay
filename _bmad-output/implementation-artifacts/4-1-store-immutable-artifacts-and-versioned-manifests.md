@@ -1,6 +1,6 @@
 # Story 4.1: Store Immutable Artifacts and Versioned Manifests
 
-Status: review
+Status: done
 
 ## Story
 
@@ -118,7 +118,8 @@ GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
-- `PYTHONPATH=evaluation\src python3.13 -m pytest evaluation\tests` - 125 passed
+- `evaluation\.venv\Scripts\python.exe -m pytest evaluation\tests` (CPython 3.13.5) - 190 passed
+- `uv lock --check --directory evaluation`
 - `PYTHONPATH=src python -m pytest tests` - 1305 passed, 2 skipped
 - `ruff check .`
 - `ruff format --check .`
