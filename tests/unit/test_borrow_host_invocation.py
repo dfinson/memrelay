@@ -17,8 +17,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import sys
+import time
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -166,6 +169,147 @@ def test_nonzero_exit_raises_hostprocesserror(monkeypatch: pytest.MonkeyPatch) -
         asyncio.run(CopilotHostProcess().complete("x"))
     assert "exited 1" in str(excinfo.value)
     assert "boom" in str(excinfo.value)
+
+
+def test_cancellation_kills_and_awaits_only_spawned_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[asyncio.subprocess.Process] = []
+    real_exec = borrow_host.asyncio.create_subprocess_exec
+
+    async def recording_exec(*args: object, **kwargs: object) -> asyncio.subprocess.Process:
+        process = await real_exec(*args, **kwargs)
+        created.append(process)
+        return process
+
+    monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", recording_exec)
+
+    async def scenario() -> None:
+        task = asyncio.create_task(
+            borrow_host._run_host_cli(
+                sys.executable,
+                ["-c", "import time; time.sleep(60)"],
+            )
+        )
+        while not created:
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert created
+    assert created[0].returncode is not None
+
+
+def test_cancellation_kills_spawned_descendants(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    child_pid_file = tmp_path / "child.pid"
+    parent = (
+        "import pathlib, subprocess, sys, time; "
+        "time.sleep(0.1); "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid)); "
+        "sys.exit(0)"
+    )
+    child_pid: int | None = None
+
+    async def scenario() -> None:
+        nonlocal child_pid
+        task = asyncio.create_task(borrow_host._run_host_cli(sys.executable, ["-c", parent]))
+        while child_pid is None:
+            try:
+                child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                pass
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert child_pid is not None
+
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            os.kill(child_pid, 0)
+        except OSError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail(f"spawned descendant PID {child_pid} survived cancellation")
+
+
+def test_job_termination_error_falls_back_to_exact_pid_taskkill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeWinError(Exception):
+        pass
+
+    class FakeWin32Job:
+        @staticmethod
+        def TerminateJobObject(job: object, exit_code: int) -> None:
+            raise FakeWinError("simulated job termination failure")
+
+    class FakeProcess:
+        pid = 4242
+        returncode = 0
+
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return b"", b""
+
+    class FakeKiller:
+        async def wait(self) -> int:
+            return 0
+
+    calls: list[tuple[object, ...]] = []
+
+    async def fake_exec(*args: object, **kwargs: object) -> FakeKiller:
+        calls.append(args)
+        return FakeKiller()
+
+    monkeypatch.setattr(borrow_host.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "win32job", FakeWin32Job)
+    monkeypatch.setattr(borrow_host.asyncio, "create_subprocess_exec", fake_exec)
+
+    asyncio.run(borrow_host._terminate_process_tree(FakeProcess(), windows_job=object()))
+
+    assert calls == [("taskkill", "/PID", "4242", "/T", "/F")]
+
+
+def test_job_creation_never_raises_into_the_spawn_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_create_windows_job`` must degrade to ``None``, never propagate.
+
+    It is called after the host process has already been spawned, so an escaping
+    exception would leave that process neither terminated nor reaped. pywin32 API
+    drift is the realistic trigger: a renamed constant raises ``AttributeError`` and
+    an unexpected ``QueryInformationJobObject`` shape raises ``KeyError`` — neither is
+    an ``OSError``.
+    """
+
+    class ExplodingWin32Job:
+        def __getattr__(self, name: str):
+            raise AttributeError(f"pywin32 renamed {name}")
+
+    monkeypatch.setattr(borrow_host.os, "name", "nt")
+    monkeypatch.setitem(sys.modules, "win32api", object())
+    monkeypatch.setitem(sys.modules, "win32job", ExplodingWin32Job())
+
+    assert borrow_host._create_windows_job(4242) is None
+
+
+def test_closing_a_broken_job_handle_is_swallowed() -> None:
+    """Cleanup of the Job Object handle is best-effort and must not raise."""
+
+    class ExplodingJob:
+        def Close(self) -> None:
+            raise RuntimeError("handle already invalid")
+
+    borrow_host._close_windows_job(ExplodingJob())  # must not raise
+    borrow_host._close_windows_job(None)
 
 
 def test_missing_binary_raises_before_exec(monkeypatch: pytest.MonkeyPatch) -> None:

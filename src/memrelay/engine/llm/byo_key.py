@@ -2,7 +2,7 @@
 
 ``ByoKeyLLMClient`` wraps graphiti-core's native ``OpenAIClient`` (which uses
 the provider's structured/JSON output mode) but constructs it *lazily*: nothing
-reads the API key or touches the network until the first ``_generate_response``
+reads the API key or touches the network until the first ``generate_response``
 call. That keeps CI hermetic — the engine can be built for ``search()`` /
 ``health()`` with no key present, and only ``note()`` (entity extraction) will
 raise a clear error if the key is genuinely missing.
@@ -21,10 +21,10 @@ from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from graphiti_core.embedder.openai import OpenAIEmbedder
+    from graphiti_core.tracer import Tracer
 
     from memrelay.config import Config
 
-DEFAULT_MAX_TOKENS = 16384
 DEFAULT_OPENAI_EMBEDDING_DIM = 1536
 
 
@@ -63,17 +63,61 @@ class ByoKeyLLMClient(LLMClient):
     def _get_delegate(self) -> OpenAIClient:
         if self._delegate is None:
             self._delegate = self._build_delegate()
+            # ``set_tracer`` may have been called before the delegate existed
+            # (graphiti wires it at ``Graphiti`` construction, we build lazily).
+            self._delegate.set_tracer(self.tracer)
+        self.token_tracker = self._delegate.token_tracker
         return self._delegate
+
+    def set_tracer(self, tracer: Tracer) -> None:
+        """Keep the delegate's tracer in step with ours.
+
+        ``generate_response`` delegates rather than running the base implementation,
+        so ``self.tracer`` is never read on the call path — without this override the
+        tracer graphiti installs would land on the wrapper while the delegate kept its
+        own ``NoOpTracer``, and every span would be silently dropped.
+        """
+        super().set_tracer(tracer)
+        if self._delegate is not None:
+            self._delegate.set_tracer(tracer)
+
+    async def generate_response(
+        self,
+        messages: list[Message],
+        response_model: type[BaseModel] | None = None,
+        max_tokens: int | None = None,
+        model_size: ModelSize = ModelSize.medium,
+        group_id: str | None = None,
+        prompt_name: str | None = None,
+        *,
+        attribute_extraction: bool = False,
+    ) -> dict[str, Any]:
+        """Delegate through graphiti's public API.
+
+        graphiti's provider-specific low-level return contract changed across the
+        supported 0.29.x line. Its public method owns that adaptation plus retry,
+        tracing, token accounting, and prompt preparation, so bypassing it can leak
+        a provider tuple into extraction instead of the final response mapping.
+        """
+        return await self._get_delegate().generate_response(
+            messages,
+            response_model=response_model,
+            max_tokens=max_tokens,
+            model_size=model_size,
+            group_id=group_id,
+            prompt_name=prompt_name,
+            attribute_extraction=attribute_extraction,
+        )
 
     async def _generate_response(
         self,
         messages: list[Message],
         response_model: type[BaseModel] | None = None,
-        max_tokens: int = DEFAULT_MAX_TOKENS,
+        max_tokens: int = 16384,
         model_size: ModelSize = ModelSize.medium,
     ) -> dict[str, Any]:
-        delegate = self._get_delegate()
-        return await delegate._generate_response(
+        """Satisfy the base-class provider seam without using a private delegate API."""
+        return await self._get_delegate().generate_response(
             messages,
             response_model=response_model,
             max_tokens=max_tokens,

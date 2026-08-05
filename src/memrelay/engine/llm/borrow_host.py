@@ -22,6 +22,8 @@ import logging
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import uuid
 from typing import Any, Protocol, runtime_checkable
@@ -49,6 +51,59 @@ def _warn_shim_fallback_once(reason: str, message: str, *args: object) -> None:
         return
     _warned_shim_fallbacks.add(reason)
     logger.warning(message, *args)
+
+
+def _create_windows_job(pid: int) -> Any | None:
+    """Assign ``pid`` to an owned kill-on-close Job Object when available.
+
+    Contract: never raises. The caller has already spawned the host process, so an
+    exception escaping here would leave that process neither terminated nor reaped.
+    Job Objects are an optimization over the exact-PID ``taskkill /T`` fallback, so
+    any failure — a pywin32 API/constant change, an unexpected
+    ``QueryInformationJobObject`` shape, a job the parent may not nest under —
+    degrades to ``None`` rather than breaking the call.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import win32api
+        import win32job
+    except ImportError:
+        logger.debug("pywin32 unavailable for host PID %s", pid)
+        return None
+
+    job = None
+    try:
+        job = win32job.CreateJobObject(None, "")
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        info["BasicLimitInformation"]["LimitFlags"] |= win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(
+            job,
+            win32job.JobObjectExtendedLimitInformation,
+            info,
+        )
+        process_handle = win32api.OpenProcess(0x0001 | 0x0100, False, pid)
+        try:
+            win32job.AssignProcessToJobObject(job, process_handle)
+        finally:
+            process_handle.Close()
+        return job
+    except Exception:  # noqa: BLE001 - fall back to exact-PID taskkill, never break the call
+        logger.debug("Windows Job Object unavailable for host PID %s", pid, exc_info=True)
+        if job is not None:
+            try:
+                job.Close()
+            except Exception:  # noqa: BLE001 - nothing left to salvage
+                pass
+        return None
+
+
+def _close_windows_job(job: Any | None) -> None:
+    if job is not None:
+        try:
+            job.Close()
+        except Exception:  # noqa: BLE001 - closing is best-effort cleanup
+            logger.debug("failed to close host Job Object", exc_info=True)
 
 
 DEFAULT_MAX_TOKENS = 16384
@@ -266,6 +321,12 @@ async def _run_host_cli(
         node_loader = _node_shim_launch(resolved)
         if node_loader is not None:
             launch = [node_loader[0], node_loader[1]]
+    spawn_kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        spawn_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        spawn_kwargs["start_new_session"] = True
+    process_job: Any | None = None
     try:
         process = await asyncio.create_subprocess_exec(
             *launch,
@@ -273,15 +334,92 @@ async def _run_host_cli(
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            **spawn_kwargs,
         )
-        stdout, stderr = await process.communicate(stdin_payload)
+        pid = getattr(process, "pid", None)
+        if isinstance(pid, int):
+            process_job = _create_windows_job(pid)
     except OSError as exc:  # pragma: no cover - environment dependent
         raise HostProcessError(f"failed to launch host process: {exc}") from exc
+    try:
+        stdout, stderr = await process.communicate(stdin_payload)
+    except asyncio.CancelledError:
+        await _terminate_process_tree(process, windows_job=process_job)
+        raise
+    except OSError as exc:  # pragma: no cover - environment dependent
+        raise HostProcessError(f"failed to communicate with host process: {exc}") from exc
+    finally:
+        _close_windows_job(process_job)
     if process.returncode != 0:
         raise HostProcessError(
             f"host process exited {process.returncode}: {stderr.decode('utf-8', 'replace').strip()}"
         )
     return stdout.decode("utf-8", "replace")
+
+
+async def _terminate_process_tree(
+    process: asyncio.subprocess.Process,
+    *,
+    windows_job: Any | None = None,
+) -> None:
+    """Terminate only the process tree rooted at memrelay's spawned host PID."""
+    if os.name == "nt":
+        terminated_job = False
+        if windows_job is not None:
+            try:
+                import win32job
+            except ImportError:
+                logger.debug("failed to terminate host Job Object", exc_info=True)
+            else:
+                try:
+                    win32job.TerminateJobObject(windows_job, 1)
+                    terminated_job = True
+                except Exception:  # noqa: BLE001 - fall through to exact-PID taskkill
+                    logger.debug("failed to terminate host Job Object", exc_info=True)
+        if not terminated_job:
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/PID",
+                    str(process.pid),
+                    "/T",
+                    "/F",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await killer.wait()
+            except OSError:
+                logger.debug("taskkill unavailable while cancelling host PID %s", process.pid)
+    else:
+        # Signal the group unconditionally. Keying on ``process.pid`` is only valid
+        # because ``_run_host_cli`` spawns with ``start_new_session=True``, which
+        # makes the child a group leader so pid == pgid; without that flag this would
+        # signal memrelay's own group, including the daemon and the launching shell.
+        # A reaped ``returncode`` does NOT mean there is nothing left to kill:
+        # asyncio's child watcher sets it as soon as the direct child exits,
+        # independent of pipe EOF, so a shim that forks a worker and returns
+        # immediately leaves a live descendant behind — the exact leak this function
+        # exists to close. Guarding on ``returncode is None`` would skip the kill
+        # precisely then. PID recycling is not a hazard here: a live process group
+        # holds a reference to its leader's pid, so that pid cannot be reallocated
+        # while any member survives, and once the group is genuinely empty
+        # ``killpg`` raises ``ProcessLookupError``.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    if process.returncode is None:
+        await process.wait()
+    try:
+        await process.communicate()
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 class CopilotHostProcess:

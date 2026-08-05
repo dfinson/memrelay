@@ -23,7 +23,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from memrelay.config import Config, ensure_home
+from memrelay.config import Config, ensure_home, resolve_config_path
 from memrelay.daemon import transport
 from memrelay.daemon.protocol import SHUTDOWN, Backend
 from memrelay.daemon.runtime import (
@@ -168,14 +168,28 @@ def startup_log_path(home: Path) -> Path:
     return home / STARTUP_LOG_DIRNAME / STARTUP_LOG_FILENAME
 
 
-def spawn_detached(home: Path) -> int:
+def spawn_detached(home: Path, *, config_path: Path | None = None) -> int:
     """Launch ``memrelay _serve`` as a detached background process; return its PID.
 
-    ``MEMRELAY_HOME`` pins the child to the same home directory. The child's
-    stdout+stderr are redirected to :func:`startup_log_path` (append) rather than
-    ``DEVNULL``. The daemon logs to stderr for its whole life, so this captures all
-    of it; the point is that a *startup* death — previously invisible under
-    ``DEVNULL`` — now leaves a diagnosable trace.
+    ``MEMRELAY_HOME`` pins the child to the same home directory, and the config file
+    the *caller* loaded is forwarded as ``MEMRELAY_CONFIG``. Both are required:
+    ``MEMRELAY_HOME`` alone scopes the child's config discovery to
+    ``<home>/config.toml`` (:func:`memrelay.config.candidate_config_paths`), so a
+    user whose ``config.toml`` lives at an XDG path would get a daemon silently
+    running on built-in defaults while ``memrelay config`` printed their real
+    settings. Pinning the exact file keeps the two in agreement without weakening
+    the isolation boundary for callers who set ``MEMRELAY_HOME`` themselves.
+
+    ``config_path`` should be the file the caller's own :class:`Config` came from.
+    It falls back to re-running discovery against the ambient environment, which is
+    exact for the CLI (``start`` resolves its config the same way in the same
+    process) but would otherwise guess for a programmatic caller who built a
+    ``Config`` without touching ``os.environ``.
+
+    The child's stdout+stderr are redirected to :func:`startup_log_path` (append)
+    rather than ``DEVNULL``. The daemon logs to stderr for its whole life, so this
+    captures all of it; the point is that a *startup* death — previously invisible
+    under ``DEVNULL`` — now leaves a diagnosable trace.
 
     The capture target is a real *file*, never a pipe the parent holds open: a
     parent-held pipe would tie the child's lifetime to the CLI and hang it. The
@@ -184,7 +198,10 @@ def spawn_detached(home: Path) -> int:
     child.
     """
     env = dict(os.environ)
+    resolved_config = config_path if config_path is not None else resolve_config_path()
     env["MEMRELAY_HOME"] = str(home)
+    if resolved_config is not None:
+        env["MEMRELAY_CONFIG"] = str(resolved_config)
     log_path = startup_log_path(home)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     kwargs: dict = {
@@ -315,6 +332,7 @@ def start_daemon(
     ready_timeout: float | None = None,
     poll_interval: float = POLL_INTERVAL,
     lock_timeout: float | None = None,
+    config_path: Path | None = None,
 ) -> DaemonStatus:
     """Start the daemon if not already running; wait until it answers health.
 
@@ -331,6 +349,10 @@ def start_daemon(
     so two concurrent ``start`` invocations can never spawn two daemons: the
     loser blocks on the lock, then re-probes and finds the winner's healthy
     daemon (closing the TOCTOU while preserving sequential double-start).
+
+    ``config_path`` is the file ``config`` was loaded from; it is forwarded to the
+    daemon so it reads the same settings. Omitting it falls back to re-running
+    config discovery against the ambient environment.
     """
     home = ensure_home(config)
 
@@ -354,7 +376,7 @@ def start_daemon(
         clear_pid(home)
         transport.cleanup(resolve_endpoint(home))
 
-        pid = spawn_detached(home)
+        pid = spawn_detached(home, config_path=config_path)
         write_pid(home, pid)
 
         deadline = time.monotonic() + ready_timeout

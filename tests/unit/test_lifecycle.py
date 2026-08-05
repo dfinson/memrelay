@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from memrelay.config import Config, GraphConfig
+from memrelay.config import Config, GraphConfig, load_config
 from memrelay.daemon import lifecycle
 
 
@@ -102,7 +102,7 @@ def test_slow_but_eventually_healthy_start_does_not_raise(
     the outcome.
     """
     cfg = _config(tmp_path)
-    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home: 4242)
+    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home, **_kwargs: 4242)
 
     calls = {"n": 0}
     healthy = {"status": "ok"}
@@ -126,7 +126,7 @@ def test_timeout_message_is_honest_and_names_status(
 ) -> None:
     """When the window is exhausted the error is honest and points at ``memrelay status``."""
     cfg = _config(tmp_path)
-    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home: 4242)
+    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home, **_kwargs: 4242)
     monkeypatch.setattr(
         lifecycle, "probe_health", lambda home, timeout=lifecycle.PROBE_TIMEOUT: None
     )
@@ -149,7 +149,7 @@ def test_start_daemon_resolves_timeout_when_none_given(
     benefit only lands if the *default* path runs :func:`_resolve_ready_timeout`.
     """
     cfg = _config(tmp_path)
-    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home: 4242)
+    monkeypatch.setattr(lifecycle, "spawn_detached", lambda home, **_kwargs: 4242)
 
     calls = {"n": 0}
 
@@ -298,3 +298,116 @@ def test_spawn_detached_uses_a_file_not_a_pipe_and_stays_detached(
 
     # The log directory was created under home.
     assert lifecycle.startup_log_path(home).parent.is_dir()
+
+
+def test_spawn_detached_pins_the_config_the_cli_resolved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Parent CLI and detached daemon must resolve the *same* config file.
+
+    ``spawn_detached`` sets ``MEMRELAY_HOME`` on the child, and ``MEMRELAY_HOME``
+    scopes config discovery to ``<home>/config.toml``. Without forwarding the
+    parent's resolved file, a user whose ``config.toml`` lives at an XDG path would
+    get a daemon silently running on built-in defaults while ``memrelay config``
+    printed their real settings — the diagnostic command lying about the daemon it
+    describes. This asserts on the resolved *config objects*, so it fails if the
+    plumbing is right but the precedence is not.
+    """
+    user_home = tmp_path / "user"
+    xdg_config = user_home / ".config" / "memrelay"
+    xdg_config.mkdir(parents=True)
+    (xdg_config / "config.toml").write_text('[llm]\nhost = "claude"\n', encoding="utf-8")
+
+    home = tmp_path / "home"
+    home.mkdir()
+
+    for var in ("MEMRELAY_CONFIG", "MEMRELAY_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+
+    parent_cfg = load_config()
+    assert parent_cfg.llm.host == "claude", "precondition: the CLI reads the XDG config"
+
+    captured: dict = {}
+
+    class FakePopen:
+        def __init__(self, argv: list[str], **kwargs: object) -> None:
+            captured["env"] = kwargs["env"]
+            self.pid = 4242
+
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", FakePopen)
+    lifecycle.spawn_detached(home)
+
+    child_env = captured["env"]
+    assert child_env["MEMRELAY_HOME"] == str(home)  # home pinning is unchanged
+    # The daemon resolves the same configuration the CLI just reported.
+    child_cfg = load_config(environ=child_env)
+    assert child_cfg.llm.host == parent_cfg.llm.host
+    assert Path(child_env["MEMRELAY_CONFIG"]) == (xdg_config / "config.toml").resolve()
+    # ...while home still comes from MEMRELAY_HOME, not the config file's directory.
+    assert child_cfg.home_path == home.resolve()
+
+
+def test_spawn_detached_omits_config_pin_when_no_config_file_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No discovered config → no ``MEMRELAY_CONFIG``, so the child stays on defaults."""
+    user_home = tmp_path / "user"
+    user_home.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+
+    for var in ("MEMRELAY_CONFIG", "MEMRELAY_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("HOME", str(user_home))
+    monkeypatch.setenv("USERPROFILE", str(user_home))
+
+    captured: dict = {}
+
+    class FakePopen:
+        def __init__(self, argv: list[str], **kwargs: object) -> None:
+            captured["env"] = kwargs["env"]
+            self.pid = 4243
+
+    monkeypatch.setattr(lifecycle.subprocess, "Popen", FakePopen)
+    lifecycle.spawn_detached(home)
+
+    assert "MEMRELAY_CONFIG" not in captured["env"]
+    assert captured["env"]["MEMRELAY_HOME"] == str(home)
+
+
+def test_start_daemon_forwards_the_config_it_was_given(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start_daemon`` must pin the caller's config, not re-derive one from the env.
+
+    Re-deriving is only exact when the caller happens to have loaded its ``Config``
+    from the same ambient environment in the same process. A programmatic caller that
+    built a ``Config`` explicitly would otherwise hand the daemon a *different* file
+    than the one it is itself running on.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    explicit = tmp_path / "elsewhere" / "config.toml"
+    explicit.parent.mkdir()
+    explicit.write_text("", encoding="utf-8")
+
+    seen: dict = {}
+
+    def fake_spawn(spawn_home: Path, *, config_path: Path | None = None) -> int:
+        seen["config_path"] = config_path
+        return 4242
+
+    monkeypatch.setattr(lifecycle, "spawn_detached", fake_spawn)
+    monkeypatch.setattr(lifecycle, "write_pid", lambda *a, **k: None)
+    monkeypatch.setattr(lifecycle, "clear_pid", lambda *a, **k: None)
+    monkeypatch.setattr(
+        lifecycle, "probe_health", lambda home, timeout=lifecycle.PROBE_TIMEOUT: None
+    )
+
+    cfg = load_config(environ={"MEMRELAY_HOME": str(home)})
+    with pytest.raises(lifecycle.DaemonStartError):
+        lifecycle.start_daemon(cfg, ready_timeout=0.01, config_path=explicit)
+
+    assert seen["config_path"] == explicit

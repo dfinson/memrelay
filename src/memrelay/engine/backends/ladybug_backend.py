@@ -40,5 +40,16 @@ class LadybugBackend(Backend):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         driver = LadybugDriver(db=str(path), max_concurrent_queries=max_concurrent_queries)
-        await apply_graphiti_deltas(driver, load_fts_extension=load_ladybug_fts_extension)
+        try:
+            await apply_graphiti_deltas(driver, load_fts_extension=load_ladybug_fts_extension)
+        except BaseException:
+            # Release the engine's file-level READ_WRITE lock so a retry in this
+            # process can re-open the DB. Cleanup must never mask the construction
+            # error (cf. ``engine.graphiti._close_driver_quietly``, which this
+            # mirrors rather than imports — importing it here would be circular).
+            try:
+                await driver.close()
+            except BaseException:  # noqa: BLE001 - the original failure is the real story
+                logger.warning("failed to close Ladybug driver after setup error", exc_info=True)
+            raise
         return driver

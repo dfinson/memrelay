@@ -145,7 +145,7 @@ def fake_daemon_spawn(monkeypatch: pytest.MonkeyPatch) -> dict:
 
     state: dict = {"count": 0, "daemons": []}
 
-    def fake_spawn(home: Path) -> int:
+    def fake_spawn(home: Path, **_kwargs: object) -> int:
         state["count"] += 1
         daemon = ThreadDaemon(resolve_endpoint(home))
         daemon.start()

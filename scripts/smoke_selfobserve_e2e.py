@@ -42,9 +42,11 @@ so it is never collected as a test. It mirrors the ``scripts/smoke_e2e.py`` +
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import shutil
 import subprocess
@@ -88,7 +90,7 @@ FACT = (
 RECALL_QUERY = "Who owns the Zephyrine ingestion service and where does it store telemetry?"
 RECALL_TOKENS = ("zephyrine", "dana", "okonkwo", "ladybug")
 
-DRAIN_TIMEOUT = 900.0  # a real Copilot extraction (premium/Opus tier) makes several calls/episode
+DRAIN_TIMEOUT = 1200.0  # observed live runs can exceed 15 minutes for one extracted episode
 
 
 def _git(*args: str, cwd: Path) -> None:
@@ -288,18 +290,33 @@ def _prove_exclusion(copilot_home: Path, fixture_id: str, fixture_events: Path) 
 
 
 async def _drain_once(ingester, *, timeout: float) -> None:
-    """Run the daemon's ingester until the spool is fully consumed, then stop it cleanly."""
+    """Drain within one absolute budget and always stop the in-flight ingester."""
     stop = asyncio.Event()
     task = asyncio.create_task(ingester.run(stop))
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    while ingester.stats()["spool_pending"] > 0 and loop.time() < deadline:
-        await asyncio.sleep(0.1)
-    stop.set()
-    await asyncio.wait_for(task, timeout=timeout)
+    try:
+        while ingester.stats()["spool_pending"] > 0:
+            if task.done():
+                await task
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(f"spool drain exceeded its {timeout:.1f}s budget")
+            await asyncio.sleep(min(0.1, remaining))
+
+        stop.set()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(f"spool drain exceeded its {timeout:.1f}s budget")
+        await asyncio.wait_for(task, timeout=remaining)
+    finally:
+        stop.set()
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
-async def _run(scratch: Path) -> int:
+async def _run(scratch: Path, *, drain_timeout: float = DRAIN_TIMEOUT) -> int:
     memrelay_home, copilot_home, _real = _preflight(scratch)
 
     # A temp git repo so run_observe derives a deterministic namespace from origin.
@@ -354,7 +371,7 @@ async def _run(scratch: Path) -> int:
 
         log.info("draining the spool once — this performs the REAL Copilot extraction …")
         t0 = time.time()
-        await _drain_once(ingester, timeout=DRAIN_TIMEOUT)
+        await _drain_once(ingester, timeout=drain_timeout)
         log.info(
             "drain complete in %.1fs: episodes_ingested=%s spool_pending=%s",
             time.time() - t0,
@@ -408,12 +425,27 @@ async def _run(scratch: Path) -> int:
     return 0
 
 
-def main() -> int:
+def _positive_timeout(value: str) -> float:
+    timeout = float(value)
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise argparse.ArgumentTypeError("timeout must be finite and greater than zero")
+    return timeout
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--drain-timeout",
+        type=_positive_timeout,
+        default=DRAIN_TIMEOUT,
+        help=f"single spool-drain budget in seconds (default: {DRAIN_TIMEOUT:g})",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     scratch = Path(tempfile.mkdtemp(prefix="memrelay-selfobserve-"))
     log.info("scratch root: %s", scratch)
     try:
-        return asyncio.run(_run(scratch))
+        return asyncio.run(_run(scratch, drain_timeout=args.drain_timeout))
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
         internal_sessions.reset()
