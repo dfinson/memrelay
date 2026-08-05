@@ -163,6 +163,20 @@ class ArtifactManifest:
         _utc_z(self.created_at)
         if not self.producer_component or not self.producer_version or not self.classification:
             raise InvalidArtifactManifestError("producer and classification are required")
+        if len(set(self.source_artifact_ids)) != len(self.source_artifact_ids):
+            raise InvalidArtifactManifestError("source_artifact_ids must not contain duplicates")
+        if self.encryption is not None and (
+            not self.encryption
+            or any(not isinstance(key, str) or not isinstance(value, str) or not key or not value
+                   for key, value in self.encryption.items())
+        ):
+            raise InvalidArtifactManifestError(
+                "encryption metadata must be a non-empty string mapping"
+            )
+        if self.contains_secrets and self.encryption is None:
+            raise InvalidArtifactManifestError(
+                "secret-bearing artifacts require explicit encryption metadata"
+            )
         if self.scope is ArtifactScope.EXPERIMENT:
             if self.experiment_id is None or self.run_id is not None or self.attempt_id is not None:
                 raise InvalidArtifactManifestError(

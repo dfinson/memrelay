@@ -1,0 +1,1 @@
+"""Durable artifact-store adapters."""

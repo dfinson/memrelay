@@ -44,10 +44,15 @@
     "contains_secrets": {"type": "boolean"},
     "source_artifact_ids": {
       "type": "array",
+      "uniqueItems": true,
       "items": {"type": "string", "pattern": "^art_[a-f0-9]{32}$"}
     },
     "retention_policy_id": {"type": "string", "pattern": "^ret_[a-f0-9]{32}$"},
-    "encryption": {"type": ["object", "null"]},
+    "encryption": {
+      "type": ["object", "null"],
+      "minProperties": 1,
+      "additionalProperties": {"type": "string"}
+    },
     "scope": {"enum": ["experiment", "run", "attempt"]},
     "experiment_id": {"type": ["string", "null"], "pattern": "^exp_[a-f0-9]{32}$"},
     "run_id": {"type": ["string", "null"], "pattern": "^run_[a-f0-9]{32}$"},

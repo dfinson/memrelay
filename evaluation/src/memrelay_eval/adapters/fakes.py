@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from types import MappingProxyType
 
+from memrelay_eval.evidence.manifest import manifest_bytes
 from memrelay_eval.domain.entities import (
     ArtifactLink,
     ArtifactManifest,
@@ -59,9 +59,7 @@ class InMemoryArtifactStore:
         payload = self._blobs.get(manifest.sha256)
         if payload is None or len(payload) != manifest.size_bytes:
             raise ArtifactIntegrityError("manifest does not match a stored immutable artifact")
-        canonical = json.dumps(
-            manifest.to_dict(), sort_keys=True, separators=(",", ":"), ensure_ascii=True
-        ).encode("utf-8")
+        canonical = manifest_bytes(manifest)
         reference = self.put_bytes(
             canonical, media_type="application/json", classification=manifest.classification
         )
