@@ -11,12 +11,14 @@ from memrelay_eval.domain.entities import (
     ArtifactRef,
     AttemptTerminal,
     InclusionDecision,
+    InternalRetryRecord,
+    RetryAuthorization,
     RunTransition,
     TelemetryObservation,
 )
 from memrelay_eval.domain.errors import ArtifactIntegrityError, IneligibleEvidenceError
-from memrelay_eval.domain.ids import RunId
-from memrelay_eval.domain.states import InclusionStatus
+from memrelay_eval.domain.ids import AttemptId, RunId
+from memrelay_eval.domain.states import InclusionStatus, InternalRetrySubsystem
 from memrelay_eval.evidence.manifest import manifest_bytes
 
 _REDACTED_TERMS = (
@@ -75,6 +77,9 @@ class InMemoryLedger:
 
     def __init__(self) -> None:
         self._transitions: list[RunTransition] = []
+        self._attempt_terminals: list[AttemptTerminal] = []
+        self._internal_retries: list[InternalRetryRecord] = []
+        self._retry_authorizations: list[RetryAuthorization] = []
         self._artifact_links: list[ArtifactLink] = []
         self._inclusions: list[InclusionDecision] = []
 
@@ -85,6 +90,34 @@ class InMemoryLedger:
         if history and history[-1].next_state != transition.previous:
             raise ValueError("transition does not continue this run's authoritative history")
         self._transitions.append(transition)
+
+    def append_attempt_terminal(self, terminal: AttemptTerminal) -> None:
+        if any(item.attempt_id == terminal.attempt_id for item in self._attempt_terminals):
+            raise ValueError("an attempt terminal record already exists")
+        self._attempt_terminals.append(terminal)
+
+    def attempt_terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None:
+        return next(
+            (item for item in self._attempt_terminals if item.attempt_id == attempt_id),
+            None,
+        )
+
+    def append_internal_retry(self, record: InternalRetryRecord) -> None:
+        self._internal_retries.append(record)
+
+    def internal_retries_for(
+        self, attempt_id: AttemptId, subsystem: InternalRetrySubsystem
+    ) -> tuple[InternalRetryRecord, ...]:
+        return tuple(
+            item
+            for item in self._internal_retries
+            if item.attempt_id == attempt_id and item.subsystem is subsystem
+        )
+
+    def append_retry_authorization(self, authorization: RetryAuthorization) -> None:
+        if self.retry_authorizations_for(authorization.run_id):
+            raise IneligibleEvidenceError("retry_already_authorized_for_run")
+        self._retry_authorizations.append(authorization)
 
     def append_artifact_link(self, link: ArtifactLink) -> None:
         self._artifact_links.append(link)
@@ -97,9 +130,26 @@ class InMemoryLedger:
     def history(self, run_id: RunId) -> tuple[RunTransition, ...]:
         return tuple(item for item in self._transitions if item.run_id == run_id)
 
+    def retry_authorizations_for(self, run_id: RunId) -> tuple[RetryAuthorization, ...]:
+        return tuple(
+            item for item in self._retry_authorizations if item.run_id == run_id
+        )
+
     @property
     def artifact_links(self) -> tuple[ArtifactLink, ...]:
         return tuple(self._artifact_links)
+
+    @property
+    def attempt_terminals(self) -> tuple[AttemptTerminal, ...]:
+        return tuple(self._attempt_terminals)
+
+    @property
+    def internal_retries(self) -> tuple[InternalRetryRecord, ...]:
+        return tuple(self._internal_retries)
+
+    @property
+    def retry_authorizations(self) -> tuple[RetryAuthorization, ...]:
+        return tuple(self._retry_authorizations)
 
     @property
     def inclusions(self) -> tuple[InclusionDecision, ...]:
@@ -128,6 +178,10 @@ class InMemoryTelemetry:
     def finish_attempt(self, terminal: AttemptTerminal) -> None:
         self._terminals.append(terminal)
         self.emit(TelemetryObservation("attempt_finished", terminal.occurred_at, {}))
+
+    @property
+    def terminals(self) -> tuple[AttemptTerminal, ...]:
+        return tuple(self._terminals)
 
     def flush(self, timeout_seconds: float) -> MappingProxyType:
         if timeout_seconds < 0:
