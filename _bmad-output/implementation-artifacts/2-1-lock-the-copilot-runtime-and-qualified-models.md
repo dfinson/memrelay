@@ -114,8 +114,9 @@ GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
-- `python -m pytest evaluation\\tests` (113 passed)
+- `python -m pytest evaluation\\tests` (122 passed after PR review fixes)
 - `python -m pytest` with product and evaluator source roots (1305 passed, 2 skipped)
+- `ruff check .` and `ruff format --check .` (passed)
 - `uv lock` could not reach `files.pythonhosted.org`; the existing resolved lock was updated only for the direct SDK dependency metadata.
 
 ### Completion Notes List
@@ -124,6 +125,7 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - Added native-catalog archival, bounded eight-session qualification, deterministic M0/M1/M2 and judge selection, atomic lock persistence, and typed drift pauses.
 - Kept CI provider-free. `bootstrap` and `lock-models` are explicit, finite local commands; no live Copilot request was made during implementation.
 - Inspect execution remains out of scope.
+- PR review hardening derives a hashed subject from official SDK `auth.getStatus` host/login/auth type, reuses only verified identical locks before provider access, and records mechanically feasible judge diversity.
 
 ### File List
 
@@ -145,4 +147,5 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - `evaluation/tests/unit/copilot/test_qualification.py`
 - `evaluation/tests/contract/copilot/test_locks.py`
 - `evaluation/tests/contract/copilot/test_sdk_contract.py`
+- `evaluation/tests/contract/copilot/test_model_lock_idempotency.py`
 - `evaluation/tests/integration/copilot/test_cli_guards.py`

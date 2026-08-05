@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+
+from memrelay_eval.adapters.copilot import session as session_adapter
 from memrelay_eval.adapters.copilot.catalog import (
     UNAVAILABLE,
     archive_native_catalog,
@@ -8,6 +11,7 @@ from memrelay_eval.adapters.copilot.catalog import (
 )
 from memrelay_eval.domain.entities import (
     ModelQualification,
+    QualificationCaps,
     QualificationTaskResult,
     QualificationUsage,
 )
@@ -100,5 +104,49 @@ def test_selection_uses_frozen_ranking_family_and_credit_rules() -> None:
     assert selection.m0.native_id == "native-a"
     assert selection.m1 is not None and selection.m1.native_id == "native-c"
     assert selection.m2 is not None and selection.m2.native_id == "native-c"
-    assert [judge.native_id for judge in selection.judges] == ["native-b", "native-d"]
-    assert selection.omissions["judges"] == "fewer_than_three_distinct_eligible_native_models"
+    assert [judge.native_id for judge in selection.judges] == ["native-c", "native-b", "native-d"]
+    assert "judges" not in selection.omissions
+
+
+def test_selection_records_homogeneous_panel_when_no_family_diversity_is_feasible() -> None:
+    archive = archive_native_catalog(
+        b'{"models":[]}',
+        {"models": [model(f"native-{index}", "shared") for index in range(4)]},
+    )
+
+    selection = select_models(
+        archive.catalog,
+        tuple(qualification(f"native-{index}", 8, 1.0, index + 1, 1) for index in range(4)),
+    )
+
+    assert selection.m1 is None
+    assert selection.m2 is not None and selection.m2.native_id == "native-0"
+    assert [judge.native_id for judge in selection.judges] == [
+        "native-1",
+        "native-2",
+        "native-3",
+    ]
+    assert selection.omissions["judges"] == "homogeneous_panel_only"
+
+
+def test_live_qualification_delegates_to_the_catalog_eligibility_authority(monkeypatch) -> None:
+    archive = archive_native_catalog(
+        b'{"models":[]}',
+        {"models": [model("eligible", "a"), model("missing-tools", "b", tools=False)]},
+    )
+    captured = []
+
+    async def fake_qualify(models, caps, execute):
+        del caps, execute
+        captured.extend(model.native_id for model in models)
+        return (), QualificationUsage()
+
+    monkeypatch.setattr(session_adapter, "qualify_models", fake_qualify)
+    asyncio.run(
+        session_adapter.qualify_native_catalog(
+            archive.catalog,
+            QualificationCaps(8, 8, 80, 8, 16),
+        )
+    )
+
+    assert captured == [model.native_id for model in eligible_models(archive.catalog)]

@@ -413,7 +413,9 @@ class ModelQualification:
 
     def __post_init__(self) -> None:
         if len(self.task_results) != 8:
-            raise ValueError("each eligible model must receive exactly eight qualification sessions")
+            raise ValueError(
+                "each eligible model must receive exactly eight qualification sessions"
+            )
 
     @property
     def executable_passes(self) -> int:

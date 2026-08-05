@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from memrelay_eval.adapters.copilot.catalog import archive_native_catalog
 from memrelay_eval.domain.entities import (
     ModelQualification,
@@ -43,8 +42,7 @@ def qualification() -> ModelQualification:
     return ModelQualification(
         "native-a",
         tuple(
-            QualificationTaskResult(True, 1.0, QualificationUsage(1, 1, 1, 1, 1))
-            for _ in range(8)
+            QualificationTaskResult(True, 1.0, QualificationUsage(1, 1, 1, 1, 1)) for _ in range(8)
         ),
     )
 
@@ -100,9 +98,7 @@ def test_model_lock_archives_catalog_and_preserves_previous_lock_on_drift(tmp_pa
     )
 
     verify_stage_locks(runtime_lock(), model_lock, runtime, source.catalog)
-    changed = archive_native_catalog(
-        b'{"models":[{"id":"native-b"}]}', {"models": []}
-    )
+    changed = archive_native_catalog(b'{"models":[{"id":"native-b"}]}', {"models": []})
     with pytest.raises(ConformancePauseError, match="catalog bytes changed"):
         verify_stage_locks(runtime_lock(), model_lock, runtime, changed.catalog)
     assert repository.read("model-lock.json") == model_lock

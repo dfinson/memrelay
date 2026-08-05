@@ -4,7 +4,6 @@ import asyncio
 from pathlib import Path
 
 import pytest
-
 from memrelay_eval.adapters.copilot.client import (
     CopilotSdkClient,
     bootstrap_runtime,
@@ -46,7 +45,25 @@ class FakeClient:
         self.stopped += 1
 
 
-def test_official_sdk_adapter_archives_full_native_model_response_without_provider_routing() -> None:
+class FakeAuthStatus:
+    def __init__(self, login: str | None) -> None:
+        self.isAuthenticated = login is not None
+        self.host = "https://github.com" if login else None
+        self.login = login
+        self.authType = "oauth" if login else None
+
+
+class FakeAuthClient(FakeClient):
+    def __init__(self, login: str | None) -> None:
+        self._login = login
+
+    async def get_auth_status(self) -> FakeAuthStatus:
+        return FakeAuthStatus(self._login)
+
+
+def test_official_sdk_adapter_archives_full_native_model_response_without_provider_routing() -> (
+    None
+):
     client = FakeClient()
     archive = asyncio.run(CopilotSdkClient(lambda: client).archive_models())
 
@@ -55,7 +72,9 @@ def test_official_sdk_adapter_archives_full_native_model_response_without_provid
     assert b"native-model" in archive.raw_bytes
 
 
-def test_sdk_lock_requires_only_the_frozen_wheel(evaluation_root: Path = Path(__file__).parents[3]) -> None:
+def test_sdk_lock_requires_only_the_frozen_wheel(
+    evaluation_root: Path = Path(__file__).parents[3],
+) -> None:
     verify_sdk_lockfile(evaluation_root / "uv.lock")
     bad_lock = evaluation_root / "tests" / "contract" / "copilot" / "bad-uv.lock"
     try:
@@ -96,12 +115,63 @@ def test_bootstrap_downloads_once_then_enables_implicit_download_guard(
     assert "signed-in-user" not in str(first)
 
 
+def test_authenticated_subject_changes_with_the_authenticated_account() -> None:
+    first = asyncio.run(
+        CopilotSdkClient(lambda: FakeAuthClient("octocat")).authenticated_subscription_subject()
+    )
+    second = asyncio.run(
+        CopilotSdkClient(lambda: FakeAuthClient("hubot")).authenticated_subscription_subject()
+    )
+
+    assert first != second
+    assert "octocat" in first
+    assert "hubot" in second
+
+
+def test_missing_authenticated_subject_fails_closed() -> None:
+    with pytest.raises(RuntimeLockError, match="identity is unavailable"):
+        asyncio.run(
+            CopilotSdkClient(lambda: FakeAuthClient(None)).authenticated_subscription_subject()
+        )
+
+
+def test_bootstrap_hashes_distinct_authenticated_subjects(
+    tmp_path: Path, evaluation_root: Path = Path(__file__).parents[3]
+) -> None:
+    runtime = tmp_path / "copilot.exe"
+    runtime.write_bytes(b"runtime")
+
+    first = bootstrap_runtime(
+        LockRepository(tmp_path / "first"),
+        evaluation_root / "uv.lock",
+        command_runner=lambda _: None,
+        runtime_locator=lambda: (runtime, "runtime-1"),
+        subscription_subject=lambda: "https://github.com\x1foctocat\x1foauth",
+        installed_version_provider=lambda _: "1.0.8",
+    )
+    second = bootstrap_runtime(
+        LockRepository(tmp_path / "second"),
+        evaluation_root / "uv.lock",
+        command_runner=lambda _: None,
+        runtime_locator=lambda: (runtime, "runtime-1"),
+        subscription_subject=lambda: "https://github.com\x1fhubot\x1foauth",
+        installed_version_provider=lambda _: "1.0.8",
+    )
+
+    assert (
+        first["runtime"]["subscription_identity_sha256"]
+        != second["runtime"]["subscription_identity_sha256"]
+    )
+
+
 def test_copilot_adapter_has_no_forbidden_provider_route(
     evaluation_root: Path = Path(__file__).parents[3],
 ) -> None:
     source = "\n".join(
         path.read_text(encoding="utf-8")
-        for path in sorted((evaluation_root / "src" / "memrelay_eval" / "adapters" / "copilot").glob("*.py"))
+        for path in sorted(
+            (evaluation_root / "src" / "memrelay_eval" / "adapters" / "copilot").glob("*.py")
+        )
     ).lower()
 
     assert "openai" not in source

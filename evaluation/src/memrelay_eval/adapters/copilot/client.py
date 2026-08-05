@@ -13,7 +13,6 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
 
 from memrelay_eval.adapters.copilot.catalog import CatalogArchive, archive_native_catalog
 from memrelay_eval.domain.entities import RuntimeIdentity
@@ -55,6 +54,27 @@ class CopilotSdkClient:
         finally:
             await stop()
 
+    async def authenticated_subscription_subject(self) -> str:
+        """Return a stable non-secret subject from the runtime's auth status seam."""
+
+        client = self._get_client()
+        get_auth_status = getattr(client, "get_auth_status", None)
+        start = getattr(client, "start", None)
+        stop = getattr(client, "stop", None)
+        if not callable(get_auth_status) or not callable(start) or not callable(stop):
+            raise RuntimeLockError(
+                "subscription_identity_unavailable",
+                "official SDK client does not expose authenticated status",
+            )
+        await start()
+        try:
+            status = get_auth_status()
+            if hasattr(status, "__await__"):
+                status = await status
+            return _subscription_subject_from_status(status)
+        finally:
+            await stop()
+
     def _get_client(self) -> object:
         if self._client is None:
             self._client = self._client_factory()
@@ -64,7 +84,7 @@ class CopilotSdkClient:
 def _official_client_factory() -> object:
     try:
         module = importlib.import_module("copilot")
-        factory = getattr(module, "CopilotClient")
+        factory = module.CopilotClient
     except (ImportError, AttributeError) as exc:
         raise ConformancePauseError(
             "sdk_unavailable", "github-copilot-sdk 1.0.8 is required for explicit live commands"
@@ -100,7 +120,9 @@ def verify_sdk_lockfile(lockfile: Path) -> None:
     text = lockfile.read_text(encoding="utf-8")
     package_start = text.find('name = "github-copilot-sdk"')
     if package_start < 0:
-        raise RuntimeLockError("sdk_lock_missing", "github-copilot-sdk is absent from the evaluator lock")
+        raise RuntimeLockError(
+            "sdk_lock_missing", "github-copilot-sdk is absent from the evaluator lock"
+        )
     package_end = text.find("\n[[package]]", package_start)
     package = text[package_start:] if package_end < 0 else text[package_start:package_end]
     if (
@@ -135,12 +157,16 @@ def bootstrap_runtime(
     locator = runtime_locator or _locate_runtime
     runtime_path, runtime_version = locator()
     if not runtime_path.is_file():
-        raise RuntimeLockError("runtime_missing", "SDK runtime download did not produce an executable")
+        raise RuntimeLockError(
+            "runtime_missing", "SDK runtime download did not produce an executable"
+        )
     installed_version = (installed_version_provider or importlib.metadata.version)(
         "github-copilot-sdk"
     )
     if installed_version != SDK_VERSION:
-        raise RuntimeLockError("sdk_version_mismatch", "installed Copilot SDK version does not match lock")
+        raise RuntimeLockError(
+            "sdk_version_mismatch", "installed Copilot SDK version does not match lock"
+        )
     identity = RuntimeIdentity(
         sdk_version=installed_version,
         wheel_filename=SDK_WHEEL,
@@ -178,9 +204,7 @@ def _locate_runtime() -> tuple[Path, str]:
             raise RuntimeLockError("runtime_missing", "SDK runtime executable cannot be located")
         executable = str(candidates[-1])
     path = Path(executable)
-    completed = subprocess.run(
-        [str(path), "--version"], check=True, capture_output=True, text=True
-    )
+    completed = subprocess.run([str(path), "--version"], check=True, capture_output=True, text=True)
     version = completed.stdout.strip().splitlines()[0]
     if not version:
         raise RuntimeLockError("runtime_version_missing", "SDK runtime returned no version")
@@ -188,6 +212,41 @@ def _locate_runtime() -> tuple[Path, str]:
 
 
 def _current_subscription_subject() -> str:
-    """Persist only a digest; the raw signed-in subscription subject is never retained."""
+    """Obtain identity from the current official SDK runtime session, never ambient state."""
 
-    return "github_copilot_current_subscription"
+    return _run_coroutine(CopilotSdkClient().authenticated_subscription_subject())
+
+
+def _subscription_subject_from_status(status: object) -> str:
+    authenticated = getattr(status, "isAuthenticated", None)
+    host = getattr(status, "host", None)
+    login = getattr(status, "login", None)
+    auth_type = getattr(status, "authType", None)
+    if (
+        authenticated is not True
+        or not isinstance(host, str)
+        or not host
+        or not isinstance(login, str)
+        or not login
+        or not isinstance(auth_type, str)
+        or not auth_type
+    ):
+        raise RuntimeLockError(
+            "subscription_identity_unavailable",
+            "authenticated Copilot subscription identity is unavailable",
+        )
+    return f"{host}\x1f{login}\x1f{auth_type}"
+
+
+def _run_coroutine(coroutine: Awaitable[str]) -> str:
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coroutine)
+    coroutine.close()
+    raise RuntimeLockError(
+        "subscription_identity_unavailable",
+        "subscription identity must be resolved outside an active event loop",
+    )

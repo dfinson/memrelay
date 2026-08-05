@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from memrelay_eval.adapters.copilot.session import QualificationSession, qualify_models
 from memrelay_eval.domain.entities import (
     NativeModel,
@@ -44,6 +43,4 @@ def test_qualification_runs_exactly_eight_sessions_per_model() -> None:
 
 def test_qualification_rejects_unbounded_or_wrong_session_envelope() -> None:
     with pytest.raises(QualificationLimitError, match="eight sessions"):
-        asyncio.run(
-            qualify_models((native("a"),), QualificationCaps(9, 9, 90, 9, 18), result)
-        )
+        asyncio.run(qualify_models((native("a"),), QualificationCaps(9, 9, 90, 9, 18), result))

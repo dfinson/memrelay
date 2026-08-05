@@ -8,9 +8,11 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from memrelay_eval.adapters.copilot.catalog import eligible_models
 from memrelay_eval.domain.entities import (
     ModelQualification,
     NativeModel,
+    NativeModelCatalog,
     QualificationCaps,
     QualificationTaskResult,
     QualificationUsage,
@@ -76,27 +78,14 @@ async def qualify_models(
 
 
 async def qualify_native_catalog(
-    catalog_models: Sequence[NativeModel],
+    catalog: NativeModelCatalog,
     caps: QualificationCaps,
 ) -> tuple[tuple[ModelQualification, ...], QualificationUsage]:
     """Explicitly run the fixed nonstudy suite with direct official-SDK sessions."""
 
-    models = eligible_models_from_native(catalog_models)
+    models = eligible_models(catalog)
     executor = _CopilotQualificationExecutor({model.native_id: model for model in models})
     return await qualify_models(models, caps, executor)
-
-
-def eligible_models_from_native(models: Sequence[NativeModel]) -> tuple[NativeModel, ...]:
-    """Apply the same native capability gate without accepting public model aliases."""
-
-    return tuple(
-        model
-        for model in models
-        if all(
-            model.capabilities.get(capability) not in {None, False, "unavailable"}
-            for capability in ("tools", "permissions", "context", "events", "cancellation", "sessions")
-        )
-    )
 
 
 class _CopilotQualificationExecutor:
@@ -118,7 +107,9 @@ class _CopilotQualificationExecutor:
                 kwargs["context_tier"] = model.context_tier
             sdk_session = await client.create_session(**kwargs)
             prompt, expected = _QUALIFICATION_PROMPTS[session.task_index]
-            event = await sdk_session.send_and_wait(prompt, timeout=session.remaining_caps.wall_seconds_limit)
+            event = await sdk_session.send_and_wait(
+                prompt, timeout=session.remaining_caps.wall_seconds_limit
+            )
             await sdk_session.disconnect()
             elapsed = time.monotonic() - started
             return QualificationTaskResult(
@@ -162,10 +153,14 @@ def _native_usage(event: object, elapsed: float) -> QualificationUsage:
     """Reject absent native metering rather than manufacturing zero-cost evidence."""
 
     if event is None or not hasattr(event, "to_dict"):
-        raise ConformancePauseError("qualification_usage_unavailable", "native usage event is missing")
+        raise ConformancePauseError(
+            "qualification_usage_unavailable", "native usage event is missing"
+        )
     data = event.to_dict()
     if not isinstance(data, dict):
-        raise ConformancePauseError("qualification_usage_unavailable", "native usage event is invalid")
+        raise ConformancePauseError(
+            "qualification_usage_unavailable", "native usage event is invalid"
+        )
     usage = _find_usage_mapping(data)
     if usage is None:
         raise ConformancePauseError(

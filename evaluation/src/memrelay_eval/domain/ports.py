@@ -11,9 +11,9 @@ from .entities import (
     ArtifactRef,
     AttemptTerminal,
     InclusionDecision,
+    NativeModelCatalog,
     RunTransition,
     TelemetryObservation,
-    NativeModelCatalog,
 )
 from .ids import AssignmentId, RunId
 

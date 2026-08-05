@@ -37,11 +37,15 @@ class LockRepository:
             raise ConformancePauseError("lock_shape_invalid", f"{name} must contain a JSON object")
         return value
 
+    def read_bytes(self, name: str) -> bytes | None:
+        path = self._path(name)
+        return path.read_bytes() if path.exists() else None
+
     def write(self, name: str, document: Mapping[str, object]) -> Path:
         _assert_redacted(document)
-        payload = json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
+        payload = json.dumps(
+            document, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
         self._root.mkdir(parents=True, exist_ok=True)
         destination = self._path(name)
         with tempfile.NamedTemporaryFile(
@@ -111,7 +115,9 @@ def write_model_lock(
 
     runtime_lock_sha256 = runtime_lock.get("lock_sha256")
     if not isinstance(runtime_lock_sha256, str):
-        raise ConformancePauseError("runtime_lock_invalid", "model lock requires a hashed runtime lock")
+        raise ConformancePauseError(
+            "runtime_lock_invalid", "model lock requires a hashed runtime lock"
+        )
     expected_sessions = len(qualifications) * 8
     if caps.session_limit != expected_sessions or consumption.sessions != expected_sessions:
         raise ConformancePauseError(
@@ -170,6 +176,46 @@ def write_model_lock(
     return document, selection
 
 
+def reuse_or_reject_model_lock(
+    repository: LockRepository,
+    runtime_lock: Mapping[str, object],
+    *,
+    credit_limit: float,
+    token_limit: int,
+    active_seconds_limit: float,
+    wall_seconds_limit: float,
+) -> dict[str, object] | None:
+    """Reuse an identical immutable model lock before any provider interaction."""
+
+    existing = repository.read("model-lock.json")
+    if existing is None:
+        return None
+    _verify_lock_digest(existing)
+    runtime_lock_sha256 = runtime_lock.get("lock_sha256")
+    if existing.get("runtime_lock_sha256") != runtime_lock_sha256:
+        raise ConformancePauseError(
+            "model_lock_runtime_conflict",
+            "existing model lock is linked to a different runtime lock",
+        )
+    caps = existing.get("qualification_caps")
+    if not isinstance(caps, Mapping):
+        raise ConformancePauseError(
+            "model_lock_invalid", "existing model lock lacks qualification caps"
+        )
+    requested = {
+        "credits": credit_limit,
+        "tokens": token_limit,
+        "active_seconds": active_seconds_limit,
+        "wall_seconds": wall_seconds_limit,
+    }
+    if any(caps.get(key) != value for key, value in requested.items()):
+        raise ConformancePauseError(
+            "model_lock_request_conflict",
+            "requested qualification caps differ from the immutable model lock",
+        )
+    return existing
+
+
 def _locked_model_document(model: object) -> dict[str, object]:
     return {
         "role": model.role,
@@ -179,6 +225,18 @@ def _locked_model_document(model: object) -> dict[str, object]:
         "reasoning_effort": model.reasoning_effort,
         "context_tier": model.context_tier,
     }
+
+
+def _verify_lock_digest(document: Mapping[str, object]) -> None:
+    recorded = document.get("lock_sha256")
+    if not isinstance(recorded, str):
+        raise ConformancePauseError("model_lock_invalid", "model lock has no digest")
+    content = dict(document)
+    content.pop("lock_sha256")
+    if lock_digest(content) != recorded:
+        raise ConformancePauseError(
+            "model_lock_integrity_failure", "model lock digest does not verify"
+        )
 
 
 def _assert_redacted(value: object, path: str = "") -> None:
@@ -205,4 +263,6 @@ def _assert_redacted(value: object, path: str = "") -> None:
         for index, item in enumerate(value):
             _assert_redacted(item, f"{path}[{index}]")
     elif isinstance(value, str) and any(term in value.lower() for term in ("ghp_", "github_pat_")):
-        raise ConformancePauseError("lock_secret_value", f"lock document contains credential-like data at {path}")
+        raise ConformancePauseError(
+            "lock_secret_value", f"lock document contains credential-like data at {path}"
+        )

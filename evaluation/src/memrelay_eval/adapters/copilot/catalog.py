@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -17,7 +18,7 @@ from memrelay_eval.domain.entities import (
 from memrelay_eval.domain.errors import ConformancePauseError
 
 UNAVAILABLE = "unavailable"
-_CATALOG_FIELDS = (
+REQUIRED_CAPABILITIES = (
     "tools",
     "permissions",
     "context",
@@ -78,14 +79,17 @@ def archive_native_catalog(raw_bytes: bytes, response: object) -> CatalogArchive
 
 
 def eligible_models(
-    catalog: NativeModelCatalog, required_capabilities: Sequence[str] = _CATALOG_FIELDS
+    catalog: NativeModelCatalog, required_capabilities: Sequence[str] = REQUIRED_CAPABILITIES
 ) -> tuple[NativeModel, ...]:
     """Return models only when every required native capability is explicitly present."""
 
     return tuple(
         model
         for model in catalog.models
-        if all(_is_available(model.capabilities.get(capability, UNAVAILABLE)) for capability in required_capabilities)
+        if all(
+            _is_available(model.capabilities.get(capability, UNAVAILABLE))
+            for capability in required_capabilities
+        )
     )
 
 
@@ -97,7 +101,9 @@ def select_models(
 
     by_id = {model.native_id: model for model in catalog.models}
     if not qualifications:
-        raise ConformancePauseError("no_qualified_models", "no eligible model completed qualification")
+        raise ConformancePauseError(
+            "no_qualified_models", "no eligible model completed qualification"
+        )
     if any(qualification.native_id not in by_id for qualification in qualifications):
         raise ConformancePauseError(
             "qualification_catalog_mismatch",
@@ -135,17 +141,16 @@ def select_models(
         key=lambda item: (item.median_credits, item.native_id),
         default=None,
     )
-    selected_ids = {m0.native_id}
-    if m1_candidate is not None:
-        selected_ids.add(m1_candidate.native_id)
-    judges = _select_judges(ranked, by_id, selected_ids)
+    judges = _select_judges(ranked, by_id, m0.native_id)
     omissions: dict[str, str] = {}
     if m1_candidate is None:
         omissions["M1"] = "no_distinct_reported_family"
     if m2_candidate is None:
         omissions["M2"] = "no_model_within_executable_score_tolerance"
     if len(judges) < 3:
-        omissions["judges"] = "fewer_than_three_distinct_eligible_native_models"
+        omissions["judges"] = "fewer_than_three_qualified_native_models"
+    elif len({by_id[item.native_id].family for item in judges}) == 1:
+        omissions["judges"] = "homogeneous_panel_only"
     return ModelSelection(
         m0=m0,
         m1=_locked("M1", by_id[m1_candidate.native_id]) if m1_candidate else None,
@@ -202,7 +207,7 @@ def _native_model(value: object) -> NativeModel:
         family=_value_or_unavailable(value, "family"),
         capabilities={
             field: source_capabilities.get(field, value.get(field, UNAVAILABLE))
-            for field in _CATALOG_FIELDS
+            for field in REQUIRED_CAPABILITIES
         },
         reasoning_effort=_value_or_unavailable(value, "reasoning_effort"),
         context_tier=_value_or_unavailable(value, "context_tier"),
@@ -215,9 +220,15 @@ def _value_or_unavailable(value: Mapping[str, object], key: str) -> object:
 
 
 def _is_available(value: object) -> bool:
-    if value == UNAVAILABLE or value is None or value is False:
-        return False
-    return not isinstance(value, (int, float)) or value > 0
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return math.isfinite(value) and value > 0
+    if isinstance(value, Mapping):
+        return bool(value)
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return bool(value)
+    return value != UNAVAILABLE and value is not None
 
 
 def _locked(role: str, model: NativeModel) -> LockedModel:
@@ -234,22 +245,22 @@ def _locked(role: str, model: NativeModel) -> LockedModel:
 def _select_judges(
     ranked: Sequence[ModelQualification],
     models: Mapping[str, NativeModel],
-    excluded_ids: set[str],
+    task_generator_id: str,
 ) -> tuple[ModelQualification, ...]:
-    """Prefer unique reported families and IDs while excluding the task generator."""
+    """Maximize reported-family diversity, excluding the generator only when feasible."""
 
+    non_generator = tuple(item for item in ranked if item.native_id != task_generator_id)
+    candidates = non_generator if len(non_generator) >= 3 else tuple(ranked)
     selected: list[ModelQualification] = []
     families: set[str] = set()
-    for result in ranked:
-        model = models[result.native_id]
-        if result.native_id in excluded_ids or model.family in families:
-            continue
-        selected.append(result)
-        families.add(model.family)
+    for result in candidates:
+        if models[result.native_id].family not in families:
+            selected.append(result)
+            families.add(models[result.native_id].family)
         if len(selected) == 3:
             return tuple(selected)
-    for result in ranked:
-        if result.native_id not in excluded_ids and result not in selected:
+    for result in candidates:
+        if result not in selected:
             selected.append(result)
         if len(selected) == 3:
             break

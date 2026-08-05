@@ -32,7 +32,9 @@ def verify_stage_locks(
         if expected_runtime.get(key) != actual:
             raise ConformancePauseError("runtime_drift", f"locked runtime field changed: {key}")
     if model_lock.get("runtime_lock_sha256") != runtime_lock.get("lock_sha256"):
-        raise ConformancePauseError("runtime_model_link_drift", "model lock is not linked to runtime lock")
+        raise ConformancePauseError(
+            "runtime_model_link_drift", "model lock is not linked to runtime lock"
+        )
     if model_lock.get("catalog_raw_sha256") != current_catalog.raw_sha256:
         raise ConformancePauseError("catalog_drift", "native model catalog bytes changed")
     if model_lock.get("catalog_projection_sha256") != current_catalog.projection_sha256:
@@ -54,4 +56,6 @@ def verify_stage_locks(
             "context_tier": current.context_tier,
         }.items():
             if pin.get(key) != actual:
-                raise ConformancePauseError("model_capability_drift", f"locked model field changed: {key}")
+                raise ConformancePauseError(
+                    "model_capability_drift", f"locked model field changed: {key}"
+                )
