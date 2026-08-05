@@ -25,6 +25,14 @@ class ArtifactIntegrityError(DomainError):
     """Artifact bytes do not match their immutable content address."""
 
 
+class ArtifactAuthorityConflictError(ArtifactIntegrityError):
+    """Two immutable records claim incompatible authority for one artifact."""
+
+
+class ArtifactRetentionError(DomainError):
+    """Immutable evidence cannot be removed before linked claim retirement."""
+
+
 class IneligibleEvidenceError(DomainError):
     """Evidence from a non-conformant adapter cannot support inclusion."""
 
