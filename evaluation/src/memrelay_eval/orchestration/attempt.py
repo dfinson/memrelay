@@ -63,11 +63,13 @@ class InternalRetryRecorder:
 
     def record(self, subsystem: InternalRetrySubsystem) -> InternalRetryRecord:
         policy = self._policies.get(subsystem)
-        attempts = len(self._ledger.internal_retries_for(self._attempt_id, subsystem))
-        if policy is None or attempts >= policy.maximum_retries:
+        if policy is None:
             raise InternalRetryLimitExceededError(InternalRetryLimitExceededError.code)
-        record = InternalRetryRecord(self._attempt_id, subsystem, attempts + 1)
-        self._ledger.append_internal_retry(record)
+        record = self._ledger.reserve_internal_retry(
+            self._attempt_id, subsystem, policy.maximum_retries
+        )
+        if record is None:
+            raise InternalRetryLimitExceededError(InternalRetryLimitExceededError.code)
         self._telemetry.emit(
             TelemetryObservation(
                 "internal_retry",

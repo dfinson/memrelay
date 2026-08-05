@@ -267,6 +267,8 @@ class RetryAuthorization:
     parent_attempt_id: AttemptId
     attempt: Attempt
     parent_terminal: AttemptTerminal
+    exposure_evidence_refs: tuple[ArtifactRef, ...]
+    isolation_evidence_refs: tuple[ArtifactRef, ...]
 
     def __post_init__(self) -> None:
         if self.attempt.run_id != self.run_id:
@@ -275,6 +277,8 @@ class RetryAuthorization:
             raise InvalidAttemptTerminalError("retry parent terminal must match parent attempt")
         if self.parent_terminal.run_id != self.run_id:
             raise InvalidAttemptTerminalError("retry parent terminal must remain linked to the run")
+        object.__setattr__(self, "exposure_evidence_refs", tuple(self.exposure_evidence_refs))
+        object.__setattr__(self, "isolation_evidence_refs", tuple(self.isolation_evidence_refs))
 
 
 @dataclass(frozen=True, slots=True)

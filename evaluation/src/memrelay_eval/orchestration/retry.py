@@ -81,20 +81,15 @@ class RetryAuthorizer:
             raise RetryDeniedError("retry_exposure_not_conclusively_unexposed")
         if isolation is None or not isolation.is_conclusive:
             raise RetryDeniedError("retry_fresh_isolation_unattested")
-        if self._ledger.retry_authorizations_for(run.id):
-            raise RetryDeniedError("retry_already_authorized_for_run")
-
         authorization = RetryAuthorization(
             run_id=run.id,
             assignment_id=run.assignment_id,
             parent_attempt_id=parent_attempt.id,
             attempt=Attempt(AttemptId.new(), run.id),
             parent_terminal=parent_terminal,
+            exposure_evidence_refs=exposure.evidence_refs,
+            isolation_evidence_refs=isolation.evidence_refs,
         )
-        try:
-            self._ledger.append_retry_authorization(authorization)
-        except ValueError as error:
-            if str(error) == "retry_already_authorized_for_run":
-                raise RetryDeniedError("retry_already_authorized_for_run") from error
-            raise
+        if not self._ledger.append_retry_authorization_once(authorization):
+            raise RetryDeniedError("retry_already_authorized_for_run")
         return authorization

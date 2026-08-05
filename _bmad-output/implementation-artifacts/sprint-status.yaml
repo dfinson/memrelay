@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-05T12:50:11-04:00
-last_updated: 2026-08-05T19:04:00-04:00
+last_updated: 2026-08-05T19:26:28-04:00
 project: memrelay Evaluation Platform
 project_key: NOKEY
 tracking_system: file-system
@@ -55,7 +55,7 @@ development_status:
   1-4-govern-fixtures-traceability-and-task-eligibility: ready-for-dev
   1-5-freeze-effective-configuration-and-enrollment-inputs: ready-for-dev
   1-6-conceal-assignment-and-record-exposure: ready-for-dev
-  1-7-enforce-attempt-terminal-and-retry-policy: ready-for-dev
+  1-7-enforce-attempt-terminal-and-retry-policy: review
   1-8-produce-an-offline-catalog-to-manifest-dry-run: ready-for-dev
   epic-1-retrospective: optional
 

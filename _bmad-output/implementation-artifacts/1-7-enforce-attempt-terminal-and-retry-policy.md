@@ -1,6 +1,6 @@
 # Story 1.7: Enforce Attempt Terminal and Retry Policy
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -119,12 +119,33 @@ Run lifecycle records are not attempt outcomes. A failed attempt does not invent
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- `PYTHONPATH=evaluation/src py -3.12 -m pytest evaluation/tests/unit/orchestration/test_retry.py evaluation/tests/unit/domain/test_attempt_terminal.py evaluation/tests/contract/test_attempt_lineage.py evaluation/tests/fault/test_partial_terminal_evidence.py` - 31 passed
+- `PYTHONPATH=evaluation/src py -3.12 -m pytest evaluation/tests` - 133 passed
+- `py -3.12 -m compileall -q evaluation/src` - passed
+- `git diff --check` - passed
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable attempt terminal recording without modifying run lifecycle state.
+- Added conservative one-time retry authorization for only conclusively unexposed pre-exposure infrastructure failures, with fresh-isolation evidence and original evidence retained.
+- Added atomic fake-ledger retry reservations for per-subsystem internal retries and retry authorizations.
+- Persisted exposure and isolation evidence references with retry authorization lineage.
+- Verified terminal vocabulary, lineage, fail-closed exposure handling, no-favorable-substitution guards, and concurrent retry-limit behavior through deterministic conformance tests.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/domain/states.py`
+- `evaluation/src/memrelay_eval/orchestration/__init__.py`
+- `evaluation/src/memrelay_eval/orchestration/attempt.py`
+- `evaluation/src/memrelay_eval/orchestration/retry.py`
+- `evaluation/tests/contract/test_attempt_lineage.py`
+- `evaluation/tests/fault/test_partial_terminal_evidence.py`
+- `evaluation/tests/unit/domain/test_attempt_terminal.py`
+- `evaluation/tests/unit/orchestration/test_retry.py`

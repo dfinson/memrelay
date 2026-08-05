@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from threading import Lock
 from types import MappingProxyType
 
 from memrelay_eval.domain.entities import (
@@ -82,6 +83,8 @@ class InMemoryLedger:
         self._retry_authorizations: list[RetryAuthorization] = []
         self._artifact_links: list[ArtifactLink] = []
         self._inclusions: list[InclusionDecision] = []
+        self._internal_retry_lock = Lock()
+        self._retry_authorization_lock = Lock()
 
     def append_transition(self, transition: RunTransition) -> None:
         history = self.history(transition.run_id)
@@ -105,6 +108,24 @@ class InMemoryLedger:
     def append_internal_retry(self, record: InternalRetryRecord) -> None:
         self._internal_retries.append(record)
 
+    def reserve_internal_retry(
+        self,
+        attempt_id: AttemptId,
+        subsystem: InternalRetrySubsystem,
+        maximum_retries: int,
+    ) -> InternalRetryRecord | None:
+        with self._internal_retry_lock:
+            retries = tuple(
+                item
+                for item in self._internal_retries
+                if item.attempt_id == attempt_id and item.subsystem is subsystem
+            )
+            if len(retries) >= maximum_retries:
+                return None
+            record = InternalRetryRecord(attempt_id, subsystem, len(retries) + 1)
+            self._internal_retries.append(record)
+            return record
+
     def internal_retries_for(
         self, attempt_id: AttemptId, subsystem: InternalRetrySubsystem
     ) -> tuple[InternalRetryRecord, ...]:
@@ -118,6 +139,13 @@ class InMemoryLedger:
         if self.retry_authorizations_for(authorization.run_id):
             raise IneligibleEvidenceError("retry_already_authorized_for_run")
         self._retry_authorizations.append(authorization)
+
+    def append_retry_authorization_once(self, authorization: RetryAuthorization) -> bool:
+        with self._retry_authorization_lock:
+            if self.retry_authorizations_for(authorization.run_id):
+                return False
+            self._retry_authorizations.append(authorization)
+            return True
 
     def append_artifact_link(self, link: ArtifactLink) -> None:
         self._artifact_links.append(link)
