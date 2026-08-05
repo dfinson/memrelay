@@ -14,6 +14,7 @@ from .entities import (
     RunTransition,
     TelemetryObservation,
 )
+from .governance import AuthorizationResult, DenialEvidence, RepositoryAccessRequest
 from .ids import AssignmentId, RunId
 
 
@@ -70,3 +71,15 @@ class TelemetryPort(Protocol):
 
 class ReconciliationPort(Protocol):
     def reconcile(self, run: object, required: object) -> object: ...
+
+
+class RepositoryAuthorizationPort(Protocol):
+    """Authorizes an opaque request before any repository operation."""
+
+    def authorize(self, request: RepositoryAccessRequest, now: object) -> AuthorizationResult: ...
+
+
+class DenialEvidencePort(Protocol):
+    """Records only the privacy-minimized denial evidence projection."""
+
+    def append_denial(self, evidence: DenialEvidence) -> None: ...
