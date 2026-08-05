@@ -115,6 +115,8 @@ GPT-5.6 Terra (gpt-5.6-terra)
 ### Debug Log References
 
 - `python -m pytest evaluation\\tests` (122 passed after PR review fixes)
+- WSL isolated evaluator environment: `uv run --directory "$repo" --python 3.13 --extra dev pytest` (Python 3.13.14; 122 passed in 22.46s)
+- WSL isolated evaluator environment: `uv lock --check --directory "$repo" --python 3.13` (Resolved 106 packages in 2.10s)
 - `python -m pytest` with product and evaluator source roots (1305 passed, 2 skipped)
 - `ruff check .` and `ruff format --check .` (passed)
 - `uv lock` could not reach `files.pythonhosted.org`; the existing resolved lock was updated only for the direct SDK dependency metadata.
