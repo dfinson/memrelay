@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 
 import pytest
 from memrelay_eval.domain.entities import ArtifactLink, ArtifactManifest, ArtifactRef
@@ -81,3 +84,42 @@ def test_manifest_rejects_wrong_schema_digest_and_timestamp() -> None:
             run_id=RunId.new(),
             schema_version="2.0.0",
         )
+
+
+def test_secret_manifest_requires_nonempty_string_encryption_metadata() -> None:
+    attempt_manifest = manifest(ArtifactScope.ATTEMPT, attempt_id=AttemptId.new())
+
+    with pytest.raises(InvalidArtifactManifestError):
+        replace(attempt_manifest, contains_secrets=True)
+    with pytest.raises(InvalidArtifactManifestError):
+        replace(attempt_manifest, contains_secrets=True, encryption={})
+    with pytest.raises(InvalidArtifactManifestError):
+        replace(
+            attempt_manifest,
+            contains_secrets=True,
+            encryption={"algorithm": 256},  # type: ignore[dict-item]
+        )
+
+
+def test_manifest_rejects_duplicate_source_artifact_ids() -> None:
+    attempt_manifest = manifest(ArtifactScope.ATTEMPT, attempt_id=AttemptId.new())
+    source_id = ArtifactRef.from_bytes(b"source").artifact_id
+
+    with pytest.raises(InvalidArtifactManifestError):
+        replace(attempt_manifest, source_artifact_ids=(source_id, source_id))
+
+
+def test_schema_requires_encryption_for_secret_manifests() -> None:
+    schema_path = Path(__file__).parents[2] / "schemas" / "artifact-manifest.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    secret_rule = {
+        "if": {
+            "properties": {"contains_secrets": {"const": True}},
+            "required": ["contains_secrets"],
+        },
+        "then": {
+            "properties": {"encryption": {"type": "object", "minProperties": 1}},
+        },
+    }
+
+    assert secret_rule in schema["allOf"]
