@@ -58,7 +58,7 @@ Parity is a blocking causal contract. It includes execution substrate, agent con
 
 ### Library and Version Requirements
 
-- Python 3.11; exact Copilot SDK/runtime/model locks and Inspect `0.3.252`.
+- Python 3.13; exact Copilot SDK/runtime/model locks and Inspect `0.3.252`.
 - No new fingerprint/parity package is required; use domain records and shared canonicalizer.
 - Product framework pins are compared later per stratum, not mutated here.
 

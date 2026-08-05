@@ -383,7 +383,7 @@ NFR45: Let one categorical security, governance, grading, evidence-integrity, or
 
 AR1: Implement under `evaluation/` with its own `pyproject.toml`, `uv.lock`, schemas, catalog, collector config, tests, artifacts, and `memrelay-eval` CLI.
 
-AR2: Use Python 3.11.
+AR2: Use Python 3.13.
 
 AR3: Use `github-copilot-sdk==1.0.8` and wheel SHA-256 `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`.
 

@@ -62,7 +62,7 @@ Inspect owns scheduling, limits, `.eval`, JSON export, and execution truth. It d
 
 ### Library and Version Requirements
 
-- Python 3.11; `inspect-ai==0.3.252`; `github-copilot-sdk==1.0.8` and frozen wheel/runtime digests from Story 2.1.
+- Python 3.13; `inspect-ai==0.3.252`; `github-copilot-sdk==1.0.8` and frozen wheel/runtime digests from Story 2.1.
 - Use official SDK/runtime only. No OpenAI SDK/provider for task inference.
 - Do not loosen the evaluator lock or product dependency bounds.
 

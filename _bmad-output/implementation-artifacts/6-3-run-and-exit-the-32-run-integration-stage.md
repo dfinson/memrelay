@@ -60,7 +60,7 @@ Current-checkout fact: no `evaluation/` tree exists and all predecessors are rea
 ### Architecture and Preservation
 
 - Reuse Story 6.1 stage/bundle/authorization and the established `orchestration/limits.py` seam from predecessor runtime/process work; Story 6.6 later consolidates breaker behavior and is not a prerequisite.
-- Verify the frozen runtime lock rather than selecting versions: Python `3.11`, Copilot SDK `1.0.8` with wheel digest `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` with its frozen archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, and PyArrow `25.0.0`.
+- Verify the frozen runtime lock rather than selecting versions: Python `3.13`, Copilot SDK `1.0.8` with wheel digest `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` with its frozen archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, and PyArrow `25.0.0`.
 - Preserve opaque assignments, arm concealment, fixed ITT denominator, bounded retries, separate cost ledgers, local evidence/backup, and fail-closed reconciliation.
 - All frozen-version and configuration drift pauses new starts. Resume requires identical locks; drift creates a new protocol/stage.
 - Cross-repository adapters remain unreachable; the 24-cluster stage belongs after primary plus DG-R qualification only.

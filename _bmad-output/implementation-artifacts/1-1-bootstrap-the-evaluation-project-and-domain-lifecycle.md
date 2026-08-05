@@ -10,7 +10,7 @@ So that I can plan studies without coupling evaluator dependencies or arm labels
 
 ## Acceptance Criteria
 
-1. **Given** a Python 3.11 checkout of the repository  
+1. **Given** a Python 3.13 checkout of the repository
    **When** I install and invoke the `evaluation/` project  
    **Then** `evaluation/pyproject.toml`, `uv.lock`, `src/memrelay_eval`, schemas, catalog, collector configuration, tests, and `memrelay-eval` CLI are available  
    **And** evaluator dependencies are absent from the memrelay wheel metadata.
@@ -42,7 +42,7 @@ So that I can plan studies without coupling evaluator dependencies or arm labels
 ## Tasks / Subtasks
 
 - [ ] Create the isolated evaluator project and lock (AC: 1)
-  - [ ] Add the `evaluation/` package tree, Python 3.11 project metadata, independent `uv.lock`, README, schemas, catalog, collector, test, and artifact roots.
+  - [ ] Add the `evaluation/` package tree, Python 3.13 project metadata, independent `uv.lock`, README, schemas, catalog, collector, test, and artifact roots.
   - [ ] Register `memrelay-eval` through the evaluator package composition root.
   - [ ] Prove product wheel/sdist metadata and root runtime dependencies are unchanged.
 - [ ] Implement standard-library-only domain values (AC: 2, 4)
@@ -76,7 +76,7 @@ This story establishes only the evaluator skeleton and domain seams. Inspect rem
 
 ### Library and Version Requirements
 
-- Evaluator interpreter: **Python 3.11** exactly; create and lock with `uv`.
+- Evaluator interpreter: **Python 3.13** exactly; create and lock with `uv`.
 - Testing baseline: stdlib + `pytest`; the architecture does not select a pytest patch, so resolve it in `evaluation/uv.lock` rather than inventing a normative version.
 - Frozen future adapter pins to declare when the evaluator manifest is composed: `github-copilot-sdk==1.0.8`, `inspect-ai==0.3.252`, OTel SDK/exporters `==1.44.0`, DuckDB `==1.5.5`, PyArrow `==25.0.0`, OpenInference semantic conventions `==0.1.31`, and `openinference-instrumentation-openai==0.1.53`. Do not import or execute these from `domain`.
 - Preserve product constraints from root `pyproject.toml`: `traceforge-toolkit>=0.1,<0.1.2`, `graphiti-core>=0.29,<0.30`, `ladybug>=0.18,<0.18.1`, and `mcp>=1.0,<2`.

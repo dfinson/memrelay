@@ -68,7 +68,7 @@ Current source already implements continuous observation paths; do not follow st
 
 ### Architecture, Telemetry, Privacy, and Claim Guardrails
 
-- Build evaluator code under the separate Python 3.11 `evaluation/` project. Domain contracts are stdlib-only; adapters translate to domain-owned records; adapters do not import each other.
+- Build evaluator code under the separate Python 3.13 `evaluation/` project. Domain contracts are stdlib-only; adapters translate to domain-owned records; adapters do not import each other.
 - Preserve product ownership: daemon is the graph's sole writer; product qualification uses daemon/MCP and native spool/health seams, never direct graph reads.
 - Telemetry is qualified evidence, not operational truth. Use local OTel `1.44.0`, Collector `0.158.0` with the frozen archive hash, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53` only where compatible, and `memrelay.eval.genai-map/1.0.0`.
 - Telemetry must omit prompts, code, repository names, usernames, credentials, provider payloads, and treatment labels by default. Sentinel IDs are synthetic and non-secret.
@@ -94,7 +94,7 @@ Before modifying either product source file, preserve discovery freshness/intern
 
 ### Frozen Versions and Testing Requirements
 
-- Preserve architecture pins: Python `3.11`; product Python `>=3.11,<3.14`; traceforge-toolkit `>=0.1,<0.1.2`; graphiti-core `>=0.29,<0.30`; Ladybug `>=0.18,<0.18.1`; MCP `>=1.0,<2`.
+- Preserve architecture pins: Python `3.13`; product Python `>=3.11,<3.14`; traceforge-toolkit `>=0.1,<0.1.2`; graphiti-core `>=0.29,<0.30`; Ladybug `>=0.18,<0.18.1`; MCP `>=1.0,<2`.
 - Evaluator pins remain exact: Inspect `0.3.252`; Copilot SDK `1.0.8` with wheel SHA-256 `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`; OTel SDK/exporters `1.44.0`; Collector contrib `0.158.0` Windows amd64 with archive SHA-256 `4314abde3c8acc67af58bb8d7611aa991fd80abe4a412695167f956d9fff3005`; OpenInference `0.1.31`; OpenAI instrumentation `0.1.53`; DuckDB `1.5.5`; PyArrow `25.0.0`; framework model `gpt-4.1-mini-2025-04-14`; local embedding model `BAAI/bge-small-en-v1.5`.
 - Use `asyncio.run(...)`; the product dev dependencies do not include `pytest-asyncio`.
 - Unit tests use injected clocks/discovery/capture/tail sources. Contract tests use synthetic local traces. Fault tests cover every AC2 failure and crash/restart publication boundary.

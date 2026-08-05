@@ -61,7 +61,7 @@ inputDocuments:
 5. **Security/privacy:** caller authentication, principal-role-group binding, purpose delegation, per-record read/render authorization, cache invalidation, policy-version TOCTOU, revocation, migration, deletion and quarantined backup restore.
 6. **Release blockers:** correct `docs/release-gate.md` bounded wording and require the roundtrip in the `release.yml` publish dependency graph. Neither change exists.
 
-Local and CI baseline: Python 3.11 stdlib + pytest + JSON/JSONL + SHA-256 manifests. Playwright Utils is reference knowledge only; its TypeScript sample is confined to the future-only appendix and is not current executable readiness.
+Local and CI baseline: Python 3.13 stdlib + pytest + JSON/JSONL + SHA-256 manifests. Playwright Utils is reference knowledge only; its TypeScript sample is confined to the future-only appendix and is not current executable readiness.
 
 ## Risk Assessment
 
@@ -162,7 +162,7 @@ The finite Cartesian grid enumerates: `p0` 0.10/0.30/0.50/0.70; default task ICC
 
 ### Corrected runtime, credential, telemetry, cost, and stage contract
 
-- **Task-agent path:** local Python 3.11 Inspect task/scorer → custom `CopilotSdkSolver` → local GitHub Copilot SDK/bundled CLI runtime → GitHub Copilot model service under the owner's current subscription. Inspect is not a model provider; SDK BYOK and alternate task-agent clients are prohibited.
+- **Task-agent path:** local Python 3.13 Inspect task/scorer → custom `CopilotSdkSolver` → local GitHub Copilot SDK/bundled CLI runtime → GitHub Copilot model service under the owner's current subscription. Inspect is not a model provider; SDK BYOK and alternate task-agent clients are prohibited.
 - **Model lock:** archive native `list_models()`/equivalent output and capabilities at experiment start; apply the arm-blind deterministic rule to select exact M0 and optional M1/M2 IDs. Never hardcode or silently substitute a public model name; an unavailable/changed frozen model pauses and versions the block.
 - **Framework path:** only the local memrelay/Graphiti process may receive the OpenAI key/base URL and call OpenAI for framework-internal extraction, summarization, or embeddings. Preflight the concrete client/model/endpoint and fail closed rather than falling back to `borrow-host`.
 - **Telemetry/cost:** Copilot spans use `agent.provider=github_copilot_sdk`, `credential.domain=github_copilot_subscription`, and `cost.source=copilot_subscription_usage`. Framework OpenAI spans use a separate service/resource, `agent.provider=framework_internal_openai`, and `cost.source=openai_api_metered`. One span cannot carry both. Ledgers reconcile separately before product marginal cost combines labelled components.

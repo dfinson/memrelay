@@ -65,7 +65,7 @@ This is Epic 1's integration proof: catalog-to-planned-manifest only. It deliber
 
 ### Library and Version Requirements
 
-- Python 3.11 and the exact `evaluation/uv.lock` from prior stories.
+- Python 3.13 and the exact `evaluation/uv.lock` from prior stories.
 - Use `pytest` for offline integration and subprocess CLI tests.
 - Fake ports must not instantiate `github-copilot-sdk==1.0.8`, Inspect `0.3.252`, OpenAI clients, OTel exporters, product daemon, or direct engine.
 - Reuse locked YAML/schema/RFC 8785 dependencies; no duplicate serializer/canonicalizer.

@@ -65,7 +65,7 @@ Current-checkout fact: no `evaluation/` tree exists. All predecessor story files
 
 ### Architecture and Frozen Contract
 
-- Python 3.11; evaluator remains a separate hexagonal modular monolith. Domain policy is stdlib-only; orchestration depends on domain ports; adapters do not import each other.
+- Python 3.13; evaluator remains a separate hexagonal modular monolith. Domain policy is stdlib-only; orchestration depends on domain ports; adapters do not import each other.
 - Preserve exact pins: Copilot SDK `1.0.8` plus frozen wheel hash, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` plus archive hash, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, PyArrow `25.0.0`, framework model `gpt-4.1-mini-2025-04-14`, and local `BAAI/bge-small-en-v1.5`.
 - Catalog, protocol, runtime/SDK, model catalog/selection, environment, schema, grader/rubric/judge, telemetry map, price table, analysis, limits, endpoints, thresholds, stage rules, holdouts, and preceding-exit hashes are immutable locks. Drift pauses entry and requires a new protocol/stage identity; it is never patched in place.
 - Required evidence is fail-closed. Missing, contradictory, corrupt, expired, or unauthorized evidence is not a warning and cannot be inferred from OTLP delivery or process success.

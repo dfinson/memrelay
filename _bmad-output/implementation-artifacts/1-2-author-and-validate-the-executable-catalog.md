@@ -64,7 +64,7 @@ The executable source is new `evaluation/catalog/catalog.yaml`; it is not the TE
 
 ### Library and Version Requirements
 
-- Python 3.11 and Story 1.1 evaluator lock.
+- Python 3.13 and Story 1.1 evaluator lock.
 - The final architecture fixes **JSON Schema draft 2020-12**, not a specific Python YAML/schema package. Do not claim an invented package version as architecture. Any selected parser/validator must be declared only in `evaluation/pyproject.toml`, resolved exactly in `evaluation/uv.lock`, support source locations/duplicate-key rejection, and pass contract tests.
 - Do not introduce an RFC 8785 implementation here; Story 1.3 owns the single shared canonicalizer.
 - `pytest` remains the test runner locked by the evaluator project.

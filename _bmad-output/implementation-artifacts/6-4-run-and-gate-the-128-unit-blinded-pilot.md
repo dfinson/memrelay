@@ -64,7 +64,7 @@ Current-checkout fact: no `evaluation/` tree exists and predecessor stories are 
 ### Architecture and Preservation
 
 - Reuse the canonical stage scheduler, bundles, reconciliation, panel gate, power simulator, and report labeling. Never duplicate statistics in orchestration.
-- Verify the Story 6.1 frozen runtime/version lock unchanged: Python `3.11`, Copilot SDK `1.0.8` plus its frozen wheel digest, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` plus archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, PyArrow `25.0.0`, framework model `gpt-4.1-mini-2025-04-14`, and local embedding model `BAAI/bge-small-en-v1.5`.
+- Verify the Story 6.1 frozen runtime/version lock unchanged: Python `3.13`, Copilot SDK `1.0.8` plus its frozen wheel digest, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` plus archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, PyArrow `25.0.0`, framework model `gpt-4.1-mini-2025-04-14`, and local embedding model `BAAI/bge-small-en-v1.5`.
 - Locks include catalog/config/model/price plus holdout, task, assignment, rubric, judge, transform, endpoint, analysis, and limit versions.
 - Missing evidence fails closed; no regrading, complete-case subset, per-protocol replacement, favorable task selection, or decoded repair.
 - Paid execution is explicit and local; cross-repository work stays denied until DG-R after primary.

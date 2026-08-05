@@ -62,7 +62,7 @@ The CAS is the durable evidence-of-record boundary. Native `.eval`, JSON, SDK ev
 ### Architecture Compliance
 
 - Follow AD-01, AD-04, AD-05, AD-11, AD-15, AD-17, AD-22, and AD-25.
-- Evaluator Python is exactly 3.11. Domain remains stdlib-only; the filesystem adapter may use stdlib filesystem primitives and domain-owned types.
+- Evaluator Python is exactly 3.13. Domain remains stdlib-only; the filesystem adapter may use stdlib filesystem primitives and domain-owned types.
 
 ### Frozen Version Requirements
 

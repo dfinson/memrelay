@@ -66,7 +66,7 @@ Configuration is data with provenance, not ambient process state. Environment va
 
 ### Library and Version Requirements
 
-- Python 3.11; standard library TOML reader (`tomllib`) is preferred for evaluator configuration.
+- Python 3.13; standard library TOML reader (`tomllib`) is preferred for evaluator configuration.
 - Reuse the exact locked RFC 8785 implementation and artifact manifest `1.0.0`.
 - Freeze known platform values without invoking them: Copilot SDK `1.0.8` and wheel digest, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` and archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, PyArrow `25.0.0`, framework model `gpt-4.1-mini-2025-04-14`, and local embedder `BAAI/bge-small-en-v1.5`.
 - Do not invent native Copilot model IDs; accept only an observed/fixture catalog artifact.

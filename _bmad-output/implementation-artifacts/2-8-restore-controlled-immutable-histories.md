@@ -63,7 +63,7 @@ Controlled-history replay is immutable byte-identical restoration, not semantic 
 
 ### Library and Version Requirements
 
-- Python 3.11; Story 1 RFC 8785 canonicalizer and SHA-256 implementation only.
+- Python 3.13; Story 1 RFC 8785 canonicalizer and SHA-256 implementation only.
 - Use the same frozen product/direct framework versions and models as Stories 2.6-2.7.
 - Do not add an archive/snapshot dependency unless final architecture is amended.
 

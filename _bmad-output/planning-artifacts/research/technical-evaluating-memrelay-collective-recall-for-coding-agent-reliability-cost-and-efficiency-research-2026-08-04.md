@@ -22,7 +22,7 @@ source_verification: true
 
 ## Research Overview
 
-This 2026-08-05 owner-corrected revision preserves the prior causal, statistical, grading, ITT, safety, reproducibility, and release-gate corrections while fixing the execution plane. Reliability and total-cost/wall-time efficiency are co-equal objectives with quality and harm guards; intra-session, cross-session, cross-agent, and later cross-repository scopes remain in program. Every evaluated coding/task agent is a local Python 3.11 process driven through a pinned GitHub Copilot SDK and authenticated by the owner's current GitHub Copilot subscription; no alternate task-agent inference plane is permitted. The primary and limited secondary model cells are selected only from the catalog and capabilities returned by `CopilotClient.list_models()` at experiment start. Sixteen pilot tasks still produce 128 assignment units; the expanded primary matrix still has 32 tasks and 512 units. Paired/repeated or independently blocked assignment is chosen by history/estimand.
+This 2026-08-05 owner-corrected revision preserves the prior causal, statistical, grading, ITT, safety, reproducibility, and release-gate corrections while fixing the execution plane. Reliability and total-cost/wall-time efficiency are co-equal objectives with quality and harm guards; intra-session, cross-session, cross-agent, and later cross-repository scopes remain in program. Every evaluated coding/task agent is a local Python 3.13 process driven through a pinned GitHub Copilot SDK and authenticated by the owner's current GitHub Copilot subscription; no alternate task-agent inference plane is permitted. The primary and limited secondary model cells are selected only from the catalog and capabilities returned by `CopilotClient.list_models()` at experiment start. Sixteen pilot tasks still produce 128 assignment units; the expanded primary matrix still has 32 tasks and 512 units. Paired/repeated or independently blocked assignment is chosen by history/estimand.
 
 Inspect AI is a local orchestration wrapper around a custom Copilot SDK solver adapter, not a model provider. Local OTel/OTLP, OpenInference plus versioned memrelay semantics, Parquet/DuckDB, and local content-addressed artifacts remain committed. The task-agent path is local orchestrator → local Copilot SDK session/runtime → GitHub Copilot subscription model service. A separate local memrelay/framework path may call the OpenAI API only for instrumented framework-internal extraction, summarization, or embeddings. Initial data is synthetic/public only. The pilot estimates effect distributions, reliability–cost–time Pareto frontiers, heterogeneity, harm tails, and intervals; practical release thresholds are generated from evidence and operating economics, then frozen only before a fresh confirmatory claim. No reviewed evidence yet establishes that memrelay improves coding-agent outcomes.
 
@@ -46,7 +46,7 @@ Inspect AI is a local orchestration wrapper around a custom Copilot SDK solver a
 
 ### Programming Languages
 
-Python 3.11 is the control-plane baseline because memrelay and its deterministic evaluation are Python and Inspect exposes Python task, dataset, solver, agent, scorer, and analysis APIs. Preserve the repository's supported interpreter range when executing product code, but pin one interpreter and dependency lock per trial. SQL is an analysis language over canonical tables; an independent R implementation is optional for confirmatory cross-checking, not a runtime dependency. Provider/model latency will dominate orchestration, so process isolation, bounded concurrency, and measured overhead are preferable to a language rewrite. [Inspect AI](https://inspect.aisi.org.uk/)
+Python 3.13 is the control-plane baseline because it is the newest interpreter inside memrelay's supported `>=3.11,<3.14` range and every frozen evaluator dependency supports it. Preserve the repository's supported interpreter range when executing product code, but pin one interpreter and dependency lock per trial. SQL is an analysis language over canonical tables; an independent R implementation is optional for confirmatory cross-checking, not a runtime dependency. Provider/model latency will dominate orchestration, so process isolation, bounded concurrency, and measured overhead are preferable to a language rewrite. [Inspect AI](https://inspect.aisi.org.uk/)
 
 _Popular language:_ Python.  
 _Emerging/specialized:_ SQL for derived evidence; R for independent statistical reproduction.  
@@ -243,7 +243,7 @@ The study runs local agent processes only, and every task-agent inference call g
 
 | Cell | Exact runner and model | Memrelay path | Role |
 |---|---|---|---|
-| `R-COP-M0` | Python 3.11 `github-copilot-sdk`, pinned release and bundled local Copilot CLI runtime over `stdio`; exact observed `M0` ID; frozen common reasoning effort/context tier; explicit identical permission, tool, prompt, and budget policy | Existing local Copilot MCP registration plus canonical Copilot event ingestion | Sole primary task-agent cell |
+| `R-COP-M0` | Python 3.13 `github-copilot-sdk`, pinned release and bundled local Copilot CLI runtime over `stdio`; exact observed `M0` ID; frozen common reasoning effort/context tier; explicit identical permission, tool, prompt, and budget policy | Existing local Copilot MCP registration plus canonical Copilot event ingestion | Sole primary task-agent cell |
 | `R-COP-M1` | Same SDK/runtime/configuration contract; exact observed `M1` ID | Same path; separate model stratum | Optional lower-consumption generalization |
 | `R-COP-M2` | Same SDK/runtime/configuration contract; exact observed `M2` ID | Same path; separate model stratum | Optional higher-capability generalization |
 
@@ -676,7 +676,7 @@ Spend in uncertainty-reduction order: deterministic contracts → component spik
 
 ### Technology Stack Recommendations
 
-Baseline: Python 3.11, Inspect AI, pytest, benchmark-native containers/graders, local OTel SDK/Collector/OTLP, pinned OpenInference plus `memrelay.eval.*`, Parquet/DuckDB, SHA-256 content-addressed local artifacts, and generated HTML. Pin all versions, preserve raw native events, and validate each temporary fallback.
+Baseline: Python 3.13, Inspect AI, pytest, benchmark-native containers/graders, local OTel SDK/Collector/OTLP, pinned OpenInference plus `memrelay.eval.*`, Parquet/DuckDB, SHA-256 content-addressed local artifacts, and generated HTML. Pin all versions, preserve raw native events, and validate each temporary fallback.
 
 ### Skill Development Requirements
 
@@ -713,7 +713,7 @@ The execution plane, catalog-based model-selection rule, symbolic `M0/M1/M2` mat
 
 Memrelay's deterministic fixtures establish bounded wiring evidence, not downstream benefit. The selected program measures both reliability and total-cost/wall-time efficiency across intra-session, cross-session, cross-agent, stale/contradictory, and negative-control scenarios. Cross-repository recall remains in the program as a later phase gated by product authorization and deletion controls. No current evidence establishes causal benefit.
 
-Every coding/task agent is a local Python 3.11 process driven by the pinned GitHub Copilot SDK under the owner's current Copilot subscription. At experiment start, the SDK's returned model catalog and capabilities are archived; deterministic arm-blind rules select and pin `M0` plus at most two secondary generalization models. Sixteen pilot tasks (128 assigned units) and 32 expanded tasks (512 primary units) span `F1–F8`. Immutable replay and self-contained tasks use paired/repeated task blocks; treatment-generated cross-session and cross-agent histories use independently blocked whole sequences/teams. Executable graders, complete ITT accounting, and negative controls keep the causal interpretation bounded.
+Every coding/task agent is a local Python 3.13 process driven by the pinned GitHub Copilot SDK under the owner's current Copilot subscription. At experiment start, the SDK's returned model catalog and capabilities are archived; deterministic arm-blind rules select and pin `M0` plus at most two secondary generalization models. Sixteen pilot tasks (128 assigned units) and 32 expanded tasks (512 primary units) span `F1–F8`. Immutable replay and self-contained tasks use paired/repeated task blocks; treatment-generated cross-session and cross-agent histories use independently blocked whole sequences/teams. Executable graders, complete ITT accounting, and negative controls keep the causal interpretation bounded.
 
 The stack is committed: Inspect AI as a local wrapper around a custom Copilot SDK solver, local OTel Collector/OTLP, OpenInference plus versioned memrelay semantics, Parquet/DuckDB, and local content-addressed artifacts. The task-agent Copilot ledger is separate from actual framework-internal OpenAI API usage. The OpenAI key exists only in the local memrelay/framework process, and the experiment forces memrelay's `byo-key` strategy with a fail-closed preflight so its default `borrow-host` path cannot consume Copilot quota or confound treatment. Integration tests validate and repair pinned versions; bounded fallbacks prevent a tool failure from reopening adoption. All initial data is synthetic or public/open-source.
 
@@ -797,7 +797,7 @@ Inspect is the committed local orchestrator, OTel/OTLP the local transport, Open
 
 ### Current Stack
 
-Python 3.11, Inspect, pytest, local OTel Collector/OTLP, OpenInference plus memrelay semantics, Parquet/DuckDB, SHA-256 manifests, benchmark-native graders, and generated reports form the first evidence loop. MCP is the product integration surface. JSONL is a repair fallback, not the planned canonical store. [MCP](https://modelcontextprotocol.io/specification/2025-11-25) [Inspect](https://inspect.aisi.org.uk/) [DuckDB Parquet](https://duckdb.org/docs/stable/data/parquet/overview)
+Python 3.13, Inspect, pytest, local OTel Collector/OTLP, OpenInference plus memrelay semantics, Parquet/DuckDB, SHA-256 manifests, benchmark-native graders, and generated reports form the first evidence loop. MCP is the product integration surface. JSONL is a repair fallback, not the planned canonical store. [MCP](https://modelcontextprotocol.io/specification/2025-11-25) [Inspect](https://inspect.aisi.org.uk/) [DuckDB Parquet](https://duckdb.org/docs/stable/data/parquet/overview)
 
 ### Adoption Pattern
 

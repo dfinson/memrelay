@@ -67,7 +67,7 @@ Run lifecycle records are not attempt outcomes. A failed attempt does not invent
 
 ### Library and Version Requirements
 
-- Python 3.11; standard-library domain types only.
+- Python 3.13; standard-library domain types only.
 - Reuse Story 1.6 exposure records and Story 1.1 ID/error/port types.
 - No retry library is required or authorized; policy is explicit domain code.
 - Do not import Inspect `0.3.252` or Copilot SDK `1.0.8` yet; store future internal-retry policy as domain-owned records.

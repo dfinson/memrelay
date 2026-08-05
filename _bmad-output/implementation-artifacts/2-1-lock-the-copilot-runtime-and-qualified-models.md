@@ -26,7 +26,7 @@ So that trials pause rather than silently substitute a changed execution substra
 ## Dependencies and Prerequisites
 
 - **Formal graph dependency:** Story 1.1 only.
-- Story 1.1 supplies the separate Python 3.11 evaluator, typed domain records, CLI composition, and deterministic fake artifact/ledger/telemetry ports.
+- Story 1.1 supplies the separate Python 3.13 evaluator, typed domain records, CLI composition, and deterministic fake artifact/ledger/telemetry ports.
 - If Stories 1.3 and 1.5 have already landed, reuse their sole RFC 8785 canonicalizer and immutable freeze/configuration records. They are not prerequisites in the authoritative graph; do not duplicate them or make this story depend on their orchestration.
 - Bootstrap may acquire and verify the runtime, but qualification is nonstudy and cannot enroll a task or imply efficacy. Paid calls require explicit invocation and a finite eight-task/model envelope.
 
@@ -48,7 +48,7 @@ So that trials pause rather than silently substitute a changed execution substra
 
 ## Developer Context
 
-The task-agent inference boundary is immutable: local Python 3.11 Inspect orchestration -> custom official Copilot SDK agent -> SDK-bundled runtime -> GitHub Copilot service under the owner's current subscription. Inspect is not a model provider. SDK BYOK, custom providers, OpenAI-compatible Copilot endpoints, public model-name guessing, and alternate task clients are prohibited. `list_models()` is runtime truth.
+The task-agent inference boundary is immutable: local Python 3.13 Inspect orchestration -> custom official Copilot SDK agent -> SDK-bundled runtime -> GitHub Copilot service under the owner's current subscription. Inspect is not a model provider. SDK BYOK, custom providers, OpenAI-compatible Copilot endpoints, public model-name guessing, and alternate task clients are prohibited. `list_models()` is runtime truth.
 
 ### Architecture Compliance
 
@@ -60,7 +60,7 @@ The task-agent inference boundary is immutable: local Python 3.11 Inspect orches
 
 ### Library and Version Requirements
 
-- Python **3.11**; `github-copilot-sdk==1.0.8`; accepted wheel/digest exactly as AC1.
+- Python **3.13**; `github-copilot-sdk==1.0.8`; accepted wheel/digest exactly as AC1.
 - SDK-bundled runtime downloaded once; later runs set `COPILOT_SKIP_CLI_DOWNLOAD=1`.
 - Inspect AI `0.3.252` is a later orchestration dependency; do not route qualification through an Inspect provider.
 - Root `pyproject.toml` is read-only. Preserve its complete dependency set and resolved product environment by hash rather than reconstructing a partial evaluator-side lock.

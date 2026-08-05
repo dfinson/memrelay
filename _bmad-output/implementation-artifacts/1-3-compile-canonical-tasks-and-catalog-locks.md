@@ -66,7 +66,7 @@ Identity is over bytes, not Python objects. RFC 8785/JCS differs from `json.dump
 
 ### Library and Version Requirements
 
-- Python 3.11 and the Story 1.1 lock.
+- Python 3.13 and the Story 1.1 lock.
 - RFC 8785 is the exact canonicalization standard; SHA-256 comes from Python `hashlib`.
 - The architecture does not ratify a Python RFC 8785 package/version. If a package is used, pin it exactly in `evaluation/uv.lock`, wrap it behind `catalog/canonical.py`, verify against independent RFC vectors, and forbid any second implementation.
 - No `github-copilot-sdk`, Inspect, OpenAI, OTel, DuckDB, or PyArrow call is permitted.

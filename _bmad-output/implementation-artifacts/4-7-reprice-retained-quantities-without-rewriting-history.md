@@ -62,7 +62,7 @@ Repricing is a pure derivation over immutable quantities. Quantity authority nev
 ### Architecture Compliance
 
 - Follow AD-05, AD-15, AD-16, AD-17, AD-22.
-- Use Python 3.11 stdlib `decimal.Decimal`, canonical JSON, lowercase SHA-256, explicit currency and per-million scale.
+- Use Python 3.13 stdlib `decimal.Decimal`, canonical JSON, lowercase SHA-256, explicit currency and per-million scale.
 
 ### Frozen Version Requirements
 

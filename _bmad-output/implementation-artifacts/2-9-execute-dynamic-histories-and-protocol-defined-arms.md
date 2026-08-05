@@ -57,7 +57,7 @@ Dynamic assignment is at whole-sequence granularity. Episode-level randomization
 
 ### Library and Version Requirements
 
-- Python 3.11; use Story 1 deterministic assignment/canonicalization primitives.
+- Python 3.13; use Story 1 deterministic assignment/canonicalization primitives.
 - Preserve Copilot SDK `1.0.8`, Inspect `0.3.252`, and Stories 2.6-2.7 framework configuration.
 - No alternate randomization, cache, workflow, or memory framework.
 

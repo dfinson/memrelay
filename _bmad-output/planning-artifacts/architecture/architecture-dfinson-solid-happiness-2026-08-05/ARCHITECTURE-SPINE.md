@@ -255,7 +255,7 @@ flowchart TB
 
 | Name | Verified seed |
 | --- | --- |
-| Evaluation Python | 3.11 |
+| Evaluation Python | 3.13 |
 | Inspect AI | 0.3.252 Beta |
 | OpenTelemetry Python SDK and OTLP exporters | 1.44.0 Stable |
 | OpenInference semantic conventions | 0.1.31 Stable |

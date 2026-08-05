@@ -58,7 +58,7 @@ Credential isolation is by OS process. Task-agent and judge workers use host Cop
 
 ### Library and Version Requirements
 
-- Python 3.11; use stdlib subprocess/process APIs unless an already locked evaluator dependency is required.
+- Python 3.13; use stdlib subprocess/process APIs unless an already locked evaluator dependency is required.
 - Future process pins remain exact: Copilot SDK `1.0.8`, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0`.
 - Framework model is `gpt-4.1-mini-2025-04-14`; credential material is not embedded in config.
 

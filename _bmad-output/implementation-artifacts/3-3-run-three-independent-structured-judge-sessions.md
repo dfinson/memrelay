@@ -75,7 +75,7 @@ Three fresh, independent, blinded Copilot SDK qualitative judges are a co-primar
 
 ### Library, Test, and Version Guardrails
 
-- Python 3.11; `github-copilot-sdk==1.0.8` with wheel SHA-256 `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`; use SDK-bundled locked runtime.
+- Python 3.13; `github-copilot-sdk==1.0.8` with wheel SHA-256 `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`; use SDK-bundled locked runtime.
 - CI uses a fake `AgentRuntimePort` and zero paid calls. Real sessions require explicit approved invocation and bounded quotas.
 - Test three-session freshness/isolation, selection reproducibility, sealed order, credential allowlists, no assignment/cross-output access, structured citations, cap enforcement, failure retention, and fake-CAS blocking.
 - Model IDs, prompt, rubric, tool schemas, decoding controls, limits, order policy, or runtime changes require a new protocol version.

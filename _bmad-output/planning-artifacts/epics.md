@@ -252,7 +252,7 @@ NFR45: Let one categorical security, governance, grading, evidence-integrity, or
 
 AR1: Implement under `evaluation/` with its own `pyproject.toml`, `uv.lock`, schemas, catalog, collector config, tests, artifacts, and `memrelay-eval` CLI.
 
-AR2: Use Python 3.11.
+AR2: Use Python 3.13.
 
 AR3: Use `github-copilot-sdk==1.0.8` and wheel SHA-256 `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa`.
 
@@ -494,7 +494,7 @@ So that I can plan studies without coupling evaluator dependencies or arm labels
 
 **Acceptance Criteria:**
 
-**Given** a Python 3.11 checkout of the repository
+**Given** a Python 3.13 checkout of the repository
 **When** I install and invoke the `evaluation/` project
 **Then** `evaluation/pyproject.toml`, `uv.lock`, `src/memrelay_eval`, schemas, catalog, collector configuration, tests, and `memrelay-eval` CLI are available
 **And** evaluator dependencies are absent from the memrelay wheel metadata.
@@ -1654,7 +1654,7 @@ So that paid trials cannot start on an unqualified evaluator substrate.
 
 **Acceptance Criteria:**
 
-**Given** a clean Python 3.11 evaluator environment and valid Copilot subscription authentication
+**Given** a clean Python 3.13 evaluator environment and valid Copilot subscription authentication
 **When** `memrelay-eval bootstrap` and `memrelay-eval conformance` run
 **Then** runtime, catalog, credential, workspace/clone isolation, grader, judge, telemetry, CAS, backup/restore, and reconciliation contracts are tested
 **And** `runtime-lock.json` and `conformance-report.json` bind every proof and version/hash from prior stories.

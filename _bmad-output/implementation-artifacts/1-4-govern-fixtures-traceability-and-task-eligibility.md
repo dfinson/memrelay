@@ -73,7 +73,7 @@ This story governs eligibility, not task execution. “Public” without a licen
 
 ### Library and Version Requirements
 
-- Python 3.11; stdlib path, MIME, hashing, and immutable record facilities where sufficient.
+- Python 3.13; stdlib path, MIME, hashing, and immutable record facilities where sufficient.
 - Reuse the exact locked YAML/schema and RFC 8785 implementations from Stories 1.2-1.3.
 - No new provider, licensing service, secret scanner SaaS, benchmark runner, or network dependency.
 - Grader stability here consumes governed evidence records; implementation of the grader process belongs to Epic 3.

@@ -69,7 +69,7 @@ The blinded view is a deterministic derived artifact, not a redacted replacement
 
 ### Library, Test, and Version Guardrails
 
-- Python 3.11; RFC 8785 canonical JSON and lowercase SHA-256 through the one shared canonicalizer inherited from Epic 1. Do not create a scoring-local canonicalizer.
+- Python 3.13; RFC 8785 canonical JSON and lowercase SHA-256 through the one shared canonicalizer inherited from Epic 1. Do not create a scoring-local canonicalizer.
 - Do not add an online classifier/tracker. The classifier is bounded, frozen, local, no-network, and fitted/evaluated only on preregistered splits with retained hashes.
 - Test identical bytes/hashes, source immutability, access denial, every named leak class, sentinel/seed/split reproducibility, exact confidence-bound boundary behavior, adverse classifier bounds, and fake-CAS ineligibility.
 - Changes to view schema, policy, feature set, split, threshold, sentinel set, or normalization require a new protocol version before outcomes.

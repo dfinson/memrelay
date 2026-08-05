@@ -59,7 +59,7 @@ There are three distinct claims: deterministic analysis/evidence replay, determi
 ### Architecture and Version Guardrails
 
 - Follow AD-05, AD-09, AD-15, AD-17, AD-22, AD-25.
-- Use locked Python `3.11`, DuckDB `1.5.5`, PyArrow `25.0.0`, and the exact frozen analysis/grader dependencies.
+- Use locked Python `3.13`, DuckDB `1.5.5`, PyArrow `25.0.0`, and the exact frozen analysis/grader dependencies.
 - Network-off analysis, graders, and evidence processes receive no provider credentials.
 
 ### File Structure Requirements

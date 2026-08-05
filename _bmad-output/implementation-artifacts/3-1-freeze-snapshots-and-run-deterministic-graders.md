@@ -71,7 +71,7 @@ Executable grading is a hard authority, not a heuristic or panel input. It runs 
 
 ### Library, Test, and Version Guardrails
 
-- Evaluator Python is exactly 3.11; preserve the independent `evaluation/pyproject.toml` and `uv.lock`.
+- Evaluator Python is exactly 3.13; preserve the independent `evaluation/pyproject.toml` and `uv.lock`.
 - CI is provider-free and no-network. Do not add a grading service or provider SDK; use stdlib process/filesystem primitives plus the benchmark's frozen dependencies.
 - Validate canonical SHA-256 identity, mutation resistance, deterministic replay, five-of-five baseline/gold intake, bounded flaky classification, identical-artifact re-grade, environment credential absence, restricted network, typed crash evidence, fake-port ineligibility, and hard-blocker non-overridability.
 - Preserve the product Python range and root dependency bounds. Any grader, dependency, schema, normalization, threshold, or network-policy change requires a new protocol version.

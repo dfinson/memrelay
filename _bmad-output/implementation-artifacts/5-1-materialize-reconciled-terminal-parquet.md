@@ -59,7 +59,7 @@ This story creates the only typed boundary that confirmatory analysis may consum
 ### Architecture and Version Guardrails
 
 - Follow AD-03, AD-05, AD-07, AD-11, AD-15, AD-16, AD-17, AD-24.
-- Use Python `3.11`, PyArrow exactly `25.0.0`, RFC 8785 canonical JSON, and lowercase SHA-256.
+- Use Python `3.13`, PyArrow exactly `25.0.0`, RFC 8785 canonical JSON, and lowercase SHA-256.
 - Product/engine, controlled/dynamic, model, and changed-environment strata remain separate. Dynamic histories retain sequence-level units.
 - Do not add evaluator dependencies to the root `pyproject.toml` or memrelay wheel.
 

@@ -64,7 +64,7 @@ Panel reliability is a collection of explicit gates, not one blended score. Huma
 
 ### Library, Test, and Version Guardrails
 
-- Python 3.11. Prefer explicit, deterministic local statistics with frozen formulas; do not add an unapproved analytics/provider dependency. This story makes zero provider/session calls.
+- Python 3.13. Prefer explicit, deterministic local statistics with frozen formulas; do not add an unapproved analytics/provider dependency. This story makes zero provider/session calls.
 - CI uses synthetic records and no network/provider calls. Test exact threshold boundaries, criterion metric selection, order invariance, missing judges, drift windows, sentinel failures, classifier confidence bounds, and homogeneous-panel stronger gates.
 - Any calibration corpus/gold label, threshold, metric, window, diversity rule, sentinel, or sensitivity change requires a new protocol version.
 

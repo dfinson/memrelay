@@ -10,7 +10,7 @@ so that paid trials cannot start on an unqualified evaluator substrate.
 
 ## Acceptance Criteria
 
-1. **Given** a clean Python 3.11 evaluator environment and valid Copilot subscription authentication  
+1. **Given** a clean Python 3.13 evaluator environment and valid Copilot subscription authentication
    **When** `memrelay-eval bootstrap` and `memrelay-eval conformance` run  
    **Then** runtime, catalog, credential, workspace/clone isolation, grader, judge, telemetry, CAS, backup/restore, and reconciliation contracts are tested  
    **And** `runtime-lock.json` and `conformance-report.json` bind every proof and version/hash from prior stories.
@@ -59,7 +59,7 @@ These are the exact formal story dependencies from the epic graph.
 
 ### Developer Context
 
-Bootstrap/conformance is a declared stage with entry (clean Python 3.11 environment plus valid subscription authentication), exit (every named contract passes), and failure consequence (repair and repeat; no enrollment). It proves substrate readiness only. It must never be promoted into efficacy, safety, economics, or release evidence. Integration remains a separately authorized 32-run stage.
+Bootstrap/conformance is a declared stage with entry (clean Python 3.13 environment plus valid subscription authentication), exit (every named contract passes), and failure consequence (repair and repeat; no enrollment). It proves substrate readiness only. It must never be promoted into efficacy, safety, economics, or release evidence. Integration remains a separately authorized 32-run stage.
 
 Pause on any lock drift or incomplete proof. Resume is allowed only under the same immutable input set; otherwise create a new conformance report/protocol identity. Evidence is fail-closed and append-only.
 

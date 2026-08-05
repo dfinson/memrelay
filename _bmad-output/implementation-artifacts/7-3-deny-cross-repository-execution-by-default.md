@@ -93,7 +93,7 @@ No `evaluation/` tree exists yet. Use predecessor story contracts when implement
 - Use canonical opaque identities; never persist repository labels in ordinary denial evidence. If the append-only ledger adds its normal UTC envelope time, it is outside the AC2 denial payload and must remain independent of repository data.
 - Unit tests validate decisions and normalization without filesystem/network access. Contract tests assert guard ordering. Architecture tests assert adapter reachability. Fault tests race revocation against admission and verify no new repository operation begins.
 - CI is non-interactive, local, fake-provider-only, and performs no Copilot/OpenAI or private repository call.
-- This story is Python 3.11 standard-library domain/orchestration work and adds no dependency. Preserve product Python `>=3.11,<3.14` and the frozen product bounds (traceforge-toolkit `>=0.1,<0.1.2`, graphiti-core `>=0.29,<0.30`, Ladybug `>=0.18,<0.18.1`, MCP `>=1.0,<2`); later stage integration consumes the exact Story 6.1 runtime lock without changing it.
+- This story is Python 3.13 standard-library domain/orchestration work and adds no dependency. Preserve product Python `>=3.11,<3.14` and the frozen product bounds (traceforge-toolkit `>=0.1,<0.1.2`, graphiti-core `>=0.29,<0.30`, Ladybug `>=0.18,<0.18.1`, MCP `>=1.0,<2`); later stage integration consumes the exact Story 6.1 runtime lock without changing it.
 
 ### Anti-Patterns
 

@@ -70,7 +70,7 @@ Current-checkout fact: no `evaluation/` tree exists and all predecessor stories 
 ### Architecture and Preservation
 
 - Apply final frozen inference: familywise alpha `0.05` with Holm, power `0.80`, benefit `+0.05` with simultaneous lower bound `>0`, no-regression lower bound `>-0.02`, and cost/wall ratio `<=0.90` with simultaneous upper bound `<1.0`.
-- Verify the Story 6.1 frozen runtime/version lock unchanged: Python `3.11`, Copilot SDK `1.0.8` plus its frozen wheel digest, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` plus archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, PyArrow `25.0.0`, framework model `gpt-4.1-mini-2025-04-14`, and local embedding model `BAAI/bge-small-en-v1.5`.
+- Verify the Story 6.1 frozen runtime/version lock unchanged: Python `3.13`, Copilot SDK `1.0.8` plus its frozen wheel digest, Inspect `0.3.252`, OTel `1.44.0`, Collector `0.158.0` plus archive digest, OpenInference `0.1.31`, OpenAI instrumentation `0.1.53`, DuckDB `1.5.5`, PyArrow `25.0.0`, framework model `gpt-4.1-mini-2025-04-14`, and local embedding model `BAAI/bge-small-en-v1.5`.
 - Preserve complete ITT, model/history/product strata, immutable locks, separate provider/cost ledgers, categorical overrides, Parquet-only analysis, and append-only claim decisions.
 - A changed/absent model pauses; no public-name inference, fallback, role substitution, mid-block rescheduling, or pooling.
 - The 24-cluster cross-repository envelope is not part of primary/secondary. It remains mechanically denied until primary completion and all DG-R governance controls qualify.

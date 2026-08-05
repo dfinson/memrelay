@@ -60,7 +60,7 @@ This is a distinct estimand: mechanism potential through the public engine API. 
 
 - Preserve the complete root `pyproject.toml` and resolved product environment by hash rather than reconstructing a partial lock; current relevant bounds include `traceforge-toolkit>=0.1,<0.1.2`, `litellm>=1.0,<1.92`, `graphiti-core>=0.29,<0.30`, `ladybug>=0.18,<0.18.1`, `fastembed>=0.3,<1`, and `mcp>=1.0,<2`.
 - Same framework configuration as Story 2.6: local `BAAI/bge-small-en-v1.5`, direct OpenAI `byo-key`, `gpt-4.1-mini-2025-04-14`.
-- Python 3.11; no second engine/client library.
+- Python 3.13; no second engine/client library.
 
 ### Expected File Paths
 

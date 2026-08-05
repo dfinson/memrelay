@@ -70,7 +70,7 @@ Normalization must make invalid states unrepresentable: executable correctness a
 
 ### Library, Test, and Version Guardrails
 
-- Python 3.11, stdlib-only domain, one shared canonicalizer, lowercase SHA-256, explicit schema versions, and no NaN/Infinity.
+- Python 3.13, stdlib-only domain, one shared canonicalizer, lowercase SHA-256, explicit schema versions, and no NaN/Infinity.
 - No provider call is permitted during normalization. CI must be no-network and exercise complete authority truth tables, including all adjudication states and unavailable-vs-failed distinctions.
 - Test every hard/qualitative/blocker combination, missing/unavailable records, failed panel gates, favorable conflicts, adjudication boundaries, immutable source hashes, and forbidden imports/access.
 - Authority mapping, endpoint schema, grader/rubric/panel gate, blocker vocabulary, threshold, or derivation changes require a new protocol version.

@@ -69,7 +69,7 @@ Native sources remain separate authorities; normalized domain records are treatm
 
 ### Library and Version Requirements
 
-- Python 3.11 and Story 1 canonicalization/hashing/redaction utilities.
+- Python 3.13 and Story 1 canonicalization/hashing/redaction utilities.
 - Source pins represented exactly: Inspect `0.3.252`, Copilot SDK `1.0.8`, OTel Python `1.44.0`.
 - Future durable telemetry uses `otelcol-contrib` `0.158.0` Windows amd64 archive `otelcol-contrib_0.158.0_windows_amd64.tar.gz`, SHA-256 `4314abde3c8acc67af58bb8d7611aa991fd80abe4a412695167f956d9fff3005`, plus OpenInference `0.1.31` and OpenAI instrumentation `0.1.53`; do not implement those adapters here.
 - No secret-scanner dependency is added unless already frozen or architecture is amended; deterministic scanners must handle configured key/token/canary forms.

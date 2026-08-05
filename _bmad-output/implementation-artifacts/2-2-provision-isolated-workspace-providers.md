@@ -56,7 +56,7 @@ Workspace isolation is a causal boundary, not a convenience directory. Every att
 
 ### Library and Version Requirements
 
-- Python 3.11 standard library plus local `git`; no new workspace framework is specified.
+- Python 3.13 standard library plus local `git`; no new workspace framework is specified.
 - Preserve evaluator lock and root product dependency bounds. No Copilot, Inspect, OpenAI, OTel, or memrelay engine call belongs here.
 
 ### Expected File Paths

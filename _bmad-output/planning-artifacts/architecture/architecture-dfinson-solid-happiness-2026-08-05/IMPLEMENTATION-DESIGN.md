@@ -1491,7 +1491,7 @@ This section removes implementation discretion. An implementation that changes t
 
 | Component | Frozen value | Required proof |
 | --- | --- | --- |
-| Python | 3.11 | Executable path, version, and environment hash |
+| Python | 3.13 | Executable path, version, and environment hash |
 | Copilot SDK | `github-copilot-sdk==1.0.8` | Wheel SHA-256 `7c3d868b73daa3a154ae6c1c5a2bd9301c47349c6b080f1ed77ba9027da3e0fa` |
 | Copilot runtime | SDK-bundled runtime downloaded once during bootstrap | Version and binary SHA-256 in `runtime-lock.json`; later download disabled |
 | Inspect AI | `0.3.252` | Package hash and adapter-contract result |

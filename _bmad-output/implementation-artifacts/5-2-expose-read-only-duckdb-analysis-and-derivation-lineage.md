@@ -60,7 +60,7 @@ DuckDB is a replaceable read engine, not state. All authority remains in immutab
 ### Architecture and Version Guardrails
 
 - Follow AD-03, AD-05, AD-07, AD-15, AD-17, AD-22, AD-24.
-- Use Python `3.11`, DuckDB exactly `1.5.5`, and Story 5.1 PyArrow `25.0.0` schemas.
+- Use Python `3.13`, DuckDB exactly `1.5.5`, and Story 5.1 PyArrow `25.0.0` schemas.
 - Read reconciled terminal Parquet only. Analysis cannot import ledger mutation or concrete operational adapters.
 
 ### File Structure Requirements

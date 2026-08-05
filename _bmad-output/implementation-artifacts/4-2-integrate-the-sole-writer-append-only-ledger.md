@@ -67,7 +67,7 @@ SQLite is durable operational truth, not an evidence warehouse or analytics engi
 ### Architecture Compliance
 
 - Follow AD-04, AD-05, AD-08, AD-11, AD-15, AD-17, AD-18, AD-22.
-- Python 3.11; stdlib `sqlite3`; WAL mode. Do not introduce an ORM or external SDK types into domain/ledger contracts.
+- Python 3.13; stdlib `sqlite3`; WAL mode. Do not introduce an ORM or external SDK types into domain/ledger contracts.
 
 ### Frozen Version Requirements
 

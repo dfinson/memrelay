@@ -70,7 +70,7 @@ Assignment concealment is causal policy. Ordinary manifests may link opaque IDs 
 
 ### Library and Version Requirements
 
-- Python 3.11 and standard-library domain policy.
+- Python 3.13 and standard-library domain policy.
 - Reuse Story 1.3 RFC 8785/SHA-256 and Story 1.5 immutable freeze records.
 - Use a deterministic PRNG/assignment algorithm identified and frozen by the plan; do not silently substitute algorithms. The final architecture does not name a third-party assignment library.
 - No Inspect, Copilot SDK, OpenAI, OTel Collector, database, or scoring library is needed.

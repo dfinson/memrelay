@@ -67,7 +67,7 @@ Adjudication is exceptional append-only evidence, not a fourth ordinary vote, re
 
 ### Library, Test, and Version Guardrails
 
-- Python 3.11 and the Story 3.3 locked `github-copilot-sdk==1.0.8` runtime/session boundary.
+- Python 3.13 and the Story 3.3 locked `github-copilot-sdk==1.0.8` runtime/session boundary.
 - CI uses a fake agent runtime with exact call-count assertions; paid execution is explicit and capped.
 - Test missing/unsealed protocol, below/equal/above threshold, multiple disputed criteria in one bounded session, zero-call branch, unavailable model, anonymization, immutable originals, adjudicator crash/timeout, artifact citations, exact call caps, and blocker non-overridability.
 - Threshold, model-selection, prompt, rubric, tools, limits, or failure-policy changes require a new protocol version.

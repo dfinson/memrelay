@@ -63,7 +63,7 @@ inputDocuments:
 
 ### 📋 INFO ONLY — Solutions Provided
 
-- Python 3.11 stdlib/pytest/JSONL/hash-manifest fallbacks remain available while committed integrations are validated and repaired.
+- Python 3.13 stdlib/pytest/JSONL/hash-manifest fallbacks remain available while committed integrations are validated and repaired.
 - QA companion owns the one Markdown design-source representation plus design-time risk/requirement projections; architecture, handoff and progress reference it rather than duplicate it.
 - Embedded Ladybug remains default; cloud backends are wiring-tested only.
 - Execution mode is sequential until product arm/history isolation is proven.
