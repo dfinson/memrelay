@@ -21,9 +21,30 @@ from memrelay_eval.domain.errors import (
     ArtifactIntegrityError,
     AttemptTerminalAlreadyRecordedError,
     IneligibleEvidenceError,
+    LedgerIntentConflictError,
 )
-from memrelay_eval.domain.ids import AttemptId, RunId
-from memrelay_eval.domain.states import InclusionStatus, InternalRetrySubsystem
+from memrelay_eval.domain.ids import AttemptId, ExperimentId, IntentId, RunId
+from memrelay_eval.domain.intents import (
+    ArtifactLinkIntent,
+    AttemptTerminalIntent,
+    CreateAttemptIntent,
+    CreateExperimentIntent,
+    CreateRunIntent,
+    InclusionDecisionIntent,
+    IntentAck,
+    IntentRejection,
+    LedgerIntentType,
+    RetryLineageIntent,
+    RunTransitionIntent,
+    delivery_payload_digest,
+)
+from memrelay_eval.domain.policies import is_retryable_terminal
+from memrelay_eval.domain.states import (
+    AttemptTerminalKind,
+    InclusionStatus,
+    InternalRetrySubsystem,
+    RunState,
+)
 from memrelay_eval.evidence.manifest import manifest_bytes
 
 _REDACTED_TERMS = (
@@ -89,6 +110,13 @@ class InMemoryLedger:
         self._inclusions: list[InclusionDecision] = []
         self._internal_retry_lock = Lock()
         self._retry_authorization_lock = Lock()
+        self._experiments: set[ExperimentId] = set()
+        self._runs: dict[RunId, ExperimentId] = {}
+        self._attempts: dict[AttemptId, RunId] = {}
+        self._terminals: dict[AttemptId, AttemptTerminal] = {}
+        self._retry_links: list[tuple[AttemptId, AttemptId]] = []
+        self._intent_results: dict[IntentId, IntentAck | IntentRejection] = {}
+        self._transition_digests: dict[RunId, str | None] = {}
 
     def append_transition(self, transition: RunTransition) -> None:
         history = self.history(transition.run_id)
@@ -150,6 +178,221 @@ class InMemoryLedger:
         if decision.status is InclusionStatus.INCLUDED:
             raise IneligibleEvidenceError("unpaid conformance evidence cannot support inclusion")
         self._inclusions.append(decision)
+
+    def submit_intent(self, intent: LedgerIntentType) -> IntentAck | IntentRejection:
+        digest, preflight_rejection = delivery_payload_digest(intent)
+        prior = self._intent_results.get(intent.intent_id)
+        if prior is not None:
+            if prior.canonical_payload_digest != digest:
+                raise LedgerIntentConflictError(
+                    "intent ID was reused with a different canonical payload digest"
+                )
+            if isinstance(prior, IntentAck):
+                return IntentAck(
+                    prior.intent_id,
+                    prior.canonical_payload_digest,
+                    prior.kind,
+                    idempotent=True,
+                )
+            return IntentRejection(
+                prior.intent_id,
+                prior.canonical_payload_digest,
+                prior.kind,
+                prior.reason_code,
+                idempotent=True,
+            )
+
+        if preflight_rejection is not None:
+            return self._reject_with_digest(intent, digest, preflight_rejection)
+
+        if isinstance(intent, CreateExperimentIntent):
+            if intent.experiment_id in self._experiments:
+                return self.reject_intent(intent, "duplicate_experiment")
+            self._experiments.add(intent.experiment_id)
+            return self._ack(intent)
+        if isinstance(intent, CreateRunIntent):
+            if intent.experiment_id not in self._experiments:
+                return self.reject_intent(intent, "unknown_experiment")
+            if intent.run_id in self._runs:
+                return self.reject_intent(intent, "duplicate_run")
+            self._runs[intent.run_id] = intent.experiment_id
+            return self._ack(intent)
+        if isinstance(intent, CreateAttemptIntent):
+            if intent.run_id not in self._runs:
+                return self.reject_intent(intent, "unknown_run")
+            if intent.metadata.source_attempt_id is not None:
+                return self.reject_intent(intent, "initial_attempt_must_not_have_predecessor")
+            if any(run_id == intent.run_id for run_id in self._attempts.values()):
+                return self.reject_intent(intent, "unlinked_attempt_creation")
+            self._attempts[intent.attempt_id] = intent.run_id
+            return self._ack(intent)
+        if isinstance(intent, RunTransitionIntent):
+            return self._submit_transition(intent)
+        if isinstance(intent, AttemptTerminalIntent):
+            return self._submit_terminal(intent)
+        if isinstance(intent, ArtifactLinkIntent):
+            return self._submit_artifact_link(intent)
+        if isinstance(intent, RetryLineageIntent):
+            return self._submit_retry(intent)
+        if isinstance(intent, InclusionDecisionIntent):
+            return self._submit_inclusion(intent)
+        return self.reject_intent(intent, "unknown_intent_kind")
+
+    def reject_intent(self, intent: LedgerIntentType, reason_code: str) -> IntentRejection:
+        digest, preflight_rejection = delivery_payload_digest(intent)
+        return self._reject_with_digest(intent, digest, preflight_rejection or reason_code)
+
+    def _reject_with_digest(
+        self, intent: LedgerIntentType, digest: str, reason_code: str
+    ) -> IntentRejection:
+        prior = self._intent_results.get(intent.intent_id)
+        if prior is not None:
+            if prior.canonical_payload_digest != digest:
+                raise LedgerIntentConflictError(
+                    "intent ID was reused with a different canonical payload digest"
+                )
+            if isinstance(prior, IntentRejection):
+                return IntentRejection(
+                    prior.intent_id,
+                    prior.canonical_payload_digest,
+                    prior.kind,
+                    prior.reason_code,
+                    idempotent=True,
+                )
+            raise LedgerIntentConflictError("control rejection conflicts with an accepted intent")
+        result = IntentRejection(
+            intent.intent_id,
+            digest,
+            intent.kind,
+            reason_code,
+        )
+        self._intent_results[intent.intent_id] = result
+        return result
+
+    def _ack(self, intent: LedgerIntentType) -> IntentAck:
+        digest, preflight_rejection = delivery_payload_digest(intent)
+        if preflight_rejection is not None:
+            raise ValueError("malformed intent cannot be acknowledged")
+        result = IntentAck(intent.intent_id, digest, intent.kind)
+        self._intent_results[intent.intent_id] = result
+        return result
+
+    def _submit_transition(self, intent: RunTransitionIntent) -> IntentAck | IntentRejection:
+        if intent.run_id not in self._runs:
+            return self.reject_intent(intent, "unknown_run")
+        history = self.history(intent.run_id)
+        current = history[-1].next_state if history else RunState.PLANNED
+        digest = self._transition_digests.get(intent.run_id)
+        if (
+            current is not intent.previous
+            or intent.metadata.expected_prior_state is not current
+            or intent.metadata.expected_prior_digest != digest
+        ):
+            return self.reject_intent(intent, "stale_prior_state")
+        if self._attempts.get(intent.metadata.source_attempt_id) != intent.run_id:
+            return self.reject_intent(intent, "invalid_source_attempt")
+        if intent.next_state in (RunState.INCLUDED, RunState.EXCLUDED):
+            decision = next(
+                (item for item in self._inclusions if item.run_id == intent.run_id),
+                None,
+            )
+            if decision is None:
+                return self.reject_intent(intent, "missing_inclusion_decision")
+            if decision.status.value != intent.next_state.value:
+                return self.reject_intent(intent, "inclusion_transition_mismatch")
+        try:
+            self.append_transition(
+                RunTransition(
+                    intent.run_id, intent.previous, intent.next_state, intent.metadata.occurred_at
+                )
+            )
+        except ValueError:
+            return self.reject_intent(intent, "invalid_lifecycle_transition")
+        result = self._ack(intent)
+        self._transition_digests[intent.run_id] = result.canonical_payload_digest
+        return result
+
+    def _submit_terminal(self, intent: AttemptTerminalIntent) -> IntentAck | IntentRejection:
+        if self._attempts.get(intent.attempt_id) != intent.run_id:
+            return self.reject_intent(intent, "unknown_attempt")
+        if self._attempts.get(intent.metadata.source_attempt_id) != intent.run_id:
+            return self.reject_intent(intent, "invalid_source_attempt")
+        if intent.attempt_id in self._terminals:
+            return self.reject_intent(intent, "attempt_already_terminal")
+        if intent.classification is AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE and (
+            intent.metadata.source_attempt_id != intent.attempt_id
+            or intent.pre_exposure_evidence is None
+            or intent.pre_exposure_evidence not in intent.metadata.evidence_refs
+        ):
+            return self.reject_intent(intent, "unverified_pre_exposure_failure")
+        if (
+            intent.classification is not AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE
+            and intent.pre_exposure_evidence is not None
+        ):
+            return self.reject_intent(intent, "unexpected_pre_exposure_evidence")
+        self._terminals[intent.attempt_id] = AttemptTerminal(
+            intent.attempt_id,
+            intent.run_id,
+            intent.classification,
+            intent.metadata.occurred_at,
+            intent.metadata.reason_code,
+        )
+        return self._ack(intent)
+
+    def _submit_artifact_link(self, intent: ArtifactLinkIntent) -> IntentAck | IntentRejection:
+        link = intent.link
+        if link.run_id is None:
+            if link.experiment_id is None or link.experiment_id not in self._experiments:
+                return self.reject_intent(intent, "invalid_artifact_owner")
+            self.append_artifact_link(link)
+            return self._ack(intent)
+        if link.run_id not in self._runs:
+            return self.reject_intent(intent, "unknown_run")
+        if link.experiment_id is not None and self._runs[link.run_id] != link.experiment_id:
+            return self.reject_intent(intent, "artifact_experiment_run_mismatch")
+        if self._attempts.get(intent.metadata.source_attempt_id) != link.run_id:
+            return self.reject_intent(intent, "invalid_source_attempt")
+        if link.attempt_id is not None and self._attempts.get(link.attempt_id) != link.run_id:
+            return self.reject_intent(intent, "attempt_run_mismatch")
+        self.append_artifact_link(link)
+        return self._ack(intent)
+
+    def _submit_retry(self, intent: RetryLineageIntent) -> IntentAck | IntentRejection:
+        terminal = self._terminals.get(intent.previous_attempt_id)
+        if intent.metadata.source_attempt_id != intent.previous_attempt_id:
+            return self.reject_intent(intent, "retry_source_mismatch")
+        if (
+            self._attempts.get(intent.previous_attempt_id) != intent.run_id
+            or terminal is None
+            or not is_retryable_terminal(terminal.classification)
+        ):
+            return self.reject_intent(intent, "retry_not_authorized")
+        if any(self._attempts[previous] == intent.run_id for previous, _ in self._retry_links):
+            return self.reject_intent(intent, "retry_already_authorized")
+        if (
+            intent.previous_attempt_id == intent.retry_attempt_id
+            or intent.retry_attempt_id in self._attempts
+        ):
+            return self.reject_intent(intent, "retry_attempt_already_exists")
+        self._attempts[intent.retry_attempt_id] = intent.run_id
+        self._retry_links.append((intent.previous_attempt_id, intent.retry_attempt_id))
+        return self._ack(intent)
+
+    def _submit_inclusion(self, intent: InclusionDecisionIntent) -> IntentAck | IntentRejection:
+        decision = intent.decision
+        history = self.history(decision.run_id)
+        current = history[-1].next_state if history else RunState.PLANNED
+        digest = self._transition_digests.get(decision.run_id)
+        if (
+            current is not RunState.RECONCILED
+            or intent.metadata.expected_prior_state is not RunState.RECONCILED
+            or intent.metadata.expected_prior_digest != digest
+        ):
+            return self.reject_intent(intent, "inclusion_before_reconciliation")
+        if decision.status is InclusionStatus.INCLUDED:
+            return self.reject_intent(intent, "unpaid_inclusion_forbidden")
+        self._inclusions.append(decision)
+        return self._ack(intent)
 
     def history(self, run_id: RunId) -> tuple[RunTransition, ...]:
         return tuple(item for item in self._transitions if item.run_id == run_id)

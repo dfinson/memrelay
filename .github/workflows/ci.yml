@@ -46,6 +46,12 @@ jobs:
       - name: Pytest
         run: pytest
 
+      - name: Evaluator pytest
+        if: matrix.python-version == '3.13'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/evaluation/src
+        run: python -m pytest evaluation/tests
+
   build-windows:
     # Windows regression coverage for issue #94: memory_recall routed through the
     # MCP stdio server hung over loopback while POSIX (unix socket) stayed green,

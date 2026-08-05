@@ -83,7 +83,7 @@ development_status:
 
   epic-4: in-progress
   4-1-store-immutable-artifacts-and-versioned-manifests: done
-  4-2-integrate-the-sole-writer-append-only-ledger: ready-for-dev
+  4-2-integrate-the-sole-writer-append-only-ledger: review
   4-3-capture-versioned-telemetry-semantics-and-classes: ready-for-dev
   4-4-separate-provider-and-credential-domain-identities: ready-for-dev
   4-5-reconcile-required-evidence-and-decide-inclusion: ready-for-dev

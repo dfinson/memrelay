@@ -15,8 +15,11 @@ from memrelay_eval.domain.errors import (
     InternalRetryLimitExceededError,
 )
 from memrelay_eval.domain.ids import AttemptId
+from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType
 from memrelay_eval.domain.ports import LedgerPort, TelemetryPort
 from memrelay_eval.domain.states import InternalRetrySubsystem
+
+from .worker import WorkerIntentEmitter
 
 
 class AttemptTerminalRecorder:
@@ -81,3 +84,11 @@ class InternalRetryRecorder:
     @property
     def records(self) -> tuple[InternalRetryRecord, ...]:
         return tuple(self._records)
+
+
+def emit_attempt_intent(
+    emitter: WorkerIntentEmitter, intent: LedgerIntentType
+) -> IntentAck | IntentRejection:
+    """Forward an immutable attempt lifecycle intent across the control boundary."""
+
+    return emitter.emit(intent)

@@ -29,7 +29,24 @@ from memrelay_eval.domain.governance import (
     GovernanceDenialReason,
     RepositoryAccessRequest,
 )
-from memrelay_eval.domain.ports import DenialEvidencePort, RepositoryAuthorizationPort
+from memrelay_eval.domain.intents import (
+    ArtifactLinkIntent,
+    AttemptTerminalIntent,
+    CreateAttemptIntent,
+    CreateExperimentIntent,
+    CreateRunIntent,
+    InclusionDecisionIntent,
+    IntentAck,
+    IntentRejection,
+    LedgerIntentType,
+    RetryLineageIntent,
+    RunTransitionIntent,
+)
+from memrelay_eval.domain.ports import (
+    DenialEvidencePort,
+    LedgerPort,
+    RepositoryAuthorizationPort,
+)
 
 _Result = TypeVar("_Result")
 
@@ -177,6 +194,33 @@ class CrossRepositoryAdmissionController:
         evidence = DenialEvidence.from_result(request, result)
         self._evidence_sink.append_denial(evidence)
         raise CrossRepositoryDeniedError(result.reason)
+from memrelay_eval.domain.intents import (
+    ArtifactLinkIntent,
+    AttemptTerminalIntent,
+    CreateAttemptIntent,
+    CreateExperimentIntent,
+    CreateRunIntent,
+    InclusionDecisionIntent,
+    IntentAck,
+    IntentRejection,
+    LedgerIntentType,
+    RetryLineageIntent,
+    RunTransitionIntent,
+)
+from memrelay_eval.domain.intents import (
+    ArtifactLinkIntent,
+    AttemptTerminalIntent,
+    CreateAttemptIntent,
+    CreateExperimentIntent,
+    CreateRunIntent,
+    InclusionDecisionIntent,
+    IntentAck,
+    IntentRejection,
+    LedgerIntentType,
+    RetryLineageIntent,
+    RunTransitionIntent,
+)
+from memrelay_eval.domain.ports import LedgerPort
 
 
 class LockRepository:
@@ -422,3 +466,71 @@ def _assert_redacted(value: object, path: str = "") -> None:
         raise ConformancePauseError(
             "lock_secret_value", f"lock document contains credential-like data at {path}"
         )
+class LedgerControl:
+    """The only orchestration component allowed to submit worker lifecycle intents."""
+
+    def __init__(self, ledger: LedgerPort) -> None:
+        self._ledger = ledger
+
+    def emit(self, intent: LedgerIntentType) -> IntentAck | IntentRejection:
+        """Receive an attempt-scoped worker intent without granting control authority."""
+
+        if isinstance(intent, (CreateExperimentIntent, CreateRunIntent)):
+            return self._ledger.reject_intent(intent, "identity_creation_control_only")
+        if isinstance(intent, (CreateAttemptIntent, RetryLineageIntent)):
+            return self._ledger.reject_intent(intent, "attempt_creation_control_only")
+        if isinstance(intent, InclusionDecisionIntent):
+            return self._ledger.reject_intent(intent, "inclusion_control_only")
+        if not isinstance(intent, (RunTransitionIntent, AttemptTerminalIntent, ArtifactLinkIntent)):
+            return self._ledger.reject_intent(intent, "unsupported_worker_intent")
+        if intent.metadata.source_attempt_id is None:
+            return self._ledger.reject_intent(intent, "missing_worker_source_attempt")
+        if (
+            isinstance(intent, AttemptTerminalIntent)
+            and intent.metadata.source_attempt_id != intent.attempt_id
+        ):
+            return self._ledger.reject_intent(intent, "worker_attempt_scope_mismatch")
+        if isinstance(intent, ArtifactLinkIntent) and intent.link.run_id is None:
+            return self._ledger.reject_intent(intent, "worker_artifact_requires_run")
+        if (
+            isinstance(intent, ArtifactLinkIntent)
+            and intent.link.attempt_id is not None
+            and intent.metadata.source_attempt_id != intent.link.attempt_id
+        ):
+            return self._ledger.reject_intent(intent, "worker_attempt_scope_mismatch")
+        return self._ledger.submit_intent(intent)
+
+    def handle(self, intent: LedgerIntentType) -> IntentAck | IntentRejection:
+        """Backward-compatible name for the worker sink receiver."""
+
+        return self.emit(intent)
+
+    def create_initial_attempt(self, intent: CreateAttemptIntent) -> IntentAck | IntentRejection:
+        """Create the sole initial attempt after the control process has provisioned a run."""
+
+        return self._ledger.submit_intent(intent)
+
+    def create_experiment(self, intent: CreateExperimentIntent) -> IntentAck | IntentRejection:
+        """Record an experiment identity under control-process authority."""
+
+        return self._ledger.submit_intent(intent)
+
+    def create_run(self, intent: CreateRunIntent) -> IntentAck | IntentRejection:
+        """Record a run identity under control-process authority."""
+
+        return self._ledger.submit_intent(intent)
+
+    def record_artifact(self, intent: ArtifactLinkIntent) -> IntentAck | IntentRejection:
+        """Record a control-owned experiment or run artifact link."""
+
+        return self._ledger.submit_intent(intent)
+
+    def authorize_retry(self, intent: RetryLineageIntent) -> IntentAck | IntentRejection:
+        """Create the sole successor only after the ledger verifies retry preconditions."""
+
+        return self._ledger.submit_intent(intent)
+
+    def record_inclusion(self, intent: InclusionDecisionIntent) -> IntentAck | IntentRejection:
+        """Record a reconciled inclusion decision under control-process authority."""
+
+        return self._ledger.submit_intent(intent)
