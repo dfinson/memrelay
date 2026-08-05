@@ -1,6 +1,6 @@
 # Story 1.1: Bootstrap the Evaluation Project and Domain Lifecycle
 
-Status: review
+Status: done
 
 ## Story
 
