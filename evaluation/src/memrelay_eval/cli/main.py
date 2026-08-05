@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 
 from memrelay_eval import __version__
-from memrelay_eval.cli.commands import show_foundation_status
+from memrelay_eval.cli.commands import bootstrap, lock_models, show_foundation_status
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -16,6 +16,19 @@ def build_parser() -> argparse.ArgumentParser:
         "foundation", help="show current evaluator foundation status"
     )
     foundation.set_defaults(handler=show_foundation_status)
+    bootstrap_parser = subcommands.add_parser(
+        "bootstrap", help="explicitly verify and lock the official Copilot runtime"
+    )
+    bootstrap_parser.add_argument("--backup-root", required=True)
+    bootstrap_parser.set_defaults(handler=bootstrap)
+    lock_models_parser = subcommands.add_parser(
+        "lock-models", help="explicitly qualify and lock native Copilot models"
+    )
+    lock_models_parser.add_argument("--credit-cap", type=float, required=True)
+    lock_models_parser.add_argument("--token-cap", type=int, required=True)
+    lock_models_parser.add_argument("--active-seconds-cap", type=float, required=True)
+    lock_models_parser.add_argument("--wall-seconds-cap", type=float, required=True)
+    lock_models_parser.set_defaults(handler=lock_models)
     return parser
 
 

@@ -13,6 +13,7 @@ from .entities import (
     InclusionDecision,
     RunTransition,
     TelemetryObservation,
+    NativeModelCatalog,
 )
 from .ids import AssignmentId, RunId
 
@@ -35,7 +36,7 @@ class ExecutionAuthorityPort(Protocol):
 
 
 class AgentRuntimePort(Protocol):
-    async def list_models(self) -> object: ...
+    async def list_models(self) -> NativeModelCatalog: ...
     async def run_session(self, session: object) -> object: ...
 
 

@@ -676,6 +676,9 @@ wheels = [
 name = "memrelay-eval"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "github-copilot-sdk" },
+]
 
 [package.optional-dependencies]
 dev = [
@@ -683,7 +686,6 @@ dev = [
 ]
 future-adapters = [
     { name = "duckdb" },
-    { name = "github-copilot-sdk" },
     { name = "inspect-ai" },
     { name = "openinference-instrumentation-openai" },
     { name = "openinference-semantic-conventions" },
@@ -695,7 +697,7 @@ future-adapters = [
 [package.metadata]
 requires-dist = [
     { name = "duckdb", marker = "extra == 'future-adapters'", specifier = "==1.5.5" },
-    { name = "github-copilot-sdk", marker = "extra == 'future-adapters'", specifier = "==1.0.8" },
+    { name = "github-copilot-sdk", specifier = "==1.0.8" },
     { name = "inspect-ai", marker = "extra == 'future-adapters'", specifier = "==0.3.252" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'future-adapters'", specifier = "==0.1.53" },
     { name = "openinference-semantic-conventions", marker = "extra == 'future-adapters'", specifier = "==0.1.31" },
