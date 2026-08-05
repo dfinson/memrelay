@@ -1,6 +1,6 @@
 # Story 7.3: Deny Cross-Repository Execution by Default
 
-Status: review
+Status: done
 
 ## Story
 
@@ -124,9 +124,10 @@ GPT-5.6 Terra
 ### Debug Log References
 
 - `PYTHONPATH=<worktree>/evaluation/src py -3.12 -m pytest evaluation/tests/unit/domain/test_cross_repository_deny.py evaluation/tests/contract/test_pre_discovery_authorization.py evaluation/tests/fault/test_governance_revocation.py evaluation/tests/architecture/test_cross_repository_unreachable.py`
+- `PYTHONPATH=<worktree>/evaluation/src py -3.12 -m pytest evaluation/tests`
 - `PYTHONPATH=<worktree>/src;<worktree>/evaluation/src py -3.12 -m pytest`
-- `py -3.12 -m ruff check evaluation`
-- `py -3.12 -m ruff format --check evaluation`
+- `py -3.12 -m ruff check .`
+- `py -3.12 -m ruff format --check .`
 
 ### Completion Notes List
 
@@ -136,7 +137,11 @@ GPT-5.6 Terra
 - Kept the future Story 7.4 qualification path absent; no provider, private repository, Copilot, or OpenAI call is introduced.
 - Added synthetic fake-provider tests for rejection ordering, malformed values, malformed authority results, revocation, async admission, and CLI privacy.
 - Added a Python 3.13 CI conformance job that installs and tests the separate evaluator project without provider credentials or external adapters.
-- Moved to `review` after independent review and corrective hardening.
+- Replaced the environment-only test with direct-controller and CLI environment-alias matrices that exercise every local forbidden repository operation spy.
+- Added opaque synthetic same-owner, alias, fork, case, path, and stale-cache representation coverage without resolving or retaining repository labels.
+- Added schema-shape, real denial-payload, and schema-drift contracts with only standard-library JSON handling.
+- Documented the future authority-owned atomic admission obligation; Story 7.4 remains the only future consumer of that seam.
+- Completed independent review and the final contract-coverage closure; Story 7.3 is `done`.
 
 ### File List
 
@@ -152,6 +157,7 @@ GPT-5.6 Terra
 - `evaluation/src/memrelay_eval/orchestration/stages.py`
 - `evaluation/tests/architecture/test_cross_repository_unreachable.py`
 - `evaluation/tests/contract/test_pre_discovery_authorization.py`
+- `evaluation/tests/contract/test_repository_authorization_schema.py`
 - `evaluation/tests/fault/test_governance_revocation.py`
 - `evaluation/tests/unit/domain/test_cross_repository_deny.py`
 - `.github/workflows/ci.yml`

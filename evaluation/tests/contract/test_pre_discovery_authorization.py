@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -28,6 +29,29 @@ from memrelay_eval.orchestration.control import (
     InMemoryDenialEvidenceSink,
 )
 
+FORBIDDEN_OPERATION_NAMES = (
+    "discover",
+    "clone",
+    "cache_lookup",
+    "assign",
+    "acquire_credentials",
+    "expose_task",
+)
+ENVIRONMENT_BYPASS_ALIASES = (
+    "MEMRELAY_EVAL_ALLOW_CROSS_REPOSITORY",
+    "MEMRELAY_EVAL_ALLOW_CROSS_REPO",
+    "MEMRELAY_EVAL_CROSS_REPOSITORY",
+    "MEMRELAY_EVAL_FORCE_CROSS_REPOSITORY",
+)
+REPOSITORY_REPRESENTATIONS = (
+    "same-owner-different-repository",
+    "remote-alias",
+    "fork",
+    "case-variant",
+    "path-variant",
+    "stale-cache",
+)
+
 
 class ForbiddenRepositoryOperations:
     def __init__(self) -> None:
@@ -52,12 +76,15 @@ class ForbiddenRepositoryOperations:
         self.calls.append("expose_task")
 
 
-def cross_repository_request() -> RepositoryAccessRequest:
+def cross_repository_request(
+    *, requested_repository_id: RepositoryId | None = None
+) -> RepositoryAccessRequest:
     now = datetime(2026, 8, 5, tzinfo=UTC)
+    task_repository_id = RepositoryId.new()
     return RepositoryAccessRequest(
         request_id=GovernanceRequestId.new(),
-        task_repository_id=RepositoryId.new(),
-        requested_repository_id=RepositoryId.new(),
+        task_repository_id=task_repository_id,
+        requested_repository_id=requested_repository_id or RepositoryId.new(),
         principal_id=PrincipalId.new(),
         authorization_id=AuthorizationId.new(),
         authorization_version=AuthorizationVersionId.new(),
@@ -71,7 +98,15 @@ def cross_repository_request() -> RepositoryAccessRequest:
     )
 
 
-def test_denial_happens_before_any_repository_touching_operation() -> None:
+@pytest.mark.parametrize("operation_name", FORBIDDEN_OPERATION_NAMES)
+@pytest.mark.parametrize("environment_alias", (None, *ENVIRONMENT_BYPASS_ALIASES))
+def test_direct_controller_configuration_and_environment_cannot_bypass_pre_discovery_denial(
+    monkeypatch: pytest.MonkeyPatch,
+    operation_name: str,
+    environment_alias: str | None,
+) -> None:
+    if environment_alias is not None:
+        monkeypatch.setenv(environment_alias, "1")
     operations = ForbiddenRepositoryOperations()
     evidence = InMemoryDenialEvidenceSink()
     controller = CrossRepositoryAdmissionController(evidence_sink=evidence)
@@ -80,28 +115,25 @@ def test_denial_happens_before_any_repository_touching_operation() -> None:
         controller.start_repository_operation(
             cross_repository_request(),
             datetime(2026, 8, 5, tzinfo=UTC),
-            operations.discover,
+            getattr(operations, operation_name),
         )
 
     assert operations.calls == []
     assert evidence.records[0].to_dict()["reason"] == "repository_mismatch"
 
 
-def test_environment_flag_does_not_bypass_the_pre_discovery_guard(
+@pytest.mark.parametrize("environment_alias", ENVIRONMENT_BYPASS_ALIASES)
+def test_cli_refusal_is_unchanged_by_plausible_environment_bypass_aliases(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    environment_alias: str,
 ) -> None:
-    monkeypatch.setenv("MEMRELAY_EVAL_ALLOW_CROSS_REPOSITORY", "1")
-    operations = ForbiddenRepositoryOperations()
-    controller = CrossRepositoryAdmissionController()
+    monkeypatch.setenv(environment_alias, "1")
 
-    with pytest.raises(CrossRepositoryDeniedError):
-        controller.start_repository_operation(
-            cross_repository_request(),
-            datetime(2026, 8, 5, tzinfo=UTC),
-            operations.clone,
-        )
-
-    assert operations.calls == []
+    assert main(["run", "--stage", "cross-repo"]) == 2
+    output = capsys.readouterr().out
+    assert "cross_repository_stage_disabled" in output
+    assert re.search(r"repository_[a-f0-9]{32}", output) is None
 
 
 class PermissiveAuthority:
@@ -166,6 +198,34 @@ def test_malformed_authority_result_fails_closed_before_repository_operation() -
 
     assert failure.value.reason.value == "authorization_not_current"
     assert operations.calls == []
+
+
+@pytest.mark.parametrize("representation", REPOSITORY_REPRESENTATIONS)
+@pytest.mark.parametrize("operation_name", FORBIDDEN_OPERATION_NAMES)
+def test_distinct_opaque_repository_representations_are_denied_without_resolution(
+    representation: str,
+    operation_name: str,
+) -> None:
+    requested_repository_id = RepositoryId.from_digest(
+        hashlib.sha256(representation.encode("ascii")).hexdigest()
+    )
+    operations = ForbiddenRepositoryOperations()
+    evidence = InMemoryDenialEvidenceSink()
+    controller = CrossRepositoryAdmissionController(evidence_sink=evidence)
+
+    with pytest.raises(CrossRepositoryDeniedError) as failure:
+        controller.start_repository_operation(
+            cross_repository_request(requested_repository_id=requested_repository_id),
+            datetime(2026, 8, 5, tzinfo=UTC),
+            getattr(operations, operation_name),
+        )
+
+    assert failure.value.reason.value == "repository_mismatch"
+    assert operations.calls == []
+    denial_payload = evidence.records[0].to_dict()
+    assert set(denial_payload) == {"request_id", "decision", "policy_version", "reason"}
+    assert representation not in denial_payload.values()
+    assert str(requested_repository_id) not in denial_payload.values()
 
 
 def test_cross_repository_cli_refusal_contains_no_repository_information(

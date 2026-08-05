@@ -46,6 +46,7 @@ class RevocableAuthority:
         now: datetime,
         operation: Callable[[], object],
     ) -> tuple[AuthorizationResult, object | None]:
+        """Fake the atomic future-authority contract required by Story 7.4."""
         del now
         with self._lock:
             self.calls += 1
@@ -107,6 +108,21 @@ def test_revocation_between_entry_and_start_prevents_new_repository_operation() 
     assert failure.value.reason is GovernanceDenialReason.AUTHORIZATION_REVOKED
     assert operations_started == []
     assert authority.calls == 2
+
+
+def test_atomic_authority_handoff_starts_only_after_a_permitted_decision() -> None:
+    authority = RevocableAuthority()
+    controller = CrossRepositoryAdmissionController(authority=authority)
+    operations_started: list[str] = []
+
+    controller.start_repository_operation(
+        ordinary_request(),
+        datetime(2026, 8, 5, tzinfo=UTC),
+        lambda: operations_started.append("started"),
+    )
+
+    assert operations_started == ["started"]
+    assert authority.calls == 1
 
 
 class AsyncRevocableAuthority:

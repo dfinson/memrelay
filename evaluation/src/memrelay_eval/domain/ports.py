@@ -77,7 +77,13 @@ class ReconciliationPort(Protocol):
 
 
 class RepositoryAuthorizationPort(Protocol):
-    """Owns the atomic governance admission boundary for repository work."""
+    """Owns the atomic governance admission boundary for repository work.
+
+    A future qualified authority must decide admission and invoke ``operation`` in
+    the same authority-owned critical section. It must never invoke ``operation``
+    for a denied admission; controller result validation cannot undo a repository
+    operation that an authority has already started.
+    """
 
     def authorize(self, request: RepositoryAccessRequest, now: datetime) -> AuthorizationResult: ...
 
