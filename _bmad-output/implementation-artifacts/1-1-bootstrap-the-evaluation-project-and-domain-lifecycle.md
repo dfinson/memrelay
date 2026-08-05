@@ -1,6 +1,6 @@
 # Story 1.1: Bootstrap the Evaluation Project and Domain Lifecycle
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -41,25 +41,25 @@ So that I can plan studies without coupling evaluator dependencies or arm labels
 
 ## Tasks / Subtasks
 
-- [ ] Create the isolated evaluator project and lock (AC: 1)
-  - [ ] Add the `evaluation/` package tree, Python 3.13 project metadata, independent `uv.lock`, README, schemas, catalog, collector, test, and artifact roots.
-  - [ ] Register `memrelay-eval` through the evaluator package composition root.
-  - [ ] Prove product wheel/sdist metadata and root runtime dependencies are unchanged.
-- [ ] Implement standard-library-only domain values (AC: 2, 4)
-  - [ ] Add immutable typed IDs and frozen records for every entity named in AC2.
-  - [ ] Add `ArtifactRef`, manifest `1.0.0` domain projection, error/reason types, and `LedgerPort`, `ArtifactStorePort`, `ExecutionAuthorityPort`, `AgentRuntimePort`, `TreatmentPort`, `WorkspacePort`, `AssignmentPort`, `GraderPort`, `TelemetryPort`, and `ReconciliationPort`.
-  - [ ] Make the manifest `1.0.0` projection cover `artifact_id`, `kind`, lowercase `sha256`, `size_bytes`, `media_type`, UTC `created_at`, producer component/version, classification, `contains_secrets`, source artifact IDs, retention policy ID, and encryption metadata.
-  - [ ] Define `attempt_id` as optional and valid only for attempt-scoped evidence. Pre-attempt experiment/run artifacts, including the Story 1.5 effective-configuration freeze, carry ownership through authoritative ledger `ArtifactLink` records rather than a fabricated attempt identity.
-  - [ ] Add an import-boundary test rejecting non-stdlib imports from `domain`.
-- [ ] Implement lifecycle and attempt-terminal policies (AC: 3)
-  - [ ] Validate only the frozen run transition graph.
-  - [ ] Keep attempt terminal records independent from run transitions and use: `succeeded`, `agent_failed`, `timed_out`, `provider_unavailable`, `quota_exhausted`, `grader_failed`, `evidence_incomplete`, `infrastructure_failed_pre_exposure`, `infrastructure_failed_post_exposure`, `cancelled_by_circuit_breaker`.
-  - [ ] Return typed failures; never silently coerce or skip a transition.
-- [ ] Implement explicitly non-durable deterministic adapters (AC: 4, 5)
-  - [ ] Provide in-memory artifact, ledger, and telemetry adapters with stable ordering and deterministic outputs.
-  - [ ] Mark their evidence provenance `unpaid_conformance` and make inclusion eligibility fail closed.
-  - [ ] Ensure telemetry redaction excludes prompts, code, repository/user names, credentials, provider payloads, and treatment labels by default.
-- [ ] Add focused unit and contract tests (AC: 1-5)
+- [x] Create the isolated evaluator project and lock (AC: 1)
+  - [x] Add the `evaluation/` package tree, Python 3.13 project metadata, independent `uv.lock`, README, schemas, catalog, collector, test, and artifact roots.
+  - [x] Register `memrelay-eval` through the evaluator package composition root.
+  - [x] Prove product wheel/sdist metadata and root runtime dependencies are unchanged.
+- [x] Implement standard-library-only domain values (AC: 2, 4)
+  - [x] Add immutable typed IDs and frozen records for every entity named in AC2.
+  - [x] Add `ArtifactRef`, manifest `1.0.0` domain projection, error/reason types, and `LedgerPort`, `ArtifactStorePort`, `ExecutionAuthorityPort`, `AgentRuntimePort`, `TreatmentPort`, `WorkspacePort`, `AssignmentPort`, `GraderPort`, `TelemetryPort`, and `ReconciliationPort`.
+  - [x] Make the manifest `1.0.0` projection cover `artifact_id`, `kind`, lowercase `sha256`, `size_bytes`, `media_type`, UTC `created_at`, producer component/version, classification, `contains_secrets`, source artifact IDs, retention policy ID, and encryption metadata.
+  - [x] Define `attempt_id` as optional and valid only for attempt-scoped evidence. Pre-attempt experiment/run artifacts, including the Story 1.5 effective-configuration freeze, carry ownership through authoritative ledger `ArtifactLink` records rather than a fabricated attempt identity.
+  - [x] Add an import-boundary test rejecting non-stdlib imports from `domain`.
+- [x] Implement lifecycle and attempt-terminal policies (AC: 3)
+  - [x] Validate only the frozen run transition graph.
+  - [x] Keep attempt terminal records independent from run transitions and use: `succeeded`, `agent_failed`, `timed_out`, `provider_unavailable`, `quota_exhausted`, `grader_failed`, `evidence_incomplete`, `infrastructure_failed_pre_exposure`, `infrastructure_failed_post_exposure`, `cancelled_by_circuit_breaker`.
+  - [x] Return typed failures; never silently coerce or skip a transition.
+- [x] Implement explicitly non-durable deterministic adapters (AC: 4, 5)
+  - [x] Provide in-memory artifact, ledger, and telemetry adapters with stable ordering and deterministic outputs.
+  - [x] Mark their evidence provenance `unpaid_conformance` and make inclusion eligibility fail closed.
+  - [x] Ensure telemetry redaction excludes prompts, code, repository/user names, credentials, provider payloads, and treatment labels by default.
+- [x] Add focused unit and contract tests (AC: 1-5)
 
 ## Developer Context
 
@@ -138,12 +138,58 @@ Paths marked **NEW** are absent at story start. Do not reinterpret existing root
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- `uv lock --directory .\evaluation --python 3.13`
+- `.\evaluation\.venv\Scripts\memrelay-eval.exe --help`
+- `.\evaluation\.venv\Scripts\python.exe -m pytest .\evaluation\tests`
+- `C:\Python312\python.exe -m ruff check .`
+- `C:\Python312\python.exe -m ruff format --check .`
+- `$env:PYTHONPATH = (Resolve-Path .\src).Path; C:\Python312\python.exe -m pytest`
+- `.\evaluation\.venv\Scripts\python.exe -m hatchling build -t wheel`
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Created an independently lockable Python 3.13 evaluator project with its own CLI,
+  test suite, schema, catalog, collector configuration, and ignored artifact root.
+- Added standard-library-only, immutable treatment-neutral IDs and domain records,
+  a frozen run lifecycle graph, and separate immutable attempt terminal records.
+- Added ArtifactManifest schema/domain validation for experiment, run, and attempt
+  scope; pre-attempt artifacts are authoritatively owned through ArtifactLink records.
+- Added deterministic in-memory artifact, ledger, and telemetry adapters that redact
+  sensitive telemetry by default and categorically reject paid or study inclusion.
+- Verified the evaluator suite (101 tests), project CLI, evaluator lock, Python
+  compilation, repository lint/format gates, and built product wheel metadata boundary.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/1-1-bootstrap-the-evaluation-project-and-domain-lifecycle.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/README.md`
+- `evaluation/pyproject.toml`
+- `evaluation/uv.lock`
+- `evaluation/artifacts/.gitignore`
+- `evaluation/catalog/catalog.yaml`
+- `evaluation/collector/collector.yaml`
+- `evaluation/schemas/artifact-manifest.schema.json`
+- `evaluation/src/memrelay_eval/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/src/memrelay_eval/cli/__init__.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/src/memrelay_eval/domain/__init__.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ids.py`
+- `evaluation/src/memrelay_eval/domain/policies.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/domain/states.py`
+- `evaluation/tests/contract/test_fakes.py`
+- `evaluation/tests/contract/test_project_boundary.py`
+- `evaluation/tests/unit/test_artifact_manifest.py`
+- `evaluation/tests/unit/test_ids_and_entities.py`
+- `evaluation/tests/unit/test_import_boundaries.py`
+- `evaluation/tests/unit/test_lifecycle.py`
