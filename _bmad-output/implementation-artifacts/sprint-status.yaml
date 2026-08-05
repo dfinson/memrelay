@@ -1,0 +1,119 @@
+# generated: 2026-08-05T12:50:11-04:00
+# last_updated: 2026-08-05T13:44:20-04:00
+# project: memrelay Evaluation Platform
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; sprint-status surfaces open ones
+
+generated: 2026-08-05T12:50:11-04:00
+last_updated: 2026-08-05T13:44:20-04:00
+project: memrelay Evaluation Platform
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  epic-1: in-progress
+  1-1-bootstrap-the-evaluation-project-and-domain-lifecycle: ready-for-dev
+  1-2-author-and-validate-the-executable-catalog: ready-for-dev
+  1-3-compile-canonical-tasks-and-catalog-locks: ready-for-dev
+  1-4-govern-fixtures-traceability-and-task-eligibility: ready-for-dev
+  1-5-freeze-effective-configuration-and-enrollment-inputs: ready-for-dev
+  1-6-conceal-assignment-and-record-exposure: ready-for-dev
+  1-7-enforce-attempt-terminal-and-retry-policy: ready-for-dev
+  1-8-produce-an-offline-catalog-to-manifest-dry-run: ready-for-dev
+  epic-1-retrospective: optional
+
+  epic-2: in-progress
+  2-1-lock-the-copilot-runtime-and-qualified-models: ready-for-dev
+  2-2-provision-isolated-workspace-providers: ready-for-dev
+  2-3-launch-disposable-credential-isolated-processes: ready-for-dev
+  2-4-execute-copilot-through-inspect-authority: ready-for-dev
+  2-5-verify-agent-and-environment-parity: ready-for-dev
+  2-6-run-the-shipped-daemon-and-mcp-product-stratum: ready-for-dev
+  2-7-run-the-direct-engine-upper-bound-stratum: ready-for-dev
+  2-8-restore-controlled-immutable-histories: ready-for-dev
+  2-9-execute-dynamic-histories-and-protocol-defined-arms: ready-for-dev
+  2-10-preserve-native-evidence-and-scan-secret-boundaries: ready-for-dev
+  epic-2-retrospective: optional
+
+  epic-3: in-progress
+  3-1-freeze-snapshots-and-run-deterministic-graders: ready-for-dev
+  3-2-generate-deterministic-blinded-evidence-views: ready-for-dev
+  3-3-run-three-independent-structured-judge-sessions: ready-for-dev
+  3-4-calibrate-and-gate-panel-reliability: ready-for-dev
+  3-5-adjudicate-frozen-disagreement-thresholds: ready-for-dev
+  3-6-normalize-outcomes-under-separate-authorities: ready-for-dev
+  epic-3-retrospective: optional
+
+  epic-4: in-progress
+  4-1-store-immutable-artifacts-and-versioned-manifests: ready-for-dev
+  4-2-integrate-the-sole-writer-append-only-ledger: ready-for-dev
+  4-3-capture-versioned-telemetry-semantics-and-classes: ready-for-dev
+  4-4-separate-provider-and-credential-domain-identities: ready-for-dev
+  4-5-reconcile-required-evidence-and-decide-inclusion: ready-for-dev
+  4-6-record-separate-quantity-and-cost-ledgers: ready-for-dev
+  4-7-reprice-retained-quantities-without-rewriting-history: ready-for-dev
+  4-8-back-up-and-restore-terminal-evidence: ready-for-dev
+  epic-4-retrospective: optional
+
+  epic-5: in-progress
+  5-1-materialize-reconciled-terminal-parquet: ready-for-dev
+  5-2-expose-read-only-duckdb-analysis-and-derivation-lineage: ready-for-dev
+  5-3-estimate-assignment-aligned-itt-effects: ready-for-dev
+  5-4-enforce-multiplicity-power-and-claim-thresholds: ready-for-dev
+  5-5-measure-safety-necessity-and-contamination: ready-for-dev
+  5-6-reproduce-analysis-grading-and-evidence-offline: ready-for-dev
+  5-7-generate-evidence-linked-reports-and-bounded-claims: ready-for-dev
+  epic-5-retrospective: optional
+
+  epic-6: in-progress
+  6-1-seal-stage-bundles-and-enforce-the-stage-cli: ready-for-dev
+  6-2-gate-bootstrap-and-conformance: ready-for-dev
+  6-3-run-and-exit-the-32-run-integration-stage: ready-for-dev
+  6-4-run-and-gate-the-128-unit-blinded-pilot: ready-for-dev
+  6-5-run-primary-and-secondary-model-stages: ready-for-dev
+  6-6-stop-new-attempts-with-evidence-preserving-circuit-breakers: ready-for-dev
+  epic-6-retrospective: optional
+
+  epic-7: in-progress
+  7-1-prove-observation-paths-with-sentinels-and-reconciliation: ready-for-dev
+  7-2-bind-release-evidence-to-qualified-observation-scope: ready-for-dev
+  7-3-deny-cross-repository-execution-by-default: ready-for-dev
+  7-4-qualify-governance-contracts-for-the-24-cluster-stage: ready-for-dev
+  epic-7-retrospective: optional
