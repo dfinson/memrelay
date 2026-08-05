@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 from typing import Any, Literal
 
@@ -64,8 +65,12 @@ class CatalogValidationResult:
     change_kind: ChangeKind = "none"
 
 
-def _schema_path() -> Path:
-    return Path(__file__).parents[3] / "schemas" / "scenario.schema.json"
+def _load_schema() -> Mapping[str, Any]:
+    resource = files("memrelay_eval").joinpath("schemas", "scenario.schema.json")
+    if resource.is_file():
+        return json.loads(resource.read_text(encoding="utf-8"))
+    source_schema = Path(__file__).parents[3] / "schemas" / "scenario.schema.json"
+    return json.loads(source_schema.read_text(encoding="utf-8"))
 
 
 def _repository_root() -> Path:
@@ -332,7 +337,7 @@ def validate_catalog(
         loaded = load_catalog(path, repository_root=repository_root or _repository_root())
     except CatalogLoadError as error:
         raise CatalogValidationError(error.diagnostics) from error
-    schema = json.loads(_schema_path().read_text(encoding="utf-8"))
+    schema = _load_schema()
     diagnostics = _schema_diagnostics(loaded, schema)
     if not diagnostics:
         diagnostics.extend(_semantic_diagnostics(loaded))
