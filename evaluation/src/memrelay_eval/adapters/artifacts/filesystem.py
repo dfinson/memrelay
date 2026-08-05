@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import os
 import uuid
 from collections.abc import Callable
@@ -49,6 +48,7 @@ class DurableAdapterQualification:
     provenance: str
     verified_manifest_count: int
     reachability_sha256: str
+    failure_reason: str | None
 
 
 class FilesystemArtifactStore:
@@ -185,7 +185,9 @@ class FilesystemArtifactStore:
                 if source is None:
                     self._preserve_corruption("missing_source_manifest", manifest.sha256)
                     raise ArtifactIntegrityError("derived artifact source is not authoritative")
-                self.open_verified(ArtifactRef(source.artifact_id, source.sha256, source.size_bytes))
+                self.open_verified(
+                    ArtifactRef(source.artifact_id, source.sha256, source.size_bytes)
+                )
                 source_digests.append(source.sha256)
             dependencies[manifest.sha256] = tuple(sorted(source_digests))
         self._reject_cycles(dependencies)
@@ -217,13 +219,23 @@ class FilesystemArtifactStore:
 
     def qualify(self) -> DurableAdapterQualification:
         """Emit a durable-adapter qualification after rebuild and integrity verification."""
-        index = self.rebuild_reachability()
+        try:
+            index = self.rebuild_reachability()
+        except ArtifactIntegrityError:
+            return DurableAdapterQualification(
+                qualified=False,
+                provenance=self.provenance,
+                verified_manifest_count=0,
+                reachability_sha256=ArtifactRef.from_bytes(b"unqualified evidence").sha256,
+                failure_reason="evidence_integrity_failure",
+            )
         payload = canonical_json_bytes(index.to_dict())
         return DurableAdapterQualification(
             qualified=not index.orphaned_blobs,
             provenance=self.provenance,
             verified_manifest_count=len(self._verified_manifests()),
             reachability_sha256=ArtifactRef.from_bytes(payload).sha256,
+            failure_reason="orphaned_blob" if index.orphaned_blobs else None,
         )
 
     def delete(self, artifact: ArtifactRef) -> None:
@@ -233,16 +245,18 @@ class FilesystemArtifactStore:
             "artifacts are retained until every linked claim is formally retired"
         )
 
-    def _verified_manifests(
-        self, *, reject_orphans: bool = True
-    ) -> tuple[ArtifactManifest, ...]:
+    def _verified_manifests(self, *, reject_orphans: bool = True) -> tuple[ArtifactManifest, ...]:
         manifests: list[ArtifactManifest] = []
         for path in sorted(self._manifests.glob("*/*.json")):
             manifest = self._read_authoritative_manifest(path)
             if path != self._manifest_path(manifest.sha256):
                 self._preserve_corruption("malformed_manifest_path", manifest.sha256)
-                raise ArtifactIntegrityError("manifest path is not a convenience index for its digest")
-            self.open_verified(ArtifactRef(manifest.artifact_id, manifest.sha256, manifest.size_bytes))
+                raise ArtifactIntegrityError(
+                    "manifest path is not a convenience index for its digest"
+                )
+            self.open_verified(
+                ArtifactRef(manifest.artifact_id, manifest.sha256, manifest.size_bytes)
+            )
             self.open_verified(ArtifactRef.from_bytes(manifest_bytes(manifest)))
             manifests.append(manifest)
         if reject_orphans:
@@ -255,9 +269,7 @@ class FilesystemArtifactStore:
         }
         orphans: list[str] = []
         for path in sorted(self._blobs.glob("*/*")):
-            if not path.is_file() or (
-                path.name.startswith(".") and path.name.endswith(".staging")
-            ):
+            if not path.is_file() or (path.name.startswith(".") and path.name.endswith(".staging")):
                 continue
             digest = f"{path.parent.name}{path.name}"
             if digest not in expected_blob_digests:
@@ -398,7 +410,9 @@ class FilesystemArtifactStore:
             expected_sha256,
             actual_sha256=actual_sha256,
         )
-        raise ArtifactAuthorityConflictError("immutable publication would overwrite existing evidence")
+        raise ArtifactAuthorityConflictError(
+            "immutable publication would overwrite existing evidence"
+        )
 
     def _verify_path(self, path: Path, artifact: ArtifactRef) -> None:
         if not path.is_file():
@@ -451,9 +465,7 @@ class FilesystemArtifactStore:
             "observed_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "reason": reason,
         }
-        fingerprint = sha256(
-            f"{reason}|{expected_sha256}|{actual_sha256}".encode("utf-8")
-        ).hexdigest()
+        fingerprint = sha256(f"{reason}|{expected_sha256}|{actual_sha256}".encode()).hexdigest()
         path = self._corruption / f"{fingerprint}.json"
         if path.exists():
             return

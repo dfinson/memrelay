@@ -77,7 +77,9 @@ def parse_manifest(data: bytes) -> ArtifactManifest:
         encryption = (
             None if encryption_value is None else _string_mapping(encryption_value, "encryption")
         )
-        created_at = datetime.fromisoformat(_string(value["created_at"], "created_at").replace("Z", "+00:00"))
+        created_at = datetime.fromisoformat(
+            _string(value["created_at"], "created_at").replace("Z", "+00:00")
+        )
         if created_at.tzinfo is None or created_at.utcoffset() != UTC.utcoffset(created_at):
             raise InvalidArtifactManifestError("created_at must be UTC")
         source_ids = tuple(
@@ -101,7 +103,9 @@ def parse_manifest(data: bytes) -> ArtifactManifest:
             ),
             encryption=encryption,
             scope=ArtifactScope(_string(value["scope"], "scope")),
-            experiment_id=_optional_identifier(value["experiment_id"], ExperimentId, "experiment_id"),
+            experiment_id=_optional_identifier(
+                value["experiment_id"], ExperimentId, "experiment_id"
+            ),
             run_id=_optional_identifier(value["run_id"], RunId, "run_id"),
             attempt_id=_optional_identifier(value["attempt_id"], AttemptId, "attempt_id"),
             schema_version=_string(value["schema_version"], "schema_version"),
@@ -131,7 +135,9 @@ def _validate_json_value(value: object) -> None:
         raise InvalidArtifactManifestError("canonical manifest JSON does not permit floats")
     if isinstance(value, Mapping):
         if any(not isinstance(key, str) for key in value):
-            raise InvalidArtifactManifestError("canonical manifest JSON object keys must be strings")
+            raise InvalidArtifactManifestError(
+                "canonical manifest JSON object keys must be strings"
+            )
         for child in value.values():
             _validate_json_value(child)
         return
@@ -159,9 +165,7 @@ def _mapping(value: object, name: str) -> Mapping[str, object]:
     return value
 
 
-def _require_exact_keys(
-    value: Mapping[str, object], expected: frozenset[str], name: str
-) -> None:
+def _require_exact_keys(value: Mapping[str, object], expected: frozenset[str], name: str) -> None:
     if set(value) != expected:
         raise InvalidArtifactManifestError(f"{name} keys do not match schema 1.0.0")
 

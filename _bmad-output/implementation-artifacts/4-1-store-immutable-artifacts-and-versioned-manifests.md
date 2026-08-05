@@ -118,7 +118,10 @@ GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
-- `python -m pytest evaluation\tests` - 120 passed
+- `PYTHONPATH=evaluation\src python3.13 -m pytest evaluation\tests` - 125 passed
+- `PYTHONPATH=src python -m pytest tests` - 1305 passed, 2 skipped
+- `ruff check .`
+- `ruff format --check .`
 - `python -m compileall -q evaluation\src`
 - `git diff --check`
 ### Completion Notes List
@@ -126,6 +129,7 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - Implemented a stdlib-only durable filesystem SHA-256 CAS with atomic no-overwrite publication, verified reads/copies, authority-conflict preservation, source derivation identities, and redacted corruption records.
 - Added strict canonical manifest parsing, schema hardening, secret encryption validation, deterministic reachability rebuild, recoverable orphan reporting, non-deletion retention gate, and durable-adapter qualification.
 - Hardened concurrent publication, partial writes, staged interruption recovery, derived-index replacement, manifest authority checks, and RFC 8785 UTF-16 key ordering.
+- Added review regression coverage for cyclic on-disk source tampering, secret/encryption and duplicate-source validation, schema parity, and leaked staging-file isolation.
 - Preserved fake artifact-store determinism and `unpaid_conformance` ineligibility while routing its manifest serialization through the shared canonicalizer.
 
 ### File List

@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from types import MappingProxyType
 
-from memrelay_eval.evidence.manifest import manifest_bytes
 from memrelay_eval.domain.entities import (
     ArtifactLink,
     ArtifactManifest,
@@ -18,6 +17,7 @@ from memrelay_eval.domain.entities import (
 from memrelay_eval.domain.errors import ArtifactIntegrityError, IneligibleEvidenceError
 from memrelay_eval.domain.ids import RunId
 from memrelay_eval.domain.states import InclusionStatus
+from memrelay_eval.evidence.manifest import manifest_bytes
 
 _REDACTED_TERMS = (
     "prompt",

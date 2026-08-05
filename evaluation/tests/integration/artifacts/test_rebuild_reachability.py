@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import json
 import random
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
-
 from memrelay_eval.adapters.artifacts.filesystem import FilesystemArtifactStore
 from memrelay_eval.domain.entities import ArtifactManifest, ArtifactRef
 from memrelay_eval.domain.errors import ArtifactIntegrityError
 from memrelay_eval.domain.ids import AttemptId, RetentionPolicyId, RunId
 from memrelay_eval.domain.states import ArtifactScope
+from memrelay_eval.evidence.manifest import manifest_bytes
 
 
 def _manifest(
@@ -75,7 +77,9 @@ def test_rebuild_properties_are_deterministic_for_random_binary_artifacts(tmp_pa
     expected: list[str] = []
     for length in range(33):
         data = bytes(generator.getrandbits(8) for _ in range(length))
-        artifact = store.put_bytes(data, media_type="application/octet-stream", classification="synthetic")
+        artifact = store.put_bytes(
+            data, media_type="application/octet-stream", classification="synthetic"
+        )
         store.write_manifest(_manifest(artifact, run_id=run_id, attempt_id=attempt_id))
         expected.append(artifact.sha256)
 
@@ -100,3 +104,34 @@ def test_unresolved_sources_cannot_be_linked_or_rebuilt(tmp_path) -> None:
     qualification = store.qualify()
     assert index.orphaned_blobs == (artifact.sha256,)
     assert qualification.qualified is False
+
+
+def test_rebuild_rejects_tampered_cyclic_manifest_sources_and_disqualifies(tmp_path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    run_id, attempt_id = RunId.new(), AttemptId.new()
+    first = store.put_bytes(b"first", media_type="text/plain", classification="synthetic")
+    second = store.put_bytes(b"second", media_type="text/plain", classification="synthetic")
+    first_manifest = _manifest(first, run_id=run_id, attempt_id=attempt_id)
+    second_manifest = _manifest(second, run_id=run_id, attempt_id=attempt_id)
+    store.write_manifest(first_manifest)
+    store.write_manifest(second_manifest)
+
+    cyclic_first = replace(first_manifest, source_artifact_ids=(second.artifact_id,))
+    cyclic_second = replace(second_manifest, source_artifact_ids=(first.artifact_id,))
+    for manifest in (cyclic_first, cyclic_second):
+        payload = manifest_bytes(manifest)
+        store.put_bytes(payload, media_type="application/json", classification="synthetic")
+        manifest_path = tmp_path / "manifests" / "sha256" / manifest.sha256[:2]
+        (manifest_path / f"{manifest.sha256[2:]}.json").write_bytes(payload)
+
+    with pytest.raises(ArtifactIntegrityError, match="cycle"):
+        store.rebuild_reachability()
+
+    qualification = store.qualify()
+    corruption_records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (tmp_path / "corruption").glob("*.json")
+    ]
+    assert qualification.qualified is False
+    assert qualification.failure_reason == "evidence_integrity_failure"
+    assert any(record["reason"] == "cyclic_source_reference" for record in corruption_records)

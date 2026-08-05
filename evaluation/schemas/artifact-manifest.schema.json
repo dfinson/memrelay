@@ -86,6 +86,17 @@
           "attempt_id": {"type": "string"}
         }
       }
+    },
+    {
+      "if": {
+        "properties": {"contains_secrets": {"const": true}},
+        "required": ["contains_secrets"]
+      },
+      "then": {
+        "properties": {
+          "encryption": {"type": "object", "minProperties": 1}
+        }
+      }
     }
   ]
 }

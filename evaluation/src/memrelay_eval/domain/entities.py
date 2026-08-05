@@ -167,8 +167,10 @@ class ArtifactManifest:
             raise InvalidArtifactManifestError("source_artifact_ids must not contain duplicates")
         if self.encryption is not None and (
             not self.encryption
-            or any(not isinstance(key, str) or not isinstance(value, str) or not key or not value
-                   for key, value in self.encryption.items())
+            or any(
+                not isinstance(key, str) or not isinstance(value, str) or not key or not value
+                for key, value in self.encryption.items()
+            )
         ):
             raise InvalidArtifactManifestError(
                 "encryption metadata must be a non-empty string mapping"

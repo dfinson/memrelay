@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-
 from memrelay_eval.adapters.artifacts.filesystem import FilesystemArtifactStore
 from memrelay_eval.domain.entities import ArtifactManifest, ArtifactRef
 from memrelay_eval.domain.errors import (
@@ -50,7 +49,9 @@ def test_interrupted_publication_is_retryable_without_overwrite(tmp_path, bounda
     assert not list(tmp_path.rglob(".*.staging"))
 
     recovered = FilesystemArtifactStore(tmp_path)
-    artifact = recovered.put_bytes(b"retryable", media_type="text/plain", classification="synthetic")
+    artifact = recovered.put_bytes(
+        b"retryable", media_type="text/plain", classification="synthetic"
+    )
     assert recovered.open_verified(artifact) == b"retryable"
     recovered.write_manifest(_manifest(artifact))
     assert recovered.rebuild_reachability().attempts
@@ -59,7 +60,9 @@ def test_interrupted_publication_is_retryable_without_overwrite(tmp_path, bounda
 @pytest.mark.parametrize("boundary", ("manifest_staged", "manifest_published"))
 def test_interrupted_manifest_publication_recovers_idempotently(tmp_path, boundary: str) -> None:
     initial = FilesystemArtifactStore(tmp_path)
-    artifact = initial.put_bytes(b"manifest retry", media_type="text/plain", classification="synthetic")
+    artifact = initial.put_bytes(
+        b"manifest retry", media_type="text/plain", classification="synthetic"
+    )
     manifest = _manifest(artifact)
 
     def interrupt(stage: str) -> None:
@@ -91,7 +94,9 @@ def test_manifest_conflict_preserves_evidence_and_blocks_authority(tmp_path) -> 
 
 def test_concurrent_manifest_conflict_leaves_no_orphan_blob(tmp_path) -> None:
     winner = FilesystemArtifactStore(tmp_path)
-    artifact = winner.put_bytes(b"racing authority", media_type="text/plain", classification="synthetic")
+    artifact = winner.put_bytes(
+        b"racing authority", media_type="text/plain", classification="synthetic"
+    )
     first = _manifest(artifact, kind="first")
     second = _manifest(artifact, kind="second")
     contender = FilesystemArtifactStore(tmp_path)
@@ -171,7 +176,9 @@ def test_existing_collision_and_corrupt_copy_fail_closed(tmp_path) -> None:
         store.put_bytes(b"trusted", media_type="text/plain", classification="synthetic")
 
     clean = FilesystemArtifactStore(tmp_path / "clean")
-    clean_artifact = clean.put_bytes(b"copy source", media_type="text/plain", classification="synthetic")
+    clean_artifact = clean.put_bytes(
+        b"copy source", media_type="text/plain", classification="synthetic"
+    )
     destination = tmp_path / "copy.bin"
     destination.write_bytes(b"different")
     with pytest.raises(ArtifactAuthorityConflictError):
@@ -184,3 +191,20 @@ def test_retention_never_deletes_unretired_evidence(tmp_path) -> None:
 
     with pytest.raises(ArtifactRetentionError):
         store.delete(artifact)
+
+
+def test_leaked_staging_file_is_not_authority_or_an_orphan(tmp_path) -> None:
+    store = FilesystemArtifactStore(tmp_path)
+    artifact = store.put_bytes(
+        b"authoritative", media_type="text/plain", classification="synthetic"
+    )
+    store.write_manifest(_manifest(artifact))
+    staging = tmp_path / "blobs" / "sha256" / artifact.sha256[:2] / ".leaked.staging"
+    staging.write_bytes(b"uncommitted")
+
+    index = store.rebuild_reachability()
+    qualification = store.qualify()
+
+    assert index.orphaned_blobs == ()
+    assert qualification.qualified is True
+    assert store.open_verified(artifact) == b"authoritative"

@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-
 from memrelay_eval.adapters.artifacts.filesystem import FilesystemArtifactStore
 from memrelay_eval.adapters.fakes import InMemoryArtifactStore
 from memrelay_eval.domain.entities import ArtifactManifest, ArtifactRef
@@ -45,7 +44,10 @@ def test_artifact_store_port_put_get_and_manifest(
 
     assert first == second
     assert store.open_verified(first) == b"contract bytes"
-    assert store.write_manifest(manifest).sha256 == ArtifactRef.from_bytes(manifest_bytes(manifest)).sha256
+    assert (
+        store.write_manifest(manifest).sha256
+        == ArtifactRef.from_bytes(manifest_bytes(manifest)).sha256
+    )
 
 
 def test_filesystem_store_uses_digest_path_and_strict_manifest_bytes(tmp_path) -> None:
@@ -54,9 +56,9 @@ def test_filesystem_store_uses_digest_path_and_strict_manifest_bytes(tmp_path) -
     manifest = _manifest(artifact)
     store.write_manifest(manifest)
 
-    assert (tmp_path / "blobs" / "sha256" / artifact.sha256[:2] / artifact.sha256[2:]).read_bytes() == (
-        b"path stable"
-    )
+    assert (
+        tmp_path / "blobs" / "sha256" / artifact.sha256[:2] / artifact.sha256[2:]
+    ).read_bytes() == (b"path stable")
     assert parse_manifest(manifest_bytes(manifest)) == manifest
     with pytest.raises(InvalidArtifactManifestError):
         parse_manifest(b'{"schema_version":"1.0.0"}\n')
