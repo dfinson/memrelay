@@ -108,6 +108,21 @@ def test_compile_is_byte_identical_across_repeated_clean_processes(tmp_path: Pat
     assert compiled_bytes(second) == second_snapshot
 
 
+def test_compile_normalizes_git_crlf_checkout_bytes_for_source_identity(tmp_path: Path) -> None:
+    lf_root = catalog_root(tmp_path / "lf")
+    crlf_root = catalog_root(tmp_path / "crlf")
+    lf_catalog = compile_paths(lf_root)["catalog"]
+    crlf_catalog = compile_paths(crlf_root)["catalog"]
+    source = lf_catalog.read_bytes().replace(b"\r\n", b"\n")
+    lf_catalog.write_bytes(source)
+    crlf_catalog.write_bytes(source.replace(b"\n", b"\r\n"))
+
+    compile_in_process(lf_root)
+    compile_in_process(crlf_root)
+
+    assert compiled_bytes(crlf_root) == compiled_bytes(lf_root)
+
+
 def test_compile_preserves_authored_scenario_and_reference_order(tmp_path: Path) -> None:
     root = catalog_root(tmp_path)
     paths = compile_paths(root)

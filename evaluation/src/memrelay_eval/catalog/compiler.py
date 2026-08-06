@@ -198,8 +198,7 @@ def _compile_catalog_locked(
         prior_lock=effective_prior_lock,
         repository_root=catalog_root,
     )
-    source_bytes = catalog_path.read_bytes()
-    source_sha256 = _sha256(source_bytes)
+    source_sha256 = _catalog_source_sha256(catalog_path)
     runtime_lock_reference = _runtime_lock_reference(runtime_lock)
     documents = _compiled_documents(
         validated,
@@ -313,7 +312,7 @@ def compile_catalog_command(
         )
     except CatalogCompileError as error:
         return CompileCommandResult("failed", 1, None, error)
-    source_sha256 = _optional_file_sha256(catalog_path)
+    source_sha256 = _optional_catalog_source_sha256(catalog_path)
     runtime_lock_reference = _runtime_lock_reference_or_missing(runtime_lock)
     try:
         compilation = compile_catalog(
@@ -701,7 +700,7 @@ def _verify_compiled_catalog(
             repository_root=catalog_path.parent,
         )
         catalog_input_sha256 = _sha256(canonical_bytes(expected_validation.catalog))
-        source_sha256 = _sha256(catalog_path.read_bytes())
+        source_sha256 = _catalog_source_sha256(catalog_path)
         if catalog_input_sha256 != _required_string(lock, "catalog_input_sha256"):
             raise CatalogCompileError("catalog lock canonical input hash does not match the source")
         if source_sha256 != _required_string(lock, "source_sha256"):
@@ -924,7 +923,9 @@ def _validate_recovery_backup(
     prior_lock_sha256 = transaction.get("prior_lock_sha256")
     if prior_lock_sha256 is None:
         source = backup / "catalog.yaml"
-        if _optional_file_sha256(source) != _required_string(transaction, "source_sha256"):
+        if _optional_catalog_source_sha256(source) != _required_string(
+            transaction, "source_sha256"
+        ):
             raise CatalogRecoveryError(
                 "catalog recovery failed: uncompiled prior source does not match the journal"
             )
@@ -1157,6 +1158,23 @@ def _optional_file_sha256(path: Path | None) -> str | None:
         return _sha256(path.read_bytes())
     except OSError:
         return None
+
+
+def _catalog_source_sha256(path: Path) -> str:
+    return _sha256(_normalized_catalog_source_bytes(path.read_bytes()))
+
+
+def _optional_catalog_source_sha256(path: Path) -> str | None:
+    try:
+        return _catalog_source_sha256(path)
+    except OSError:
+        return None
+
+
+def _normalized_catalog_source_bytes(data: bytes) -> bytes:
+    """Make Git's CRLF checkout conversion invisible to catalog source identity."""
+
+    return data.replace(b"\r\n", b"\n")
 
 
 def _sha256(data: bytes) -> str:

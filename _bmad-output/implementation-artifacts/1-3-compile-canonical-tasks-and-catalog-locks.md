@@ -125,10 +125,10 @@ GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
-- 2026-08-06T11:31:34-04:00 - Full merged evaluator suite: 405 passed under CPython 3.13.5 on native Windows and CPython 3.13.14 under isolated WSL validation after reconciling Story 7.3.
-- 2026-08-06T11:31:34-04:00 - Focused Story 1.3 canonical/compiler, crash-recovery, ownership-lock, and architecture suite: 114 passed.
-- 2026-08-06T11:31:34-04:00 - `uv lock --check`, clean canonical regeneration byte comparison, root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
-- 2026-08-06T11:31:34-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
+- 2026-08-06T11:47:33-04:00 - Full merged evaluator suite: 406 passed under CPython 3.13.5 on native Windows and CPython 3.13.14 under isolated WSL validation after reconciling Story 7.3.
+- 2026-08-06T11:47:33-04:00 - Focused Story 1.3 canonical/compiler, crash-recovery, ownership-lock, architecture, and CRLF portability suite: 115 passed.
+- 2026-08-06T11:47:33-04:00 - `uv lock --check`, clean canonical regeneration byte comparison, root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
+- 2026-08-06T11:47:33-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
 
 ### Completion Notes List
 
