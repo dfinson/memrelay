@@ -1,1 +1,1 @@
-"""Evaluator orchestration that depends inward on domain contracts."""
+"""Application services that coordinate evaluator domain contracts through ports."""

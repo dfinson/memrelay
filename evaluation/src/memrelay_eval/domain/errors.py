@@ -47,3 +47,20 @@ class CrossRepositoryDeniedError(DomainError):
     def __init__(self, reason: object) -> None:
         self.reason = reason
         super().__init__(f"cross-repository execution denied: {reason}")
+
+
+class ConformancePauseError(DomainError):
+    """A locked execution substrate drifted and must not be substituted."""
+
+    def __init__(self, code: str, message: str, evidence: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.code = code
+        self.evidence = evidence
+
+
+class QualificationLimitError(ConformancePauseError):
+    """A finite nonstudy qualification envelope cannot authorize another session."""
+
+
+class RuntimeLockError(ConformancePauseError):
+    """The pinned SDK wheel or bundled runtime cannot be used safely."""

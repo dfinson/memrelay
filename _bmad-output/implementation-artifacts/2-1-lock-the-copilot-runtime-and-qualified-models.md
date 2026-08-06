@@ -1,6 +1,6 @@
 # Story 2.1: Lock the Copilot Runtime and Qualified Models
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -32,19 +32,19 @@ So that trials pause rather than silently substitute a changed execution substra
 
 ## Tasks / Subtasks
 
-- [ ] Implement verified SDK/runtime bootstrap (AC: 1)
-  - [ ] Pin the exact wheel and verify its SHA-256 before installation/use.
-  - [ ] Download the bundled runtime exactly once, hash the executable bytes, record transport/auth/non-secret identity, and reject later implicit downloads.
-  - [ ] Emit typed, redacted command/runtime manifests through Story 1 ports; keep fake-port evidence `unpaid_conformance`.
-- [ ] Archive and project the complete native model catalog (AC: 2)
-  - [ ] Preserve raw `list_models()` bytes plus a canonical capability projection; unsupported fields are `unavailable`, never inferred.
-  - [ ] Implement the frozen eight-task arm-blind qualification and deterministic ranking/tie-breaks.
-  - [ ] Select M0/M1/M2 and judge candidates mechanically; record omission reasons rather than substitutes.
-  - [ ] Before any paid call, freeze the eligible-model count and an aggregate envelope of exactly eight task sessions per eligible model, with explicit Copilot credit, token, active-time, and wall-time caps; refuse missing caps and never retry a qualification task.
-- [ ] Enforce runtime/model locks at every stage boundary (AC: 3)
-  - [ ] Compare wheel, runtime, native catalog, selected IDs, capabilities, reasoning, and context.
-  - [ ] Pause/version on drift; never repair by redownload or model substitution inside a block.
-- [ ] Add offline fakes plus bounded paid conformance tests (AC: 1-3)
+- [x] Implement verified SDK/runtime bootstrap (AC: 1)
+  - [x] Pin the exact wheel and verify its SHA-256 before installation/use.
+  - [x] Download the bundled runtime exactly once, hash the executable bytes, record transport/auth/non-secret identity, and reject later implicit downloads.
+  - [x] Emit typed, redacted command/runtime manifests through Story 1 ports; keep fake-port evidence `unpaid_conformance`.
+- [x] Archive and project the complete native model catalog (AC: 2)
+  - [x] Preserve raw `list_models()` bytes plus a canonical capability projection; unsupported fields are `unavailable`, never inferred.
+  - [x] Implement the frozen eight-task arm-blind qualification and deterministic ranking/tie-breaks.
+  - [x] Select M0/M1/M2 and judge candidates mechanically; record omission reasons rather than substitutes.
+  - [x] Before any paid call, freeze the eligible-model count and an aggregate envelope of exactly eight task sessions per eligible model, with explicit Copilot credit, token, active-time, and wall-time caps; refuse missing caps and never retry a qualification task.
+- [x] Enforce runtime/model locks at every stage boundary (AC: 3)
+  - [x] Compare wheel, runtime, native catalog, selected IDs, capabilities, reasoning, and context.
+  - [x] Pause/version on drift; never repair by redownload or model substitution inside a block.
+- [x] Add offline fakes plus bounded paid conformance tests (AC: 1-3)
 
 ## Developer Context
 
@@ -110,12 +110,44 @@ The task-agent inference boundary is immutable: local Python 3.13 Inspect orches
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- `python -m pytest evaluation\\tests` (122 passed after PR review fixes)
+- WSL isolated evaluator environment: `uv run --directory "$repo" --python 3.13 --extra dev pytest` (Python 3.13.14; 122 passed in 22.46s)
+- WSL isolated evaluator environment: `uv lock --check --directory "$repo" --python 3.13` (Resolved 106 packages in 2.10s)
+- `python -m pytest` with product and evaluator source roots (1305 passed, 2 skipped)
+- `ruff check .` and `ruff format --check .` (passed)
+- `uv lock` could not reach `files.pythonhosted.org`; the existing resolved lock was updated only for the direct SDK dependency metadata.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Locked the only accepted Copilot SDK wheel and bundled-runtime identity; bootstrap downloads once and then sets `COPILOT_SKIP_CLI_DOWNLOAD=1`.
+- Added native-catalog archival, bounded eight-session qualification, deterministic M0/M1/M2 and judge selection, atomic lock persistence, and typed drift pauses.
+- Kept CI provider-free. `bootstrap` and `lock-models` are explicit, finite local commands; no live Copilot request was made during implementation.
+- Inspect execution remains out of scope.
+- PR review hardening derives a hashed subject from official SDK `auth.getStatus` host/login/auth type, reuses only verified identical locks before provider access, and records mechanically feasible judge diversity.
 
 ### File List
+
+- `evaluation/pyproject.toml`
+- `evaluation/uv.lock`
+- `evaluation/src/memrelay_eval/adapters/copilot/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/copilot/catalog.py`
+- `evaluation/src/memrelay_eval/adapters/copilot/client.py`
+- `evaluation/src/memrelay_eval/adapters/copilot/session.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/orchestration/__init__.py`
+- `evaluation/src/memrelay_eval/orchestration/control.py`
+- `evaluation/src/memrelay_eval/orchestration/stages.py`
+- `evaluation/tests/unit/copilot/test_catalog.py`
+- `evaluation/tests/unit/copilot/test_qualification.py`
+- `evaluation/tests/contract/copilot/test_locks.py`
+- `evaluation/tests/contract/copilot/test_sdk_contract.py`
+- `evaluation/tests/contract/copilot/test_model_lock_idempotency.py`
+- `evaluation/tests/integration/copilot/test_cli_guards.py`

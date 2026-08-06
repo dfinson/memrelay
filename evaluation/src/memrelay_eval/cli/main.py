@@ -7,6 +7,8 @@ from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
+    bootstrap,
+    lock_models,
     run_stage,
     show_foundation_status,
     validate_authored_catalog,
@@ -24,6 +26,19 @@ def build_parser() -> argparse.ArgumentParser:
     run = subcommands.add_parser("run", help="request a recognized evaluator stage")
     run.add_argument("--stage", choices=("cross-repo",), required=True)
     run.set_defaults(handler=run_stage)
+    bootstrap_parser = subcommands.add_parser(
+        "bootstrap", help="explicitly verify and lock the official Copilot runtime"
+    )
+    bootstrap_parser.add_argument("--backup-root", required=True)
+    bootstrap_parser.set_defaults(handler=bootstrap)
+    lock_models_parser = subcommands.add_parser(
+        "lock-models", help="explicitly qualify and lock native Copilot models"
+    )
+    lock_models_parser.add_argument("--credit-cap", type=float, required=True)
+    lock_models_parser.add_argument("--token-cap", type=int, required=True)
+    lock_models_parser.add_argument("--active-seconds-cap", type=float, required=True)
+    lock_models_parser.add_argument("--wall-seconds-cap", type=float, required=True)
+    lock_models_parser.set_defaults(handler=lock_models)
     validate_catalog = subcommands.add_parser(
         "validate-catalog",
         help="validate authored catalog YAML without generating execution artifacts",
