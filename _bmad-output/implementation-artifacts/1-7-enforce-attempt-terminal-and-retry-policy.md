@@ -124,10 +124,10 @@ GPT-5.6 Terra
 ### Debug Log References
 
 - Isolated WSL uv with CPython 3.13.14: targeted Story 1.7 tests - 45 passed
-- Isolated WSL uv with CPython 3.13.14: full merged evaluator suite - 228 passed
+- Isolated WSL uv with CPython 3.13.14: full merged evaluator suite - 248 passed
 - Isolated WSL uv: `uv lock --check` - passed
 - Isolated WSL uv: `ruff==0.16.1 check .` and `ruff==0.16.1 format --check .` - passed
-- Isolated WSL uv with worktree `src` first: product regression suite - 1300 passed, 7 platform/optional-backend skips
+- Isolated WSL uv with worktree `src` first: product regression suite - 1299 passed, 1 transient stdio timeout, 7 platform/optional-backend skips; the failed stdio test passed in a fresh isolated rerun
 - Native worktree: `git diff --check` - passed
 ### Completion Notes List
 
