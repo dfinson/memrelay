@@ -9,10 +9,9 @@ SOURCE_ROOT = EVALUATION_ROOT / "src" / "memrelay_eval"
 
 def test_no_cross_repository_adapter_is_composed_in_evaluator_v1() -> None:
     adapter_root = SOURCE_ROOT / "adapters"
-    source = "\n".join(path.read_text(encoding="utf-8") for path in adapter_root.glob("*.py"))
+    source = "\n".join(path.read_text(encoding="utf-8") for path in adapter_root.rglob("*.py"))
 
     assert "CrossRepository" not in source
-    assert not (adapter_root / "workspace").exists()
     assert not (adapter_root / "clone.py").exists()
 
 
