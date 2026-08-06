@@ -11,18 +11,34 @@ from .entities import (
     ArtifactRef,
     AttemptTerminal,
     InclusionDecision,
+    InternalRetryRecord,
     NativeModelCatalog,
+    RetryAuthorization,
     RunTransition,
     TelemetryObservation,
 )
-from .ids import AssignmentId, RunId
+from .ids import AssignmentId, AttemptId, RunId
+from .states import InternalRetrySubsystem
 
 
 class LedgerPort(Protocol):
     def append_transition(self, transition: RunTransition) -> None: ...
+    def append_attempt_terminal(self, terminal: AttemptTerminal) -> None: ...
+    def attempt_terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None: ...
+    def reserve_internal_retry(
+        self,
+        attempt_id: AttemptId,
+        subsystem: InternalRetrySubsystem,
+        maximum_retries: int,
+    ) -> InternalRetryRecord | None: ...
+    def internal_retries_for(
+        self, attempt_id: AttemptId, subsystem: InternalRetrySubsystem
+    ) -> Sequence[InternalRetryRecord]: ...
+    def append_retry_authorization_once(self, authorization: RetryAuthorization) -> bool: ...
     def append_artifact_link(self, link: ArtifactLink) -> None: ...
     def append_inclusion(self, decision: InclusionDecision) -> None: ...
     def history(self, run_id: RunId) -> Sequence[RunTransition]: ...
+    def retry_authorizations_for(self, run_id: RunId) -> Sequence[RetryAuthorization]: ...
 
 
 class ArtifactStorePort(Protocol):

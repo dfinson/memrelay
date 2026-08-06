@@ -28,7 +28,14 @@ from .ids import (
     TaskId,
 )
 from .policies import validate_run_transition
-from .states import ArtifactScope, AttemptTerminalKind, InclusionStatus, RunState
+from .states import (
+    ArtifactScope,
+    AttemptTerminalKind,
+    ExposureClassification,
+    InclusionStatus,
+    InternalRetrySubsystem,
+    RunState,
+)
 
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 
@@ -48,6 +55,7 @@ class Experiment:
 @dataclass(frozen=True, slots=True)
 class Protocol:
     id: ProtocolId
+    allows_pre_exposure_infrastructure_retry: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +246,7 @@ class AttemptTerminal:
     classification: AttemptTerminalKind
     occurred_at: datetime
     reason: str
+    evidence_refs: tuple[ArtifactRef, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.classification, AttemptTerminalKind):
@@ -245,6 +254,92 @@ class AttemptTerminal:
                 "classification must use the frozen terminal vocabulary"
             )
         _utc_z(self.occurred_at)
+        if not self.reason:
+            raise InvalidAttemptTerminalError("terminal records require a typed reason")
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+
+@dataclass(frozen=True, slots=True)
+class ExposureDecision:
+    """Conservative exposure evidence supplied by the owning exposure contract."""
+
+    classification: ExposureClassification
+    evidence_refs: tuple[ArtifactRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+    @property
+    def is_conclusively_unexposed(self) -> bool:
+        return self.classification is ExposureClassification.UNEXPOSED and bool(self.evidence_refs)
+
+
+@dataclass(frozen=True, slots=True)
+class RetryAuthorization:
+    """Immutable lineage from one terminal attempt to its sole retry attempt."""
+
+    run_id: RunId
+    assignment_id: AssignmentId
+    parent_assignment_id: AssignmentId
+    parent_attempt_id: AttemptId
+    attempt: Attempt
+    parent_terminal: AttemptTerminal
+    exposure_evidence_refs: tuple[ArtifactRef, ...]
+    isolation_evidence_refs: tuple[ArtifactRef, ...]
+
+    def __post_init__(self) -> None:
+        if self.assignment_id != self.parent_assignment_id:
+            raise InvalidAttemptTerminalError(
+                "retry assignment must remain linked to the parent assignment"
+            )
+        if self.attempt.run_id != self.run_id:
+            raise InvalidAttemptTerminalError("retry attempt must remain linked to the parent run")
+        if self.parent_terminal.attempt_id != self.parent_attempt_id:
+            raise InvalidAttemptTerminalError("retry parent terminal must match parent attempt")
+        if self.parent_terminal.run_id != self.run_id:
+            raise InvalidAttemptTerminalError("retry parent terminal must remain linked to the run")
+        object.__setattr__(self, "exposure_evidence_refs", tuple(self.exposure_evidence_refs))
+        object.__setattr__(self, "isolation_evidence_refs", tuple(self.isolation_evidence_refs))
+
+
+@dataclass(frozen=True, slots=True)
+class FreshIsolationAttestation:
+    """Evidence-backed claim that a retry will receive fresh isolation."""
+
+    attested: bool
+    evidence_refs: tuple[ArtifactRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+    @property
+    def is_conclusive(self) -> bool:
+        return self.attested and bool(self.evidence_refs)
+
+
+@dataclass(frozen=True, slots=True)
+class InternalRetryPolicy:
+    """Frozen, independently bounded retry allowance for one subsystem."""
+
+    subsystem: InternalRetrySubsystem
+    maximum_retries: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.subsystem, InternalRetrySubsystem):
+            raise InvalidAttemptTerminalError("internal retry subsystem is invalid")
+        if self.maximum_retries < 0:
+            raise InvalidAttemptTerminalError("internal retry maximum must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
+class InternalRetryRecord:
+    attempt_id: AttemptId
+    subsystem: InternalRetrySubsystem
+    retry_number: int
+
+    def __post_init__(self) -> None:
+        if self.retry_number < 1:
+            raise InvalidAttemptTerminalError("internal retry number must start at one")
 
 
 @dataclass(frozen=True, slots=True)
