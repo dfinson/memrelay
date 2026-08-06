@@ -431,7 +431,8 @@ def test_golden_duplicate_key_diagnostic_is_stable() -> None:
     with pytest.raises(CatalogValidationError) as raised:
         validate_catalog(source)
 
-    assert str(raised.value) == f"evaluation/tests/golden/catalog/{expected}"
+    source_parent = source.resolve().relative_to(Path.cwd().resolve()).parent.as_posix()
+    assert str(raised.value) == f"{source_parent}/{expected}"
 
 
 def test_invalid_catalog_never_creates_output_or_mutates_lock(tmp_path: Path) -> None:

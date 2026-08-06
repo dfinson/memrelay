@@ -46,6 +46,8 @@ def refuse_cross_repository_stage() -> None:
         stage=EvaluationStage.CROSS_REPOSITORY,
     )
     CrossRepositoryAdmissionController().authorize_at_entry(request, now)
+
+
 def verify_stage_locks(
     runtime_lock: Mapping[str, object],
     model_lock: Mapping[str, object],

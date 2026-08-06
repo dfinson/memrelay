@@ -12,7 +12,7 @@ from pathlib import Path
 from threading import Lock
 from typing import TypeVar, cast
 
-from memrelay_eval.adapters.copilot.catalog import (
+from memrelay_eval.application.copilot_catalog import (
     CatalogArchive,
     ModelSelection,
     qualification_summary,
@@ -176,6 +176,8 @@ class CrossRepositoryAdmissionController:
         evidence = DenialEvidence.from_result(request, result)
         self._evidence_sink.append_denial(evidence)
         raise CrossRepositoryDeniedError(result.reason)
+
+
 class LockRepository:
     """Stores complete immutable lock documents without replacing a valid predecessor."""
 

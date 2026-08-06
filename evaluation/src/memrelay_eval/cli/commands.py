@@ -8,9 +8,12 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from memrelay_eval.adapters.copilot.catalog import eligible_models
-from memrelay_eval.adapters.copilot.client import CopilotSdkClient, bootstrap_runtime
-from memrelay_eval.adapters.copilot.session import qualify_native_catalog
+from memrelay_eval.application.copilot_services import (
+    CopilotSdkClient,
+    bootstrap_runtime,
+    eligible_models,
+    qualify_native_catalog,
+)
 from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
 from memrelay_eval.domain.entities import QualificationCaps
 from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
