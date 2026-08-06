@@ -17,6 +17,26 @@ class InvalidAttemptTerminalError(DomainError):
     """An attempt terminal classification is outside the frozen vocabulary."""
 
 
+class AttemptTerminalAlreadyRecordedError(DomainError):
+    """An attempt may receive only one immutable terminal record."""
+
+    code = "attempt_terminal_already_recorded"
+
+
+class RetryDeniedError(DomainError):
+    """A retry request violates the frozen retry policy."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
+class InternalRetryLimitExceededError(DomainError):
+    """A subsystem exhausted its separately bounded internal retry allowance."""
+
+    code = "internal_retry_limit_exceeded"
+
+
 class InvalidArtifactManifestError(DomainError):
     """An artifact manifest violates the versioned domain contract."""
 

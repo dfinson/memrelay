@@ -1,6 +1,6 @@
 # Story 1.7: Enforce Attempt Terminal and Retry Policy
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -37,21 +37,21 @@ So that failures remain in ITT and favorable substitution is impossible.
 
 ## Tasks / Subtasks
 
-- [ ] Implement immutable terminal append policy (AC: 1)
-  - [ ] Map every frozen terminal classification to typed evidence requirements.
-  - [ ] Link terminal record and partial evidence to run/assignment/attempt without changing run transitions.
-  - [ ] Reject second terminal records or updates/deletes.
-- [ ] Implement one-retry authorizer (AC: 2)
-  - [ ] Require protocol authorization, exact `infrastructure_failed_pre_exposure`, conclusive unexposed evidence, no prior retry, and fresh-isolation attestation.
-  - [ ] Create a new opaque attempt ID linked to the same run and assignment.
-  - [ ] Preserve parent terminal/evidence bytes unchanged.
-  - [ ] Treat absent, unknown, contradictory, or non-conclusive exposure evidence as exposed/non-retryable without requiring the Story 1.6 concrete classifier.
-- [ ] Implement no-favorable-substitution guards (AC: 3)
-  - [ ] Reject ambiguous/post-exposure, retry-of-retry, best-of-N, repeat-until-success, and outcome-driven selection with stable typed reasons.
-  - [ ] Record bounded internal retry policies/counters separately for Inspect, SDK, memrelay, and grader.
-  - [ ] Keep every assigned unit/attempt visible for future ITT analysis.
-- [ ] Route unpaid records through fake ports and enforce eligibility denial (AC: 4)
-- [ ] Add state/property/fault/lineage tests (AC: 1-4)
+- [x] Implement immutable terminal append policy (AC: 1)
+  - [x] Map every frozen terminal classification to typed evidence requirements.
+  - [x] Link terminal record and partial evidence to run/assignment/attempt without changing run transitions.
+  - [x] Reject second terminal records or updates/deletes.
+- [x] Implement one-retry authorizer (AC: 2)
+  - [x] Require protocol authorization, exact `infrastructure_failed_pre_exposure`, conclusive unexposed evidence, no prior retry, and fresh-isolation attestation.
+  - [x] Create a new opaque attempt ID linked to the same run and assignment.
+  - [x] Preserve parent terminal/evidence bytes unchanged.
+  - [x] Treat absent, unknown, contradictory, or non-conclusive exposure evidence as exposed/non-retryable without requiring the Story 1.6 concrete classifier.
+- [x] Implement no-favorable-substitution guards (AC: 3)
+  - [x] Reject ambiguous/post-exposure, retry-of-retry, best-of-N, repeat-until-success, and outcome-driven selection with stable typed reasons.
+  - [x] Record bounded internal retry policies/counters separately for Inspect, SDK, memrelay, and grader.
+  - [x] Keep every assigned unit/attempt visible for future ITT analysis.
+- [x] Route unpaid records through fake ports and enforce eligibility denial (AC: 4)
+- [x] Add state/property/fault/lineage tests (AC: 1-4)
 
 ## Developer Context
 
@@ -119,12 +119,36 @@ Run lifecycle records are not attempt outcomes. A failed attempt does not invent
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- Isolated WSL uv with CPython 3.13.14: targeted Story 1.7 tests - 45 passed
+- Isolated WSL uv with CPython 3.13.14: full merged evaluator suite - 248 passed
+- Isolated WSL uv: `uv lock --check` - passed
+- Isolated WSL uv: `ruff==0.16.1 check .` and `ruff==0.16.1 format --check .` - passed
+- Isolated WSL uv with worktree `src` first: product regression suite - 1299 passed, 1 transient stdio timeout, 7 platform/optional-backend skips; the failed stdio test passed in a fresh isolated rerun
+- Native worktree: `git diff --check` - passed
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable attempt terminal recording without modifying run lifecycle state.
+- Added conservative one-time retry authorization for only conclusively unexposed pre-exposure infrastructure failures, with fresh-isolation evidence and original evidence retained.
+- Added atomic fake-ledger retry reservations for per-subsystem internal retries and retry authorizations.
+- Persisted exposure and isolation evidence references with retry authorization lineage.
+- Moved conservative exposure and retry eligibility decisions into domain-owned records and policy.
+- Verified public-CAS parent-evidence preservation, re-randomization rejection, all four internal retry budgets, terminal duplicate typing, and no-favorable-substitution guards.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/domain/states.py`
+- `evaluation/src/memrelay_eval/orchestration/__init__.py`
+- `evaluation/src/memrelay_eval/orchestration/attempt.py`
+- `evaluation/src/memrelay_eval/orchestration/retry.py`
+- `evaluation/tests/contract/test_attempt_lineage.py`
+- `evaluation/tests/fault/test_partial_terminal_evidence.py`
+- `evaluation/tests/unit/domain/test_attempt_terminal.py`
+- `evaluation/tests/unit/orchestration/test_retry.py`

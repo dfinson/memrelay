@@ -30,6 +30,28 @@ class AttemptTerminalKind(StrEnum):
     CANCELLED_BY_CIRCUIT_BREAKER = "cancelled_by_circuit_breaker"
 
 
+class ExposureClassification(StrEnum):
+    UNEXPOSED = "unexposed"
+    EXPOSED = "exposed"
+    AMBIGUOUS = "ambiguous"
+    UNKNOWN = "unknown"
+    CONTRADICTORY = "contradictory"
+
+
+class RetryRequestPurpose(StrEnum):
+    RETRY_FAILURE = "retry_failure"
+    BEST_OF_N = "best_of_n"
+    REPEAT_UNTIL_SUCCESS = "repeat_until_success"
+    FAVORABLE_SUBSTITUTION = "favorable_substitution"
+
+
+class InternalRetrySubsystem(StrEnum):
+    INSPECT = "inspect"
+    SDK = "sdk"
+    MEMRELAY = "memrelay"
+    GRADER = "grader"
+
+
 class ArtifactScope(StrEnum):
     EXPERIMENT = "experiment"
     RUN = "run"

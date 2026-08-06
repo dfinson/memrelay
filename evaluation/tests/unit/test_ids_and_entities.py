@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from memrelay_eval.domain.entities import (
+    ArtifactRef,
     Assignment,
     Attempt,
     AttemptTerminal,
@@ -13,8 +14,13 @@ from memrelay_eval.domain.entities import (
     Endpoint,
     Evidence,
     Experiment,
+    ExposureDecision,
+    FreshIsolationAttestation,
     History,
+    InternalRetryPolicy,
+    InternalRetryRecord,
     Protocol,
+    RetryAuthorization,
     Run,
     Scenario,
     Task,
@@ -34,7 +40,11 @@ from memrelay_eval.domain.ids import (
     ScenarioId,
     TaskId,
 )
-from memrelay_eval.domain.states import AttemptTerminalKind
+from memrelay_eval.domain.states import (
+    AttemptTerminalKind,
+    ExposureClassification,
+    InternalRetrySubsystem,
+)
 
 
 def test_ids_are_typed_opaque_and_stably_serialized() -> None:
@@ -78,6 +88,15 @@ def test_every_named_entity_is_frozen_and_treatment_neutral() -> None:
     assignment = Assignment(AssignmentId.new(), experiment.id)
     run = Run(RunId.new(), assignment.id)
     attempt = Attempt(AttemptId.new(), run.id)
+    artifact = ArtifactRef.from_bytes(b"frozen evidence")
+    terminal = AttemptTerminal(
+        attempt.id,
+        run.id,
+        AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE,
+        datetime.now(UTC),
+        "provisioning failed",
+        (artifact,),
+    )
     records = (
         experiment,
         Protocol(ProtocolId.new()),
@@ -91,6 +110,22 @@ def test_every_named_entity_is_frozen_and_treatment_neutral() -> None:
         Endpoint(EndpointId.new()),
         Claim(ClaimId.new()),
         CostEntry(CostEntryId.new()),
+        artifact,
+        terminal,
+        ExposureDecision(ExposureClassification.UNEXPOSED, (artifact,)),
+        FreshIsolationAttestation(True, (artifact,)),
+        InternalRetryPolicy(InternalRetrySubsystem.INSPECT, 1),
+        InternalRetryRecord(attempt.id, InternalRetrySubsystem.INSPECT, 1),
+        RetryAuthorization(
+            run.id,
+            assignment.id,
+            assignment.id,
+            attempt.id,
+            Attempt(AttemptId.new(), run.id),
+            terminal,
+            (artifact,),
+            (artifact,),
+        ),
     )
     for record in records:
         assert "treatment" not in repr(record).lower()
