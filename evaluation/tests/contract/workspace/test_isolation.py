@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import socket
 import subprocess
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from memrelay_eval.adapters.workspace import clone as clone_module
+from memrelay_eval.adapters.workspace import worktree as worktree_module
 from memrelay_eval.adapters.workspace.base import (
     WorkspaceCollisionError,
     WorkspaceSpec,
@@ -170,13 +173,59 @@ def test_clone_uses_only_the_frozen_local_source(
     asyncio.run(provider.destroy(handle))
 
 
-def test_materializers_disable_recursive_submodules_and_file_transport() -> None:
-    adapter_root = Path(__file__).parents[3] / "src" / "memrelay_eval" / "adapters" / "workspace"
-    clone_source = (adapter_root / "clone.py").read_text(encoding="utf-8")
-    worktree_source = (adapter_root / "worktree.py").read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    "provider_type", [TemporaryWorktreeWorkspaceProvider, IsolatedCloneWorkspaceProvider]
+)
+def test_materializers_disable_network_credentials_and_recursive_submodules(
+    monkeypatch: pytest.MonkeyPatch,
+    frozen_source: tuple[Path, str, str],
+    provider_type,
+    tmp_path: Path,
+) -> None:
+    source, revision, content_hash = frozen_source
+    captured_commands: list[list[str]] = []
+    real_run = subprocess.run
 
-    assert "--no-recurse-submodules" in clone_source
-    assert "submodule.recurse=false" in clone_source
-    assert "submodule.recurse=false" in worktree_source
-    assert "protocol.file.allow=never" in clone_source
-    assert "protocol.file.allow=never" in worktree_source
+    def guarded_run(command, *args, **kwargs):
+        command_parts = [str(part) for part in command]
+        captured_commands.append(command_parts)
+        assert not any(
+            value.startswith(("http://", "https://", "ssh://", "git@")) for value in command_parts
+        )
+        return real_run(command, *args, **kwargs)
+
+    def blocked_network(*args, **kwargs):
+        raise AssertionError(f"workspace materialization attempted network access: {args!r}")
+
+    real_connect = socket.socket.connect
+
+    def block_non_loopback_connect(socket_instance, address):
+        if address[0] in {"127.0.0.1", "::1"}:
+            return real_connect(socket_instance, address)
+        return blocked_network(socket_instance, address)
+
+    monkeypatch.setattr(clone_module.subprocess, "run", guarded_run)
+    monkeypatch.setattr(worktree_module.subprocess, "run", guarded_run)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked_network)
+    monkeypatch.setattr(socket.socket, "connect", block_non_loopback_connect)
+    provider = provider_type()
+
+    handle = asyncio.run(
+        provider.create(_spec(source, revision, content_hash, tmp_path / "attempts"))
+    )
+
+    materialization = [
+        command
+        for command in captured_commands
+        if "clone" in command or "checkout" in command or "worktree" in command
+    ]
+    assert materialization
+    assert all("credential.helper=" in command for command in materialization)
+    assert all("credential.useHttpPath=false" in command for command in materialization)
+    assert any("protocol.allow=never" in command for command in materialization)
+    assert any("protocol.file.allow=never" in command for command in materialization)
+    assert any("submodule.recurse=false" in command for command in materialization)
+    if provider_type is IsolatedCloneWorkspaceProvider:
+        assert any("--no-recurse-submodules" in command for command in materialization)
+
+    asyncio.run(provider.destroy(handle))

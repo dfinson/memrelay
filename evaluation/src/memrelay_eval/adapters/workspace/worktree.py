@@ -15,12 +15,18 @@ class TemporaryWorktreeWorkspaceProvider(BaseWorkspaceProvider):
     def _materialize(self, handle: WorkspaceHandle, spec: WorkspaceSpec) -> None:
         if handle.private_git_dir is None:
             raise WorkspaceProviderError("worktree provider requires private Git metadata")
+        self._assert_attempt_child(handle.private_git_dir, handle.attempt_root, "private Git root")
+        self._assert_attempt_child(handle.workspace_root, handle.attempt_root, "workspace root")
         try:
             subprocess.run(
                 [
                     "git",
-                    "-C",
-                    str(spec.source_root),
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.useHttpPath=false",
+                    "-c",
+                    "protocol.allow=never",
                     "-c",
                     "protocol.file.allow=always",
                     "clone",
@@ -33,8 +39,20 @@ class TemporaryWorktreeWorkspaceProvider(BaseWorkspaceProvider):
                 capture_output=True,
                 text=True,
             )
+            self._assert_safe_authority_path(handle.private_git_dir, "private Git root")
             subprocess.run(
-                ["git", "--git-dir", str(handle.private_git_dir), "remote", "remove", "origin"],
+                [
+                    "git",
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.useHttpPath=false",
+                    "--git-dir",
+                    str(handle.private_git_dir),
+                    "remote",
+                    "remove",
+                    "origin",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -42,6 +60,12 @@ class TemporaryWorktreeWorkspaceProvider(BaseWorkspaceProvider):
             subprocess.run(
                 [
                     "git",
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.useHttpPath=false",
+                    "-c",
+                    "protocol.allow=never",
                     "-c",
                     "protocol.file.allow=never",
                     "-c",
@@ -58,6 +82,7 @@ class TemporaryWorktreeWorkspaceProvider(BaseWorkspaceProvider):
                 capture_output=True,
                 text=True,
             )
+            self._assert_safe_authority_path(handle.workspace_root, "workspace root")
         except subprocess.CalledProcessError as error:
             raise WorkspaceProviderError(
                 error.stderr.strip() or "worktree creation failed"
@@ -68,6 +93,8 @@ class TemporaryWorktreeWorkspaceProvider(BaseWorkspaceProvider):
             return
         if handle.private_git_dir is None:
             raise WorkspaceProviderError("worktree provider requires private Git metadata")
+        self._assert_attempt_child(handle.private_git_dir, handle.attempt_root, "private Git root")
+        self._assert_attempt_child(handle.workspace_root, handle.attempt_root, "workspace root")
         try:
             subprocess.run(
                 [

@@ -13,10 +13,17 @@ class IsolatedCloneWorkspaceProvider(BaseWorkspaceProvider):
     provider_name = "isolated_clone"
 
     def _materialize(self, handle: WorkspaceHandle, spec: WorkspaceSpec) -> None:
+        self._assert_attempt_child(handle.workspace_root, handle.attempt_root, "workspace root")
         try:
             subprocess.run(
                 [
                     "git",
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.useHttpPath=false",
+                    "-c",
+                    "protocol.allow=never",
                     "-c",
                     "protocol.file.allow=always",
                     "clone",
@@ -29,9 +36,16 @@ class IsolatedCloneWorkspaceProvider(BaseWorkspaceProvider):
                 capture_output=True,
                 text=True,
             )
+            self._assert_safe_authority_path(handle.workspace_root, "workspace root")
             subprocess.run(
                 [
                     "git",
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.useHttpPath=false",
+                    "-c",
+                    "protocol.allow=never",
                     "-c",
                     "protocol.file.allow=never",
                     "-c",
@@ -48,7 +62,18 @@ class IsolatedCloneWorkspaceProvider(BaseWorkspaceProvider):
                 text=True,
             )
             subprocess.run(
-                ["git", "-C", str(handle.workspace_root), "remote", "remove", "origin"],
+                [
+                    "git",
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "credential.useHttpPath=false",
+                    "-C",
+                    str(handle.workspace_root),
+                    "remote",
+                    "remove",
+                    "origin",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,

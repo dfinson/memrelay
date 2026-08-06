@@ -105,6 +105,7 @@ GPT-5.6 Terra (gpt-5.6-terra)
 ### Debug Log References
 
 - `$env:PYTHONPATH = (Resolve-Path .\evaluation\src).Path; C:\Python312\python.exe -m pytest .\evaluation\tests`
+- `wsl -d Ubuntu -e /usr/bin/env bash -lc 'cd /mnt/c/Users/davidfinson/.copilot/repos/copilot-worktrees/memrelay/dfinson-refactored-enigma/evaluation && UV_PROJECT_ENVIRONMENT=/tmp/memrelay-eval-py313 uv run --python 3.13 --extra dev pytest tests'`
 - `$env:PYTHONPATH = (Resolve-Path .\src).Path; C:\Python312\python.exe -m pytest`
 - `C:\Python312\python.exe -m ruff check .`
 - `C:\Python312\python.exe -m ruff format --check .`
@@ -116,9 +117,16 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - Added temporary worktree and isolated local-clone providers with private Git metadata, no writable
   remotes, frozen revision/content verification, opaque telemetry identities, and attempt-local roots.
 - Added provider-parity, collision, source-mutation, cleanup-fault, quarantine, no-network, and
-  paid-runtime import boundary contract coverage.
-- Full evaluator suite (118 tests), product suite (1305 passed, 2 skipped), and ruff check/format
-  gates pass.
+  paid-runtime import boundary contract coverage, including Windows junction/reparse and cross-process
+  ownership-race cases.
+- Hardened all allocation, ownership, quarantine, and cleanup paths against symlinks, junctions, and
+  reparse points; live attempt roots are host-private temporary directories, ownership/quarantine
+  tombstones use Windows handle-relative creation, and cleanup rejects nested reparse descendants.
+- Git materialization disables credential helpers, network transports, and recursive submodules except
+  the explicit local frozen-source transfer.
+- Windows evaluator suite: 125 passed, 2 skipped because this host lacks symlink privilege. Pinned
+  evaluator runtime validation: CPython 3.13.14 via isolated WSL uv environment, 122 passed and
+  4 Windows-junction tests skipped by explicit platform capability.
 
 ### File List
 

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import json
 import os
 import shutil
 import stat
 import subprocess
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -26,6 +28,10 @@ class WorkspaceProviderError(RuntimeError):
 
 class WorkspaceCollisionError(WorkspaceProviderError):
     """An allocation is unsafe because it overlaps or reuses a root."""
+
+
+class WorkspacePathSafetyError(WorkspaceCollisionError):
+    """An authority path contains a symlink, junction, or other reparse point."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +62,7 @@ class WorkspaceHandle:
     attempt_id: AttemptId
     run_id: RunId
     provider_name: str
+    allocation_root: Path
     attempt_root: Path
     workspace_root: Path
     agent_session_root: Path
@@ -155,20 +162,16 @@ class BaseWorkspaceProvider:
     async def create(self, spec: WorkspaceSpec) -> WorkspaceHandle:
         async with self._lock:
             _source_root, allocation_root = self._validate_spec(spec)
-            attempt_root = allocation_root / str(spec.attempt_id)
-            ownership = self._ownership_path(allocation_root, spec.attempt_id)
-            if attempt_root.exists() or attempt_root.is_symlink():
-                raise WorkspaceCollisionError(
-                    "attempt root already exists and cannot be safely claimed"
-                )
-            self._claim_ownership(ownership, attempt_root)
+            self._prepare_allocation_root(allocation_root)
+            self._assert_registry_paths_safe(allocation_root)
+            attempt_root = self._create_private_attempt_root(spec)
             handle = self._build_handle(spec, attempt_root)
+            ownership = self._ownership_path(allocation_root, spec.attempt_id)
             try:
-                attempt_root.mkdir(parents=True, exist_ok=False)
-            except FileExistsError as error:
-                raise WorkspaceCollisionError(
-                    "attempt root was concurrently claimed by another allocator"
-                ) from error
+                self._claim_ownership(ownership, allocation_root, spec.attempt_id, attempt_root)
+            except WorkspaceProviderError:
+                shutil.rmtree(attempt_root, onerror=self._clear_readonly_and_retry)
+                raise
             try:
                 self._make_private_directories(handle)
                 self._inject("create_before_materialize")
@@ -203,14 +206,18 @@ class BaseWorkspaceProvider:
     async def destroy(self, handle: WorkspaceHandle) -> CleanupRecord:
         async with self._lock:
             self._assert_managed(handle)
-            record = self._cleanup(handle, already_clean=not handle.attempt_root.exists())
+            record = self._cleanup(
+                handle, already_clean=not self._path_exists_or_reparse_point(handle.attempt_root)
+            )
             self._cleanup_records.append(record)
             self._record_cleanup_evidence(record, handle)
             return record
 
     def _validate_spec(self, spec: WorkspaceSpec) -> tuple[Path, Path]:
-        source_root = spec.source_root.resolve(strict=True)
-        allocation_root = spec.allocation_root.resolve(strict=False)
+        source_root = self._absolute_path(spec.source_root)
+        allocation_root = self._absolute_path(spec.allocation_root)
+        self._assert_safe_authority_path(source_root, "source root")
+        self._assert_safe_authority_path(allocation_root, "allocation root")
         if not source_root.is_dir() or not (source_root / ".git").exists():
             raise WorkspaceCollisionError("source root must be a local Git checkout")
         if allocation_root == source_root or allocation_root.is_relative_to(source_root):
@@ -234,6 +241,7 @@ class BaseWorkspaceProvider:
             attempt_id=spec.attempt_id,
             run_id=spec.run_id,
             provider_name=self.provider_name,
+            allocation_root=spec.allocation_root.absolute(),
             attempt_root=attempt_root,
             workspace_root=attempt_root / "workspace",
             agent_session_root=attempt_root / "agent-session",
@@ -252,34 +260,38 @@ class BaseWorkspaceProvider:
             source_root=spec.source_root.resolve(),
         )
 
-    def _ownership_path(self, allocation_root: Path, attempt_id: AttemptId) -> Path:
-        return allocation_root / ".workspace-ownership" / f"{attempt_id}.json"
+    def _create_private_attempt_root(self, spec: WorkspaceSpec) -> Path:
+        digest = sha256(str(spec.attempt_id).encode("ascii")).hexdigest()
+        temporary_root = Path(tempfile.mkdtemp(prefix=f"memrelay-{digest[:16]}-"))
+        try:
+            self._assert_safe_authority_path(temporary_root, "private attempt root")
+        except WorkspacePathSafetyError:
+            shutil.rmtree(temporary_root, onerror=self._clear_readonly_and_retry)
+            raise
+        return temporary_root
 
-    def _claim_ownership(self, ownership: Path, attempt_root: Path) -> None:
-        ownership.parent.mkdir(parents=True, exist_ok=True)
-        if ownership.parent.is_symlink() or ownership.is_symlink():
-            raise WorkspaceCollisionError("ownership registry may not be a symlink or junction")
+    def _ownership_path(self, allocation_root: Path, attempt_id: AttemptId) -> Path:
+        return allocation_root / f".workspace-ownership-{attempt_id}.json"
+
+    def _claim_ownership(
+        self, ownership: Path, allocation_root: Path, attempt_id: AttemptId, attempt_root: Path
+    ) -> None:
+        self._assert_safe_authority_path(ownership, "workspace ownership record")
         payload = json.dumps(
-            {"attempt_id": attempt_root.name, "attempt_root": str(attempt_root)},
+            {"attempt_id": str(attempt_id), "attempt_root": str(attempt_root)},
             sort_keys=True,
             separators=(",", ":"),
         )
-        try:
-            descriptor = os.open(ownership, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as error:
-            raise WorkspaceCollisionError("attempt identity was already allocated") from error
-        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            file.write(payload)
+        self._write_private_json_exclusive(
+            ownership, allocation_root, "workspace ownership record", payload
+        )
 
     def _make_private_directories(self, handle: WorkspaceHandle) -> None:
         for root in handle.mutable_roots[1:]:
-            root.mkdir(parents=True, exist_ok=False)
-            if root.is_symlink():
-                raise WorkspaceCollisionError("attempt root may not be a symlink or junction")
+            self._create_attempt_root(root, handle.attempt_root, "attempt-local root")
 
     def _verify_materialization(self, handle: WorkspaceHandle, spec: WorkspaceSpec) -> None:
-        if handle.workspace_root.is_symlink():
-            raise WorkspaceCollisionError("workspace root may not be a symlink or junction")
+        self._assert_safe_authority_path(handle.workspace_root, "workspace root")
         if self._git(handle.workspace_root, "rev-parse", "HEAD") != spec.frozen_revision:
             raise WorkspaceProviderError("provider did not materialize the frozen revision")
         if (
@@ -293,10 +305,11 @@ class BaseWorkspaceProvider:
         error: str | None = None
         try:
             if not already_clean:
+                self._assert_safe_authority_path(handle.attempt_root, "attempt cleanup root")
                 self._inject("cleanup_before_remove")
                 self._remove_workspace(handle)
                 if handle.attempt_root.exists():
-                    shutil.rmtree(handle.attempt_root, onerror=self._clear_readonly_and_retry)
+                    self._remove_attempt_tree(handle.attempt_root)
                 steps.extend(("provider_workspace_removed", "attempt_roots_removed"))
             else:
                 steps.append("attempt_roots_already_clean")
@@ -311,28 +324,37 @@ class BaseWorkspaceProvider:
             )
         except Exception as caught:
             error = f"{type(caught).__name__}: {caught}"
-            self._mark_quarantine(handle, error)
+            quarantined = False
+            try:
+                self._mark_quarantine(handle, error)
+                quarantined = True
+            except (WorkspaceProviderError, OSError) as quarantine_error:
+                error = f"{error}; quarantine refused: {quarantine_error}"
             return CleanupRecord(
                 handle.attempt_id,
                 self.provider_name,
                 datetime.now(UTC),
                 False,
-                True,
+                quarantined,
                 already_clean,
                 tuple(steps),
                 error,
             )
 
     def _mark_quarantine(self, handle: WorkspaceHandle, error: str) -> None:
-        marker = handle.attempt_root.parent / ".workspace-quarantine" / f"{handle.attempt_id}.json"
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(
-            json.dumps(
-                {"attempt_id": str(handle.attempt_id), "error": error},
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            encoding="utf-8",
+        allocation_root = handle.allocation_root
+        self._assert_registry_paths_safe(allocation_root)
+        marker = allocation_root / f".workspace-quarantine-{handle.attempt_id}.json"
+        self._assert_safe_authority_path(marker, "workspace quarantine record")
+        if self._path_exists_or_reparse_point(marker):
+            return
+        payload = json.dumps(
+            {"attempt_id": str(handle.attempt_id), "error": error},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        self._write_private_json_exclusive(
+            marker, allocation_root, "workspace quarantine record", payload
         )
 
     def _record_evidence(self, handle: WorkspaceHandle, purpose: str) -> ArtifactRef:
@@ -427,13 +449,270 @@ class BaseWorkspaceProvider:
             raise WorkspaceProviderError(error.stderr.decode(errors="replace").strip()) from error
         return sha256(archive).hexdigest()
 
-    @staticmethod
     def _clear_readonly_and_retry(
-        operation: Callable[[str], None], path: str, exception_info: tuple[object, object, object]
+        self,
+        operation: Callable[[str], None],
+        path: str,
+        exception_info: tuple[object, object, object],
     ) -> None:
         del exception_info
+        self._assert_safe_authority_path(Path(path), "cleanup path")
         os.chmod(path, stat.S_IWRITE)
         operation(path)
+
+    def _remove_attempt_tree(self, root: Path) -> None:
+        self._assert_safe_authority_path(root, "attempt cleanup root")
+        for entry in os.scandir(root):
+            child = Path(entry.path)
+            if self._is_reparse_point(child):
+                raise WorkspacePathSafetyError(
+                    f"attempt cleanup root contains a symlink or reparse point: {child}"
+                )
+            if entry.is_dir(follow_symlinks=False):
+                self._remove_attempt_tree(child)
+            else:
+                try:
+                    os.unlink(child)
+                except PermissionError:
+                    os.chmod(child, stat.S_IWRITE)
+                    os.unlink(child)
+        os.rmdir(root)
+
+    @staticmethod
+    def _absolute_path(path: Path) -> Path:
+        return Path(os.path.abspath(path))
+
+    @staticmethod
+    def _is_reparse_point(path: Path) -> bool:
+        try:
+            path_status = path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise WorkspacePathSafetyError(f"cannot inspect path safety for {path}") from error
+        junction = getattr(path, "is_junction", None)
+        is_junction = callable(junction) and junction()
+        reparse_attribute = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        has_reparse_attribute = bool(
+            getattr(path_status, "st_file_attributes", 0) & reparse_attribute
+        )
+        return path.is_symlink() or is_junction or has_reparse_attribute
+
+    @staticmethod
+    def _path_exists_or_reparse_point(path: Path) -> bool:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as error:
+            raise WorkspacePathSafetyError(f"cannot inspect path safety for {path}") from error
+        return True
+
+    def _assert_safe_authority_path(self, path: Path, label: str) -> Path:
+        absolute_path = self._absolute_path(path)
+        current = absolute_path
+        while True:
+            if self._is_reparse_point(current):
+                raise WorkspacePathSafetyError(
+                    f"{label} contains a symlink or reparse point: {current}"
+                )
+            if current.parent == current:
+                return absolute_path
+            current = current.parent
+
+    def _assert_registry_paths_safe(self, allocation_root: Path) -> None:
+        self._assert_safe_authority_path(
+            allocation_root / ".workspace-ownership", "workspace ownership registry"
+        )
+        self._assert_safe_authority_path(
+            allocation_root / ".workspace-quarantine", "workspace quarantine registry"
+        )
+
+    def _prepare_allocation_root(self, allocation_root: Path) -> None:
+        self._assert_safe_authority_path(allocation_root, "allocation root")
+        allocation_root.mkdir(parents=True, exist_ok=True)
+        self._assert_safe_authority_path(allocation_root, "allocation root")
+
+    def _create_attempt_root(self, root: Path, attempt_root: Path, label: str) -> None:
+        self._assert_attempt_child(root, attempt_root, label)
+        root.mkdir(parents=True, exist_ok=False)
+        self._assert_safe_authority_path(root, label)
+
+    def _assert_attempt_child(self, path: Path, attempt_root: Path, label: str) -> Path:
+        authority = self._assert_safe_authority_path(attempt_root, "attempt authority")
+        candidate = self._assert_safe_authority_path(path, label)
+        if not candidate.is_relative_to(authority):
+            raise WorkspacePathSafetyError(f"{label} escapes attempt authority")
+        return candidate
+
+    def _write_private_json_exclusive(
+        self, path: Path, authority_root: Path, label: str, payload: str
+    ) -> None:
+        authority = self._assert_safe_authority_path(authority_root, "allocation authority")
+        candidate = self._assert_safe_authority_path(path, label)
+        if not candidate.is_relative_to(authority) or candidate.parent != authority:
+            raise WorkspacePathSafetyError(f"{label} escapes allocation authority")
+        if os.name == "nt":
+            self._write_windows_relative_json(authority, candidate.name, label, payload)
+            return
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        try:
+            descriptor = os.open(candidate, flags)
+        except FileExistsError as error:
+            raise WorkspaceCollisionError(f"{label} already exists") from error
+        try:
+            self._assert_safe_authority_path(authority_root, "allocation authority")
+            self._assert_safe_authority_path(path.parent, label)
+            os.write(descriptor, payload.encode("utf-8"))
+        finally:
+            os.close(descriptor)
+
+    @staticmethod
+    def _write_windows_relative_json(
+        authority_root: Path, filename: str, label: str, payload: str
+    ) -> None:
+        from ctypes import wintypes
+
+        file_attribute_reparse_point = 0x400
+        file_attribute_normal = 0x80
+        file_attribute_tag_info = 9
+        file_create = 2
+        file_non_directory_file = 0x40
+        file_open_reparse_point = 0x00200000
+        file_synchronous_io_nonalert = 0x20
+        generic_write = 0x40000000
+        synchronize = 0x00100000
+        invalid_handle_value = wintypes.HANDLE(-1).value
+        obj_case_insensitive = 0x40
+        share_read_write_delete = 0x00000007
+
+        class FileAttributeTagInfo(ctypes.Structure):
+            _fields_ = [("attributes", wintypes.DWORD), ("reparse_tag", wintypes.DWORD)]
+
+        class UnicodeString(ctypes.Structure):
+            _fields_ = [
+                ("length", wintypes.USHORT),
+                ("maximum_length", wintypes.USHORT),
+                ("buffer", wintypes.LPWSTR),
+            ]
+
+        class ObjectAttributes(ctypes.Structure):
+            _fields_ = [
+                ("length", wintypes.ULONG),
+                ("root_directory", wintypes.HANDLE),
+                ("object_name", ctypes.POINTER(UnicodeString)),
+                ("attributes", wintypes.ULONG),
+                ("security_descriptor", wintypes.LPVOID),
+                ("security_quality_of_service", wintypes.LPVOID),
+            ]
+
+        class IoStatusBlock(ctypes.Structure):
+            _fields_ = [("status", wintypes.LONG), ("information", ctypes.c_size_t)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        create_file = kernel32.CreateFileW
+        create_file.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        create_file.restype = wintypes.HANDLE
+        directory_handle = create_file(
+            str(authority_root),
+            generic_write,
+            share_read_write_delete,
+            None,
+            3,
+            0x02200000,
+            None,
+        )
+        if directory_handle == invalid_handle_value:
+            raise WorkspacePathSafetyError(f"cannot open allocation authority: {authority_root}")
+        try:
+            attribute_info = FileAttributeTagInfo()
+            if not kernel32.GetFileInformationByHandleEx(
+                directory_handle,
+                file_attribute_tag_info,
+                ctypes.byref(attribute_info),
+                ctypes.sizeof(attribute_info),
+            ):
+                raise WorkspacePathSafetyError(
+                    f"cannot inspect allocation authority: {authority_root}"
+                )
+            if attribute_info.attributes & file_attribute_reparse_point:
+                raise WorkspacePathSafetyError(
+                    f"allocation authority contains a symlink or reparse point: {authority_root}"
+                )
+            filename_buffer = ctypes.create_unicode_buffer(filename)
+            unicode_name = UnicodeString(
+                len(filename) * ctypes.sizeof(ctypes.c_wchar),
+                (len(filename) + 1) * ctypes.sizeof(ctypes.c_wchar),
+                ctypes.cast(filename_buffer, wintypes.LPWSTR),
+            )
+            object_attributes = ObjectAttributes(
+                ctypes.sizeof(ObjectAttributes),
+                directory_handle,
+                ctypes.pointer(unicode_name),
+                obj_case_insensitive,
+                None,
+                None,
+            )
+            status_block = IoStatusBlock()
+            file_handle = wintypes.HANDLE()
+            nt_create_file = ctypes.WinDLL("ntdll").NtCreateFile
+            nt_create_file.argtypes = [
+                ctypes.POINTER(wintypes.HANDLE),
+                wintypes.ULONG,
+                ctypes.POINTER(ObjectAttributes),
+                ctypes.POINTER(IoStatusBlock),
+                wintypes.LPVOID,
+                wintypes.ULONG,
+                wintypes.ULONG,
+                wintypes.ULONG,
+                wintypes.ULONG,
+                wintypes.LPVOID,
+                wintypes.ULONG,
+            ]
+            nt_create_file.restype = wintypes.LONG
+            status = nt_create_file(
+                ctypes.byref(file_handle),
+                generic_write | synchronize,
+                ctypes.byref(object_attributes),
+                ctypes.byref(status_block),
+                None,
+                file_attribute_normal,
+                share_read_write_delete,
+                file_create,
+                file_non_directory_file | file_open_reparse_point | file_synchronous_io_nonalert,
+                None,
+                0,
+            )
+            if status != 0:
+                if status & 0xFFFFFFFF == 0xC0000035:
+                    raise WorkspaceCollisionError(f"{label} already exists")
+                status_hex = f"0x{status & 0xFFFFFFFF:08X}"
+                raise WorkspaceProviderError(
+                    f"cannot create {label} in allocation authority (NTSTATUS {status_hex})"
+                )
+            try:
+                encoded_payload = payload.encode("utf-8")
+                written = wintypes.DWORD()
+                if not kernel32.WriteFile(
+                    file_handle,
+                    encoded_payload,
+                    len(encoded_payload),
+                    ctypes.byref(written),
+                    None,
+                ) or written.value != len(encoded_payload):
+                    raise WorkspaceProviderError(f"cannot write {label} in allocation authority")
+            finally:
+                kernel32.CloseHandle(file_handle)
+        finally:
+            kernel32.CloseHandle(directory_handle)
 
     def _materialize(self, handle: WorkspaceHandle, spec: WorkspaceSpec) -> None:
         raise NotImplementedError
