@@ -8,6 +8,7 @@ from memrelay_eval.domain.entities import (
     ArtifactRef,
     Attempt,
     AttemptTerminal,
+    ExposureDecision,
     FreshIsolationAttestation,
     InternalRetryPolicy,
     Protocol,
@@ -21,7 +22,7 @@ from memrelay_eval.domain.states import (
     InternalRetrySubsystem,
 )
 from memrelay_eval.orchestration.attempt import InternalRetryRecorder
-from memrelay_eval.orchestration.retry import ExposureDecision, RetryAuthorizer
+from memrelay_eval.orchestration.retry import RetryAuthorizer
 
 
 def _inputs() -> tuple[

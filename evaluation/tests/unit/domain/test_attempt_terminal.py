@@ -55,3 +55,14 @@ def test_terminal_record_and_partial_evidence_are_immutable_and_append_once() ->
 
     assert error.value.code == "attempt_terminal_already_recorded"
     assert recorder.terminal_for(terminal.attempt_id) is terminal
+
+
+def test_direct_ledger_duplicate_terminal_append_raises_the_typed_error() -> None:
+    ledger = InMemoryLedger()
+    terminal = _terminal()
+    ledger.append_attempt_terminal(terminal)
+
+    with pytest.raises(AttemptTerminalAlreadyRecordedError) as error:
+        ledger.append_attempt_terminal(terminal)
+
+    assert error.value.code == "attempt_terminal_already_recorded"

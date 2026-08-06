@@ -17,7 +17,11 @@ from memrelay_eval.domain.entities import (
     RunTransition,
     TelemetryObservation,
 )
-from memrelay_eval.domain.errors import ArtifactIntegrityError, IneligibleEvidenceError
+from memrelay_eval.domain.errors import (
+    ArtifactIntegrityError,
+    AttemptTerminalAlreadyRecordedError,
+    IneligibleEvidenceError,
+)
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.states import InclusionStatus, InternalRetrySubsystem
 from memrelay_eval.evidence.manifest import manifest_bytes
@@ -96,7 +100,7 @@ class InMemoryLedger:
 
     def append_attempt_terminal(self, terminal: AttemptTerminal) -> None:
         if any(item.attempt_id == terminal.attempt_id for item in self._attempt_terminals):
-            raise ValueError("an attempt terminal record already exists")
+            raise AttemptTerminalAlreadyRecordedError(AttemptTerminalAlreadyRecordedError.code)
         self._attempt_terminals.append(terminal)
 
     def attempt_terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None:
@@ -104,9 +108,6 @@ class InMemoryLedger:
             (item for item in self._attempt_terminals if item.attempt_id == attempt_id),
             None,
         )
-
-    def append_internal_retry(self, record: InternalRetryRecord) -> None:
-        self._internal_retries.append(record)
 
     def reserve_internal_retry(
         self,
@@ -134,11 +135,6 @@ class InMemoryLedger:
             for item in self._internal_retries
             if item.attempt_id == attempt_id and item.subsystem is subsystem
         )
-
-    def append_retry_authorization(self, authorization: RetryAuthorization) -> None:
-        if self.retry_authorizations_for(authorization.run_id):
-            raise IneligibleEvidenceError("retry_already_authorized_for_run")
-        self._retry_authorizations.append(authorization)
 
     def append_retry_authorization_once(self, authorization: RetryAuthorization) -> bool:
         with self._retry_authorization_lock:

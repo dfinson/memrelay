@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from memrelay_eval.domain.entities import (
-    ArtifactRef,
     Attempt,
     AttemptTerminal,
+    ExposureDecision,
     FreshIsolationAttestation,
     Protocol,
     RetryAuthorization,
@@ -15,27 +13,9 @@ from memrelay_eval.domain.entities import (
 )
 from memrelay_eval.domain.errors import RetryDeniedError
 from memrelay_eval.domain.ids import AttemptId
+from memrelay_eval.domain.policies import retry_eligibility_denial_code
 from memrelay_eval.domain.ports import LedgerPort
-from memrelay_eval.domain.states import (
-    AttemptTerminalKind,
-    ExposureClassification,
-    RetryRequestPurpose,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ExposureDecision:
-    """A conservative exposure decision supplied by the owning exposure contract."""
-
-    classification: ExposureClassification
-    evidence_refs: tuple[ArtifactRef, ...] = ()
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
-
-    @property
-    def is_conclusively_unexposed(self) -> bool:
-        return self.classification is ExposureClassification.UNEXPOSED and bool(self.evidence_refs)
+from memrelay_eval.domain.states import RetryRequestPurpose
 
 
 class RetryAuthorizer:
@@ -65,20 +45,14 @@ class RetryAuthorizer:
             raise RetryDeniedError("retry_lineage_mismatch")
         if self._ledger.attempt_terminal_for(parent_attempt.id) != parent_terminal:
             raise RetryDeniedError("retry_terminal_not_authoritative")
-        if not protocol.allows_pre_exposure_infrastructure_retry:
-            raise RetryDeniedError("retry_not_authorized_by_protocol")
-        if (
-            parent_terminal.classification
-            is not AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE
+        if denial_code := retry_eligibility_denial_code(
+            protocol, parent_terminal, exposure, isolation
         ):
-            raise RetryDeniedError("retry_terminal_not_pre_exposure_infrastructure_failure")
-        if exposure is None or not exposure.is_conclusively_unexposed:
-            raise RetryDeniedError("retry_exposure_not_conclusively_unexposed")
-        if isolation is None or not isolation.is_conclusive:
-            raise RetryDeniedError("retry_fresh_isolation_unattested")
+            raise RetryDeniedError(denial_code)
         authorization = RetryAuthorization(
             run_id=run.id,
             assignment_id=run.assignment_id,
+            parent_assignment_id=run.assignment_id,
             parent_attempt_id=parent_attempt.id,
             attempt=Attempt(AttemptId.new(), run.id),
             parent_terminal=parent_terminal,

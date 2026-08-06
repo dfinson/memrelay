@@ -31,6 +31,7 @@ from .policies import validate_run_transition
 from .states import (
     ArtifactScope,
     AttemptTerminalKind,
+    ExposureClassification,
     InclusionStatus,
     InternalRetrySubsystem,
     RunState,
@@ -259,11 +260,27 @@ class AttemptTerminal:
 
 
 @dataclass(frozen=True, slots=True)
+class ExposureDecision:
+    """Conservative exposure evidence supplied by the owning exposure contract."""
+
+    classification: ExposureClassification
+    evidence_refs: tuple[ArtifactRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+    @property
+    def is_conclusively_unexposed(self) -> bool:
+        return self.classification is ExposureClassification.UNEXPOSED and bool(self.evidence_refs)
+
+
+@dataclass(frozen=True, slots=True)
 class RetryAuthorization:
     """Immutable lineage from one terminal attempt to its sole retry attempt."""
 
     run_id: RunId
     assignment_id: AssignmentId
+    parent_assignment_id: AssignmentId
     parent_attempt_id: AttemptId
     attempt: Attempt
     parent_terminal: AttemptTerminal
@@ -271,6 +288,10 @@ class RetryAuthorization:
     isolation_evidence_refs: tuple[ArtifactRef, ...]
 
     def __post_init__(self) -> None:
+        if self.assignment_id != self.parent_assignment_id:
+            raise InvalidAttemptTerminalError(
+                "retry assignment must remain linked to the parent assignment"
+            )
         if self.attempt.run_id != self.run_id:
             raise InvalidAttemptTerminalError("retry attempt must remain linked to the parent run")
         if self.parent_terminal.attempt_id != self.parent_attempt_id:
