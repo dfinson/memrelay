@@ -842,7 +842,7 @@ def _recover_incomplete_publication(catalog_root: Path) -> str:
         _remove_path(transaction)
         return "discarded_unpublished" if staging_exists else "completed_live"
     if backup_exists and not root_exists:
-        _validate_recovery_backup(backup, document, runtime_lock)
+        _validate_recovery_backup(backup, document)
         _durable_replace(backup, catalog_root)
         _remove_path(staging)
         _remove_path(transaction)
@@ -856,7 +856,7 @@ def _recover_incomplete_publication(catalog_root: Path) -> str:
                 expected_runtime_lock=runtime_lock,
             )
         except (CatalogCompileError, CatalogValidationError):
-            _validate_recovery_backup(backup, document, runtime_lock)
+            _validate_recovery_backup(backup, document)
             _restore_catalog_root(catalog_root, backup)
             recovery_status = "restored_prior"
         else:
@@ -920,7 +920,6 @@ def _transaction_runtime_lock(document: Mapping[str, object]) -> dict[str, str |
 def _validate_recovery_backup(
     backup: Path,
     transaction: Mapping[str, object],
-    runtime_lock: Mapping[str, str | None],
 ) -> None:
     prior_lock_sha256 = transaction.get("prior_lock_sha256")
     if prior_lock_sha256 is None:
@@ -943,12 +942,24 @@ def _validate_recovery_backup(
         raise CatalogRecoveryError(
             "catalog recovery failed: prior lock bytes do not match the journal"
         )
+    lock_document, _ = _read_canonical_document(lock_path)
     _verify_compiled_catalog(
         backup / "generated",
         lock_path,
         catalog_path=backup / "catalog.yaml",
-        expected_runtime_lock=runtime_lock,
+        expected_runtime_lock=_runtime_lock_from_catalog_lock(lock_document),
     )
+
+
+def _runtime_lock_from_catalog_lock(lock: Mapping[str, object]) -> dict[str, str | None]:
+    runtime_lock = _required_mapping(lock.get("runtime_lock"), "runtime_lock")
+    path = runtime_lock.get("path")
+    digest = runtime_lock.get("sha256")
+    if path is not None and not isinstance(path, str):
+        raise CatalogRecoveryError("catalog recovery failed: sealed runtime lock path is invalid")
+    if digest is not None and not isinstance(digest, str):
+        raise CatalogRecoveryError("catalog recovery failed: sealed runtime lock hash is invalid")
+    return {"path": path, "sha256": digest}
 
 
 def _publish_catalog_root(

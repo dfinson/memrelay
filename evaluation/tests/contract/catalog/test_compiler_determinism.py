@@ -250,12 +250,12 @@ def test_every_publish_hook_restores_prior_catalog_and_writes_typed_manifest(
     paths = compile_paths(root)
     observed: list[tuple[bool, bool, bool]] = []
 
-    def abort(path: Path) -> None:
+    def abort(_: Path) -> None:
         observed.append(
             (
                 (root / "catalog.yaml").exists(),
-                (root.parent / path.name).exists(),
-                path.exists(),
+                bool(list(root.parent.glob(".catalog-compile-backup-*"))),
+                bool(list(root.parent.glob(".catalog-compile-stage-*"))),
             )
         )
         raise exception_type("injected publish failure")
@@ -273,7 +273,13 @@ def test_every_publish_hook_restores_prior_catalog_and_writes_typed_manifest(
     assert manifest["terminal_status"] == expected_status
     assert compiled_bytes(root) == before
     assert paths["lock"].read_bytes() == prior_lock
-    assert observed
+    assert observed == [
+        {
+            "before_publish": (True, False, True),
+            "after_backup": (False, True, True),
+            "after_live": (True, True, False),
+        }[hook_name]
+    ]
     assert not list(root.parent.glob(".catalog-compile-stage-*"))
     assert not list(root.parent.glob(".catalog-compile-backup-*"))
     assert not list(root.parent.glob(".catalog-compile-transaction-*.json"))
@@ -351,6 +357,61 @@ compile_catalog(
     assert not list(root.parent.glob(".catalog-compile-transaction-*.json"))
 
 
+def test_recovery_validates_prior_backup_with_its_sealed_runtime_reference(tmp_path: Path) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    runtime_lock = root / "runtime-lock.json"
+    runtime_lock.write_text('{"runtime":"A"}', encoding="utf-8")
+    first = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        runtime_lock=runtime_lock,
+    )
+    assert first.terminal_status == "succeeded"
+    prior_lock = paths["lock"].read_bytes()
+    runtime_lock.write_text('{"runtime":"B"}', encoding="utf-8")
+    code = f"""
+import os
+from pathlib import Path
+from memrelay_eval.catalog.compiler import compile_catalog
+
+root = Path({str(root)!r})
+
+def terminate(_: Path) -> None:
+    os._exit(73)
+
+compile_catalog(
+    root / "catalog.yaml",
+    output_dir=root / "generated",
+    lock_path=root / "catalog-lock.json",
+    runtime_lock=root / "runtime-lock.json",
+    after_backup=terminate,
+)
+"""
+
+    crashed = subprocess.run([sys.executable, "-c", code], check=False)
+    recovered = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        runtime_lock=runtime_lock,
+    )
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    lock = json.loads(paths["lock"].read_text(encoding="utf-8"))
+
+    assert crashed.returncode == 73
+    assert recovered.terminal_status == "succeeded"
+    assert manifest["recovery_status"] == "restored_prior"
+    assert paths["lock"].read_bytes() != prior_lock
+    assert lock["runtime_lock"]["sha256"] != json.loads(prior_lock)["runtime_lock"]["sha256"]
+    assert not list(root.parent.glob(".catalog-compile-stage-*"))
+    assert not list(root.parent.glob(".catalog-compile-backup-*"))
+    assert not list(root.parent.glob(".catalog-compile-transaction-*.json"))
+
+
 def test_recovery_fails_closed_for_unowned_or_ambiguous_publication_state(tmp_path: Path) -> None:
     root = catalog_root(tmp_path)
     paths = compile_paths(root)
@@ -358,6 +419,18 @@ def test_recovery_fails_closed_for_unowned_or_ambiguous_publication_state(tmp_pa
     orphan.mkdir()
 
     with pytest.raises(CatalogRecoveryError, match="ownership journal"):
+        verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
+
+
+def test_recovery_never_guesses_between_multiple_transaction_journals(tmp_path: Path) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    for transaction_id in ("a" * 32, "b" * 32):
+        (root.parent / f".catalog-compile-transaction-{transaction_id}.json").write_text(
+            "{}", encoding="utf-8"
+        )
+
+    with pytest.raises(CatalogRecoveryError, match="multiple publication journals"):
         verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
 
 
