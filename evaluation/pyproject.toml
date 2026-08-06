@@ -8,6 +8,7 @@ dependencies = [
     "github-copilot-sdk==1.0.8",
     "jsonschema==4.26.0",
     "PyYAML==6.0.3",
+    "rfc8785==0.1.4",
 ]
 
 [project.optional-dependencies]

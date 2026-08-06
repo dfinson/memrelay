@@ -14,6 +14,7 @@ from memrelay_eval.application.copilot_services import (
     eligible_models,
     qualify_native_catalog,
 )
+from memrelay_eval.catalog.compiler import compile_catalog_command
 from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
 from memrelay_eval.domain.entities import QualificationCaps
 from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
@@ -125,6 +126,27 @@ def validate_authored_catalog(args: Namespace) -> int:
         return 1
     print(f"{result.source_path}: valid ({result.change_kind} change)")
     return 0
+
+
+def compile_authored_catalog(args: Namespace) -> int:
+    """Compile a validated catalog without provider, fixture-content, or eligibility work."""
+
+    result = compile_catalog_command(
+        Path(args.catalog),
+        output_dir=Path(args.output_dir),
+        lock_path=Path(args.lock),
+        manifest_path=Path(args.manifest),
+        prior_lock=_optional_path(args.prior_lock),
+        runtime_lock=_optional_path(args.runtime_lock),
+    )
+    if isinstance(result.error, CatalogValidationError):
+        for diagnostic in result.error.diagnostics:
+            print(diagnostic)
+    elif result.error is not None:
+        print(result.error)
+    if result.terminal_status == "succeeded":
+        print("catalog compiled: canonical unpaid-conformance artifacts published")
+    return result.exit_code
 
 
 def _optional_path(value: str | None) -> Path | None:

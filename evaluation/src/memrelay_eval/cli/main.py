@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
     bootstrap,
+    compile_authored_catalog,
     lock_models,
     run_stage,
     show_foundation_status,
@@ -53,6 +54,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="prior valid catalog lock used only for semantic version validation",
     )
     validate_catalog.set_defaults(handler=validate_authored_catalog)
+    compile_catalog = subcommands.add_parser(
+        "compile-catalog",
+        help="validate and atomically publish canonical offline catalog artifacts",
+    )
+    compile_catalog.add_argument(
+        "--catalog",
+        default="catalog/catalog.yaml",
+        help="path to the authored YAML catalog",
+    )
+    compile_catalog.add_argument(
+        "--output-dir",
+        default="catalog/generated",
+        help="generated catalog directory directly under the catalog root",
+    )
+    compile_catalog.add_argument(
+        "--lock",
+        default="catalog/catalog-lock.json",
+        help="catalog lock directly under the catalog root",
+    )
+    compile_catalog.add_argument(
+        "--manifest",
+        default="catalog/compile-manifest.json",
+        help="redacted command manifest path",
+    )
+    compile_catalog.add_argument(
+        "--prior-lock",
+        help="prior valid catalog lock used only for semantic version validation",
+    )
+    compile_catalog.add_argument(
+        "--runtime-lock",
+        help="optional runtime lock referenced by name and hash only",
+    )
+    compile_catalog.set_defaults(handler=compile_authored_catalog)
     return parser
 
 

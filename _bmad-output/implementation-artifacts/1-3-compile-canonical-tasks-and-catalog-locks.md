@@ -1,6 +1,6 @@
 # Story 1.3: Compile Canonical Tasks and Catalog Locks
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -121,12 +121,39 @@ Identity is over bytes, not Python objects. RFC 8785/JCS differs from `json.dump
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- 2026-08-05T19:57:47-04:00 - `uv run pytest` in `evaluation/`: 202 passed under CPython 3.13.14.
+- 2026-08-05T19:57:47-04:00 - Focused canonical/compiler contract suite: 35 passed.
+- 2026-08-05T19:57:47-04:00 - Root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
+- 2026-08-05T19:57:47-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added the sole RFC 8785/JCS identity-byte wrapper, exactly pinned to `rfc8785==0.1.4`.
+- Compiled validated catalog YAML to canonical tasks, opaque assignment inputs, fixture manifest inputs, catalog-root-relative traceability, and a digest-verified catalog lock.
+- Published the complete catalog root through same-volume sibling staging with verified output hashes and rollback-safe Windows directory replacement.
+- Added redacted typed command manifests for successful, failed, and interrupted compiles; fixture content validation and eligibility remain explicitly not performed.
+- Added deterministic clean-process, RFC vector, Unicode/number boundary, digest omission, tamper, no-network, import-boundary, interruption, Windows-path, same-volume, and manifest contract coverage.
 
 ### File List
+
+- `evaluation/pyproject.toml`
+- `evaluation/uv.lock`
+- `evaluation/catalog/catalog-lock.json`
+- `evaluation/catalog/compile-manifest.json`
+- `evaluation/catalog/generated/tasks.json`
+- `evaluation/catalog/generated/assignment-inputs.json`
+- `evaluation/catalog/generated/fixture-manifest.json`
+- `evaluation/catalog/generated/traceability.json`
+- `evaluation/src/memrelay_eval/catalog/__init__.py`
+- `evaluation/src/memrelay_eval/catalog/canonical.py`
+- `evaluation/src/memrelay_eval/catalog/compiler.py`
+- `evaluation/src/memrelay_eval/catalog/validation.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/tests/unit/catalog/test_canonical.py`
+- `evaluation/tests/contract/catalog/test_compiler_determinism.py`
+- `evaluation/tests/contract/catalog/test_generated_divergence.py`
