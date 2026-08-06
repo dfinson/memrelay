@@ -18,6 +18,7 @@ from memrelay_eval.application.copilot_catalog import (
     qualification_summary,
     select_models,
 )
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import ModelQualification, QualificationCaps, QualificationUsage
 from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
 from memrelay_eval.domain.governance import (
@@ -202,9 +203,7 @@ class LockRepository:
 
     def write(self, name: str, document: Mapping[str, object]) -> Path:
         _assert_redacted(document)
-        payload = json.dumps(
-            document, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
+        payload = canonical_bytes(document)
         self._root.mkdir(parents=True, exist_ok=True)
         destination = self._path(name)
         with tempfile.NamedTemporaryFile(
@@ -256,9 +255,7 @@ class LockRepository:
 def lock_digest(document: Mapping[str, object]) -> str:
     """Stable lock linkage digest; lock documents contain no credentials or raw identity."""
 
-    payload = json.dumps(document, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode(
-        "utf-8"
-    )
+    payload = canonical_bytes(document)
     return sha256(payload).hexdigest()
 
 

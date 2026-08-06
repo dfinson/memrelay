@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from statistics import median
 
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import (
     LockedModel,
     ModelQualification,
@@ -64,9 +64,7 @@ def archive_native_catalog(raw_bytes: bytes, response: object) -> CatalogArchive
         }
         for model in sorted(models, key=lambda model: model.native_id)
     ]
-    projection_bytes = json.dumps(
-        projection, ensure_ascii=True, separators=(",", ":"), sort_keys=True
-    ).encode("utf-8")
+    projection_bytes = canonical_bytes(projection)
     return CatalogArchive(
         NativeModelCatalog(
             raw_sha256=sha256(raw_bytes).hexdigest(),

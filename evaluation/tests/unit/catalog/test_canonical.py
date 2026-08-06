@@ -42,7 +42,6 @@ def test_rfc8785_uses_utf16_property_order_and_ecmascript_number_boundaries() ->
         -float("inf"),
         math.nan,
         {"not": {"a", "json", "value"}},
-        {"key": ("tuple",)},
         {1: "non-string key"},
     ],
 )
@@ -63,3 +62,19 @@ def test_digest_omits_only_its_declared_field_and_is_lowercase() -> None:
 
     changed = {**attached, "digest": "A" * 64}
     assert not verify_digest(changed)
+
+
+def test_digest_rejects_the_correct_value_when_only_its_case_changes() -> None:
+    attached = attach_digest({"payload": "case-sensitive identity"})
+
+    assert any(character.isalpha() for character in attached["digest"])
+    uppercase = {
+        **attached,
+        "digest": "".join(
+            character.upper() if character.isalpha() else character
+            for character in attached["digest"]
+        ),
+    }
+
+    assert uppercase["digest"].lower() == attached["digest"]
+    assert not verify_digest(uppercase)

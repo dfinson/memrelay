@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import tempfile
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
@@ -13,9 +12,14 @@ from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 from memrelay_eval.domain.errors import DomainError
 
-from .canonical import CanonicalizationError, attach_digest, canonical_bytes, verify_digest
+from .canonical import attach_digest, canonical_bytes, verify_digest
 from .loader import SourceLocation
 from .validation import CatalogValidationError, CatalogValidationResult, validate_catalog
 
@@ -24,6 +28,7 @@ COMPILED_SCHEMA_VERSION = "1.0.0"
 LOCK_SCHEMA_VERSION = "1.0.0"
 COMMAND_MANIFEST_SCHEMA_VERSION = "1.0.0"
 UNPAID_CONFORMANCE = True
+_TRANSACTION_SCHEMA_VERSION = "1.0.0"
 
 _GENERATED_FILENAMES = {
     "tasks": "tasks.json",
@@ -60,6 +65,14 @@ class CatalogCompileError(DomainError):
     """The validated catalog could not become a complete immutable artifact set."""
 
 
+class CatalogCompileBusyError(CatalogCompileError):
+    """Another process owns the catalog compiler transaction lock."""
+
+
+class CatalogRecoveryError(CatalogCompileError):
+    """An interrupted catalog publication cannot be recovered safely."""
+
+
 @dataclass(frozen=True, slots=True)
 class CompilationResult:
     """Verified hashes for one atomically published catalog compilation."""
@@ -69,6 +82,7 @@ class CompilationResult:
     output_sha256: Mapping[str, str]
     protocol_ids: tuple[str, ...]
     runtime_lock: Mapping[str, str | None]
+    recovery_status: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +95,58 @@ class CompileCommandResult:
     error: CatalogValidationError | CatalogCompileError | None
 
 
+class _CatalogPublicationLock:
+    """A non-blocking native advisory lock shared by Windows and POSIX processes."""
+
+    def __init__(self, catalog_root: Path) -> None:
+        self._path = catalog_root.parent / f".{catalog_root.name}-compile.lock"
+        self._handle: Any | None = None
+
+    def __enter__(self) -> _CatalogPublicationLock:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._handle = self._path.open("a+b")
+        try:
+            self._acquire()
+        except OSError as error:
+            self._handle.close()
+            self._handle = None
+            raise CatalogCompileBusyError(
+                "catalog compilation is already owned by another process"
+            ) from error
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        if self._handle is None:
+            return
+        try:
+            self._release()
+        finally:
+            self._handle.close()
+            self._handle = None
+
+    def _acquire(self) -> None:
+        assert self._handle is not None
+        if os.name == "nt":
+            self._handle.seek(0)
+            if self._handle.read(1) == b"":
+                self._handle.seek(0)
+                self._handle.write(b"\0")
+                self._handle.flush()
+                os.fsync(self._handle.fileno())
+            self._handle.seek(0)
+            msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def _release(self) -> None:
+        assert self._handle is not None
+        if os.name == "nt":
+            self._handle.seek(0)
+            msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+
+
 def compile_catalog(
     catalog_path: Path,
     *,
@@ -90,10 +156,40 @@ def compile_catalog(
     runtime_lock: Path | None = None,
     before_publish: Callable[[Path], None] | None = None,
     after_backup: Callable[[Path], None] | None = None,
+    after_live: Callable[[Path], None] | None = None,
 ) -> CompilationResult:
     """Validate, compile, verify, and atomically publish one complete catalog set."""
 
     catalog_root = _catalog_root(catalog_path, output_dir, lock_path)
+    with _CatalogPublicationLock(catalog_root):
+        recovery_status = _recover_incomplete_publication(catalog_root)
+        return _compile_catalog_locked(
+            catalog_path,
+            output_dir=output_dir,
+            lock_path=lock_path,
+            prior_lock=prior_lock,
+            runtime_lock=runtime_lock,
+            before_publish=before_publish,
+            after_backup=after_backup,
+            after_live=after_live,
+            catalog_root=catalog_root,
+            recovery_status=recovery_status,
+        )
+
+
+def _compile_catalog_locked(
+    catalog_path: Path,
+    *,
+    output_dir: Path,
+    lock_path: Path,
+    prior_lock: Path | None,
+    runtime_lock: Path | None,
+    before_publish: Callable[[Path], None] | None,
+    after_backup: Callable[[Path], None] | None,
+    after_live: Callable[[Path], None] | None,
+    catalog_root: Path,
+    recovery_status: str,
+) -> CompilationResult:
     effective_prior_lock = prior_lock
     if effective_prior_lock is None and lock_path.exists():
         effective_prior_lock = lock_path
@@ -113,10 +209,20 @@ def compile_catalog(
     )
     relative_output_dir = output_dir.resolve().relative_to(catalog_root)
     relative_lock_path = lock_path.resolve().relative_to(catalog_root)
-    staging = _new_sibling_staging_directory(catalog_root)
-    backup: Path | None = None
-    published = False
+    transaction_id = uuid4().hex
+    staging = _new_sibling_staging_directory(catalog_root, transaction_id)
+    backup = _backup_path(catalog_root, transaction_id)
+    transaction = _transaction_path(catalog_root, transaction_id)
     try:
+        _write_transaction(
+            catalog_root,
+            transaction_id=transaction_id,
+            staging=staging,
+            backup=backup,
+            source_sha256=source_sha256,
+            prior_lock_sha256=_optional_file_sha256(effective_prior_lock),
+            runtime_lock=runtime_lock_reference,
+        )
         shutil.copytree(catalog_root, staging, dirs_exist_ok=True)
         staged_output_dir = staging / relative_output_dir
         staged_lock_path = staging / relative_lock_path
@@ -148,8 +254,13 @@ def compile_catalog(
         _require_same_volume(staging, catalog_root)
         if before_publish is not None:
             before_publish(staging)
-        backup = _publish_catalog_root(catalog_root, staging, after_backup=after_backup)
-        published = True
+        _publish_catalog_root(
+            catalog_root,
+            staging,
+            backup=backup,
+            after_backup=after_backup,
+            after_live=after_live,
+        )
         _verify_compiled_catalog(
             output_dir,
             lock_path,
@@ -157,16 +268,15 @@ def compile_catalog(
             validated=validated,
             expected_runtime_lock=runtime_lock_reference,
         )
-    except (CatalogCompileError, CatalogValidationError, CanonicalizationError, OSError):
-        if published and backup is not None:
+        _remove_path(backup)
+    except BaseException:
+        if backup.exists():
             _restore_catalog_root(catalog_root, backup)
-            backup = None
         raise
     finally:
-        if staging.exists():
-            shutil.rmtree(staging)
-        if backup is not None and backup.exists():
-            shutil.rmtree(backup)
+        if catalog_root.exists() and not backup.exists():
+            _remove_path(staging)
+            _remove_path(transaction)
 
     return CompilationResult(
         catalog_input_sha256=_sha256(canonical_bytes(validated.catalog)),
@@ -174,6 +284,7 @@ def compile_catalog(
         output_sha256=output_sha256,
         protocol_ids=tuple(_protocol_ids(validated.catalog)),
         runtime_lock=runtime_lock_reference,
+        recovery_status=recovery_status,
     )
 
 
@@ -187,6 +298,7 @@ def compile_catalog_command(
     runtime_lock: Path | None = None,
     before_publish: Callable[[Path], None] | None = None,
     after_backup: Callable[[Path], None] | None = None,
+    after_live: Callable[[Path], None] | None = None,
 ) -> CompileCommandResult:
     """Run the compiler and always write a redacted, typed command manifest."""
 
@@ -212,6 +324,7 @@ def compile_catalog_command(
             runtime_lock=runtime_lock,
             before_publish=before_publish,
             after_backup=after_backup,
+            after_live=after_live,
         )
     except KeyboardInterrupt:
         _write_command_manifest(
@@ -237,7 +350,7 @@ def compile_catalog_command(
             error_code="catalog_validation",
         )
         return CompileCommandResult("failed", 1, None, error)
-    except (CatalogCompileError, CanonicalizationError, OSError) as error:
+    except Exception as error:
         compile_error = (
             error if isinstance(error, CatalogCompileError) else CatalogCompileError(str(error))
         )
@@ -252,6 +365,19 @@ def compile_catalog_command(
             error_code="catalog_compile",
         )
         return CompileCommandResult("failed", 1, None, compile_error)
+    except BaseException:
+        interruption = CatalogCompileError("catalog compilation was interrupted")
+        _write_command_manifest(
+            manifest_path,
+            terminal_status="interrupted",
+            catalog_source_sha256=source_sha256,
+            catalog_input_sha256=None,
+            output_sha256={},
+            protocol_ids=(),
+            runtime_lock=runtime_lock_reference,
+            error_code="interrupted",
+        )
+        return CompileCommandResult("interrupted", 130, None, interruption)
 
     _write_command_manifest(
         manifest_path,
@@ -262,6 +388,7 @@ def compile_catalog_command(
         protocol_ids=compilation.protocol_ids,
         runtime_lock=compilation.runtime_lock,
         error_code=None,
+        recovery_status=compilation.recovery_status,
     )
     return CompileCommandResult("succeeded", 0, compilation, None)
 
@@ -276,13 +403,16 @@ def verify_compiled_catalog(
 ) -> None:
     """Reject every non-canonical, tampered, incomplete, or mismatched artifact."""
 
-    _verify_compiled_catalog(
-        output_dir,
-        lock_path,
-        catalog_path=catalog_path,
-        prior_lock=prior_lock,
-        expected_runtime_lock=_runtime_lock_reference(runtime_lock),
-    )
+    catalog_root = lock_path.resolve().parent
+    with _CatalogPublicationLock(catalog_root):
+        _recover_incomplete_publication(catalog_root)
+        _verify_compiled_catalog(
+            output_dir,
+            lock_path,
+            catalog_path=catalog_path,
+            prior_lock=prior_lock,
+            expected_runtime_lock=_runtime_lock_reference(runtime_lock),
+        )
 
 
 def _compiled_documents(
@@ -537,7 +667,7 @@ def _write_generated_documents(
 def _write_canonical_document(path: Path, document: Mapping[str, object]) -> None:
     if not verify_digest(document):
         raise CatalogCompileError(f"generated document for {path.name} has an invalid digest")
-    path.write_bytes(canonical_bytes(document))
+    _write_bytes_durable(path, canonical_bytes(document))
 
 
 def _verify_compiled_catalog(
@@ -635,44 +765,268 @@ def _verify_record_digests(document: Mapping[str, object], filename: str) -> Non
             raise CatalogCompileError(f"{filename} record {index} has an invalid digest")
 
 
-def _new_sibling_staging_directory(catalog_root: Path) -> Path:
+def _new_sibling_staging_directory(catalog_root: Path, transaction_id: str) -> Path:
+    staging = catalog_root.parent / f".{catalog_root.name}-compile-stage-{transaction_id}"
+    staging.mkdir()
+    _fsync_directory(staging.parent)
+    return staging
+
+
+def _backup_path(catalog_root: Path, transaction_id: str) -> Path:
+    return catalog_root.parent / f".{catalog_root.name}-compile-backup-{transaction_id}"
+
+
+def _transaction_path(catalog_root: Path, transaction_id: str) -> Path:
+    return catalog_root.parent / f".{catalog_root.name}-compile-transaction-{transaction_id}.json"
+
+
+def _write_transaction(
+    catalog_root: Path,
+    *,
+    transaction_id: str,
+    staging: Path,
+    backup: Path,
+    source_sha256: str,
+    prior_lock_sha256: str | None,
+    runtime_lock: Mapping[str, str | None],
+) -> Path:
+    transaction = _transaction_path(catalog_root, transaction_id)
+    document = attach_digest(
+        {
+            "schema_version": _TRANSACTION_SCHEMA_VERSION,
+            "transaction_id": transaction_id,
+            "catalog_root": catalog_root.name,
+            "staging": staging.name,
+            "backup": backup.name,
+            "source_sha256": source_sha256,
+            "prior_lock_sha256": prior_lock_sha256,
+            "runtime_lock": dict(runtime_lock),
+        }
+    )
+    _write_bytes_durable(transaction, canonical_bytes(document))
+    return transaction
+
+
+def _recover_incomplete_publication(catalog_root: Path) -> str:
     parent = catalog_root.parent
-    return Path(tempfile.mkdtemp(prefix=f".{catalog_root.name}-compile-stage-", dir=parent))
+    transactions = sorted(parent.glob(f".{catalog_root.name}-compile-transaction-*.json"))
+    staging_paths = sorted(parent.glob(f".{catalog_root.name}-compile-stage-*"))
+    backup_paths = sorted(parent.glob(f".{catalog_root.name}-compile-backup-*"))
+    if not transactions:
+        if staging_paths or backup_paths:
+            raise CatalogRecoveryError(
+                "catalog recovery failed: orphaned publication state has no ownership journal"
+            )
+        return "not_needed"
+    if len(transactions) != 1:
+        raise CatalogRecoveryError(
+            "catalog recovery failed: multiple publication journals make ownership ambiguous"
+        )
+
+    transaction = transactions[0]
+    document = _read_transaction(transaction, catalog_root)
+    staging = parent / _required_string(document, "staging")
+    backup = parent / _required_string(document, "backup")
+    if set(staging_paths) - {staging} or set(backup_paths) - {backup}:
+        raise CatalogRecoveryError(
+            "catalog recovery failed: transaction state does not uniquely own "
+            "staging and backup paths"
+        )
+
+    root_exists = catalog_root.exists()
+    staging_exists = staging.exists()
+    backup_exists = backup.exists()
+    runtime_lock = _transaction_runtime_lock(document)
+    if not backup_exists and root_exists:
+        _remove_path(staging)
+        _remove_path(transaction)
+        return "discarded_unpublished" if staging_exists else "completed_live"
+    if backup_exists and not root_exists:
+        _validate_recovery_backup(backup, document, runtime_lock)
+        _durable_replace(backup, catalog_root)
+        _remove_path(staging)
+        _remove_path(transaction)
+        return "restored_prior"
+    if backup_exists and root_exists and not staging_exists:
+        try:
+            _verify_compiled_catalog(
+                catalog_root / "generated",
+                catalog_root / "catalog-lock.json",
+                catalog_path=catalog_root / "catalog.yaml",
+                expected_runtime_lock=runtime_lock,
+            )
+        except (CatalogCompileError, CatalogValidationError):
+            _validate_recovery_backup(backup, document, runtime_lock)
+            _restore_catalog_root(catalog_root, backup)
+            recovery_status = "restored_prior"
+        else:
+            _remove_path(backup)
+            recovery_status = "completed_live"
+        _remove_path(transaction)
+        return recovery_status
+    if root_exists and staging_exists and not backup_exists:
+        _remove_path(staging)
+        _remove_path(transaction)
+        return "discarded_unpublished"
+    raise CatalogRecoveryError(
+        "catalog recovery failed: publication journal describes an impossible or ambiguous state"
+    )
+
+
+def _read_transaction(path: Path, catalog_root: Path) -> Mapping[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CatalogRecoveryError(
+            "catalog recovery failed: transaction journal is unreadable"
+        ) from error
+    if not isinstance(value, Mapping) or not verify_digest(value):
+        raise CatalogRecoveryError("catalog recovery failed: transaction journal digest is invalid")
+    document = dict(value)
+    transaction_id = _required_string(document, "transaction_id")
+    if (
+        document.get("schema_version") != _TRANSACTION_SCHEMA_VERSION
+        or document.get("catalog_root") != catalog_root.name
+        or path != _transaction_path(catalog_root, transaction_id)
+        or document.get("staging")
+        != _new_sibling_staging_directory_name(catalog_root, transaction_id)
+        or document.get("backup") != _backup_path(catalog_root, transaction_id).name
+    ):
+        raise CatalogRecoveryError(
+            "catalog recovery failed: transaction journal ownership is invalid"
+        )
+    return document
+
+
+def _new_sibling_staging_directory_name(catalog_root: Path, transaction_id: str) -> str:
+    return f".{catalog_root.name}-compile-stage-{transaction_id}"
+
+
+def _transaction_runtime_lock(document: Mapping[str, object]) -> dict[str, str | None]:
+    runtime_lock = _required_mapping(document.get("runtime_lock"), "runtime_lock")
+    path = runtime_lock.get("path")
+    digest = runtime_lock.get("sha256")
+    if path is not None and not isinstance(path, str):
+        raise CatalogRecoveryError(
+            "catalog recovery failed: transaction runtime lock path is invalid"
+        )
+    if digest is not None and not isinstance(digest, str):
+        raise CatalogRecoveryError(
+            "catalog recovery failed: transaction runtime lock hash is invalid"
+        )
+    return {"path": path, "sha256": digest}
+
+
+def _validate_recovery_backup(
+    backup: Path,
+    transaction: Mapping[str, object],
+    runtime_lock: Mapping[str, str | None],
+) -> None:
+    prior_lock_sha256 = transaction.get("prior_lock_sha256")
+    if prior_lock_sha256 is None:
+        source = backup / "catalog.yaml"
+        if _optional_file_sha256(source) != _required_string(transaction, "source_sha256"):
+            raise CatalogRecoveryError(
+                "catalog recovery failed: uncompiled prior source does not match the journal"
+            )
+        try:
+            validate_catalog(source, repository_root=backup)
+        except CatalogValidationError as error:
+            raise CatalogRecoveryError(
+                "catalog recovery failed: prior source cannot be validated"
+            ) from error
+        return
+    if not isinstance(prior_lock_sha256, str):
+        raise CatalogRecoveryError("catalog recovery failed: prior lock hash is invalid")
+    lock_path = backup / "catalog-lock.json"
+    if _optional_file_sha256(lock_path) != prior_lock_sha256:
+        raise CatalogRecoveryError(
+            "catalog recovery failed: prior lock bytes do not match the journal"
+        )
+    _verify_compiled_catalog(
+        backup / "generated",
+        lock_path,
+        catalog_path=backup / "catalog.yaml",
+        expected_runtime_lock=runtime_lock,
+    )
 
 
 def _publish_catalog_root(
     catalog_root: Path,
     staging: Path,
     *,
+    backup: Path,
     after_backup: Callable[[Path], None] | None,
-) -> Path:
-    backup = catalog_root.parent / f".{catalog_root.name}-compile-backup-{uuid4().hex}"
+    after_live: Callable[[Path], None] | None,
+) -> None:
     try:
-        os.replace(catalog_root, backup)
+        _durable_replace(catalog_root, backup)
         if after_backup is not None:
             after_backup(backup)
-        os.replace(staging, catalog_root)
-    except OSError as error:
+        _durable_replace(staging, catalog_root)
+        if after_live is not None:
+            after_live(catalog_root)
+    except BaseException as error:
         if backup.exists():
             _restore_catalog_root(catalog_root, backup)
-        raise CatalogCompileError("atomic catalog publication failed") from error
-    except KeyboardInterrupt:
-        if backup.exists():
-            _restore_catalog_root(catalog_root, backup)
+        if isinstance(error, Exception):
+            raise CatalogCompileError("atomic catalog publication failed") from error
         raise
-    return backup
 
 
 def _restore_catalog_root(catalog_root: Path, backup: Path) -> None:
     failed = catalog_root.parent / f".{catalog_root.name}-compile-failed-{uuid4().hex}"
     try:
         if catalog_root.exists():
-            os.replace(catalog_root, failed)
-        os.replace(backup, catalog_root)
-    except OSError as error:
-        raise CatalogCompileError("catalog publication rollback failed") from error
-    if failed.exists():
-        shutil.rmtree(failed)
+            _durable_replace(catalog_root, failed)
+        _durable_replace(backup, catalog_root)
+    except BaseException as error:
+        if isinstance(error, Exception):
+            raise CatalogRecoveryError("catalog publication rollback failed") from error
+        raise
+    _remove_path(failed)
+
+
+def _durable_replace(source: Path, destination: Path) -> None:
+    os.replace(source, destination)
+    _fsync_directory(destination.parent)
+
+
+def _write_bytes_durable(path: Path, data: bytes) -> None:
+    temporary = path.parent / f".{path.name}.{uuid4().hex}.tmp"
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _durable_replace(temporary, path)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+    _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        if os.name != "nt":
+            raise
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        if os.name != "nt":
+            raise
+    finally:
+        os.close(descriptor)
 
 
 def _catalog_root(catalog_path: Path, output_dir: Path, lock_path: Path) -> Path:
@@ -737,6 +1091,7 @@ def _write_command_manifest(
     protocol_ids: tuple[str, ...],
     runtime_lock: Mapping[str, str | None],
     error_code: str | None,
+    recovery_status: str = "not_needed",
 ) -> None:
     document = attach_digest(
         {
@@ -759,24 +1114,13 @@ def _write_command_manifest(
                 "catalog_lock": LOCK_SCHEMA_VERSION,
             },
             "error_code": error_code,
+            "recovery_status": recovery_status,
             "unpaid_conformance": UNPAID_CONFORMANCE,
         }
     )
     data = canonical_bytes(document)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
-    )
-    temporary_path = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as temporary:
-            temporary.write(data)
-            temporary.flush()
-            os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
-    finally:
-        if temporary_path.exists():
-            temporary_path.unlink()
+    _write_bytes_durable(path, data)
 
 
 def _location_document(locations: Mapping[str, SourceLocation], pointer: str) -> dict[str, object]:
@@ -795,7 +1139,9 @@ def _protocol_ids(catalog: Mapping[str, Any]) -> list[str]:
     return [_required_string_value(value) for value in _required_list(references, "protocols")]
 
 
-def _optional_file_sha256(path: Path) -> str | None:
+def _optional_file_sha256(path: Path | None) -> str | None:
+    if path is None:
+        return None
     try:
         return _sha256(path.read_bytes())
     except OSError:

@@ -6,6 +6,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 from memrelay_eval.catalog.compiler import (
+    CatalogRecoveryError,
     compile_catalog_command,
     verify_compiled_catalog,
 )
@@ -26,6 +28,10 @@ GENERATED_FILENAMES = (
     "fixture-manifest.json",
     "traceability.json",
 )
+
+
+class _SimulatedTermination(BaseException):
+    pass
 
 
 def catalog_root(tmp_path: Path) -> Path:
@@ -220,6 +226,59 @@ def test_interruption_during_windows_safe_directory_swap_restores_prior_set(tmp_
     verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
 
 
+@pytest.mark.parametrize(
+    ("hook_name", "exception_type", "expected_status"),
+    [
+        ("before_publish", RuntimeError, "failed"),
+        ("after_backup", RuntimeError, "failed"),
+        ("after_live", RuntimeError, "failed"),
+        ("before_publish", _SimulatedTermination, "interrupted"),
+        ("after_backup", _SimulatedTermination, "interrupted"),
+        ("after_live", _SimulatedTermination, "interrupted"),
+    ],
+)
+def test_every_publish_hook_restores_prior_catalog_and_writes_typed_manifest(
+    tmp_path: Path,
+    hook_name: str,
+    exception_type: type[BaseException],
+    expected_status: str,
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    prior_lock = compile_paths(root)["lock"].read_bytes()
+    paths = compile_paths(root)
+    observed: list[tuple[bool, bool, bool]] = []
+
+    def abort(path: Path) -> None:
+        observed.append(
+            (
+                (root / "catalog.yaml").exists(),
+                (root.parent / path.name).exists(),
+                path.exists(),
+            )
+        )
+        raise exception_type("injected publish failure")
+
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        **{hook_name: abort},
+    )
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+
+    assert result.terminal_status == expected_status
+    assert manifest["terminal_status"] == expected_status
+    assert compiled_bytes(root) == before
+    assert paths["lock"].read_bytes() == prior_lock
+    assert observed
+    assert not list(root.parent.glob(".catalog-compile-stage-*"))
+    assert not list(root.parent.glob(".catalog-compile-backup-*"))
+    assert not list(root.parent.glob(".catalog-compile-transaction-*.json"))
+
+
 def test_interrupt_after_first_directory_move_restores_prior_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -248,6 +307,129 @@ def test_interrupt_after_first_directory_move_restores_prior_set(
     assert result.terminal_status == "interrupted"
     assert compiled_bytes(root) == before
     assert not list(root.parent.glob(".catalog-compile-backup-*"))
+
+
+@pytest.mark.parametrize("hook_name", ("after_backup", "after_live"))
+def test_process_termination_between_directory_moves_recovers_prior_catalog(
+    tmp_path: Path, hook_name: str
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    paths = compile_paths(root)
+    prior_lock = paths["lock"].read_bytes()
+    code = f"""
+import os
+from pathlib import Path
+from memrelay_eval.catalog.compiler import compile_catalog
+
+root = Path({str(root)!r})
+
+def terminate(_: Path) -> None:
+    os._exit(73)
+
+compile_catalog(
+    root / "catalog.yaml",
+    output_dir=root / "generated",
+    lock_path=root / "catalog-lock.json",
+    {hook_name}=terminate,
+)
+"""
+
+    completed = subprocess.run([sys.executable, "-c", code], check=False)
+
+    assert completed.returncode == 73
+    if hook_name == "after_backup":
+        assert not root.exists()
+    else:
+        assert root.exists()
+    verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
+    assert compiled_bytes(root) == before
+    assert paths["lock"].read_bytes() == prior_lock
+    assert not list(root.parent.glob(".catalog-compile-stage-*"))
+    assert not list(root.parent.glob(".catalog-compile-backup-*"))
+    assert not list(root.parent.glob(".catalog-compile-transaction-*.json"))
+
+
+def test_recovery_fails_closed_for_unowned_or_ambiguous_publication_state(tmp_path: Path) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    orphan = root.parent / ".catalog-compile-backup-unowned"
+    orphan.mkdir()
+
+    with pytest.raises(CatalogRecoveryError, match="ownership journal"):
+        verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
+
+
+def test_cross_process_compile_lock_has_one_writer_and_releases_after_winner_crash(
+    tmp_path: Path,
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    paths = compile_paths(root)
+    ready = tmp_path / "winner-ready"
+    code = f"""
+import time
+from pathlib import Path
+from memrelay_eval.catalog.compiler import compile_catalog
+
+root = Path({str(root)!r})
+ready = Path({str(ready)!r})
+
+def hold(_: Path) -> None:
+    ready.write_text("locked", encoding="utf-8")
+    time.sleep(60)
+
+compile_catalog(
+    root / "catalog.yaml",
+    output_dir=root / "generated",
+    lock_path=root / "catalog-lock.json",
+    before_publish=hold,
+)
+"""
+    winner = subprocess.Popen([sys.executable, "-c", code])
+    try:
+        deadline = time.monotonic() + 15
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists()
+        loser = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "memrelay_eval.cli.main",
+                "compile-catalog",
+                "--catalog",
+                str(paths["catalog"]),
+                "--output-dir",
+                str(paths["output"]),
+                "--lock",
+                str(paths["lock"]),
+                "--manifest",
+                str(paths["manifest"]),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert loser.returncode == 1
+        assert "already owned by another process" in loser.stdout
+        assert compiled_bytes(root) == before
+    finally:
+        winner.terminate()
+        winner.wait(timeout=15)
+
+    recovery_result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+    recovery_manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+    assert recovery_result.terminal_status == "succeeded"
+    assert recovery_manifest["recovery_status"] == "discarded_unpublished"
+    assert compiled_bytes(root) == before
 
 
 def test_staging_is_a_same_volume_sibling_on_windows_and_posix(tmp_path: Path) -> None:
@@ -351,6 +533,7 @@ def test_command_manifests_are_complete_and_redacted(tmp_path: Path, terminal: s
         "terminal_status",
         "schema_versions",
         "generator_version",
+        "recovery_status",
         "unpaid_conformance",
         "digest",
     } <= set(manifest)

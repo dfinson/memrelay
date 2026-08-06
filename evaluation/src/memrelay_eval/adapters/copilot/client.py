@@ -15,6 +15,7 @@ from hashlib import sha256
 from pathlib import Path
 
 from memrelay_eval.adapters.copilot.catalog import CatalogArchive, archive_native_catalog
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import RuntimeIdentity
 from memrelay_eval.domain.errors import ConformancePauseError, RuntimeLockError
 from memrelay_eval.orchestration.control import LockRepository, lock_digest
@@ -105,12 +106,7 @@ def _raw_response_bytes(response: object) -> bytes:
         if isinstance(raw, bytes):
             return raw
     if isinstance(response, list) and all(hasattr(item, "to_dict") for item in response):
-        return json.dumps(
-            {"models": [item.to_dict() for item in response]},
-            ensure_ascii=True,
-            separators=(",", ":"),
-            sort_keys=True,
-        ).encode("utf-8")
+        return canonical_bytes({"models": [item.to_dict() for item in response]})
     raise ConformancePauseError("catalog_raw_missing", "SDK catalog response cannot be archived")
 
 

@@ -188,3 +188,56 @@ jobs:
       - name: Enforce precision@k baseline
         run: python tests/eval/generate_baseline.py --check
 
+  evaluator-conformance:
+    name: evaluator conformance (${{ matrix.os }}, py3.13)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: evaluation/uv.lock
+
+      - name: Install locked evaluator dependencies and run conformance (POSIX)
+        if: runner.os != 'Windows'
+        working-directory: evaluation
+        shell: bash
+        run: |
+          env -u COPILOT_TOKEN -u GH_TOKEN -u GITHUB_TOKEN -u OPENAI_API_KEY \
+            uv sync --locked --extra dev
+          env -u COPILOT_TOKEN -u GH_TOKEN -u GITHUB_TOKEN -u OPENAI_API_KEY \
+            COPILOT_SKIP_CLI_DOWNLOAD=1 uv lock --check
+          env -u COPILOT_TOKEN -u GH_TOKEN -u GITHUB_TOKEN -u OPENAI_API_KEY \
+            COPILOT_SKIP_CLI_DOWNLOAD=1 uv run pytest
+          env -u COPILOT_TOKEN -u GH_TOKEN -u GITHUB_TOKEN -u OPENAI_API_KEY \
+            COPILOT_SKIP_CLI_DOWNLOAD=1 uv run memrelay-eval compile-catalog
+          git diff --exit-code -- catalog
+
+      - name: Install locked evaluator dependencies and run conformance (Windows)
+        if: runner.os == 'Windows'
+        working-directory: evaluation
+        shell: pwsh
+        run: |
+          $credentialNames = "COPILOT_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "OPENAI_API_KEY"
+          foreach ($name in $credentialNames) {
+            Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+          }
+          $env:COPILOT_SKIP_CLI_DOWNLOAD = "1"
+          uv sync --locked --extra dev
+          uv lock --check
+          uv run pytest
+          uv run memrelay-eval compile-catalog
+          git diff --exit-code -- catalog

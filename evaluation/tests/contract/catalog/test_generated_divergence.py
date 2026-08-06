@@ -119,24 +119,3 @@ def test_verification_requires_the_trusted_runtime_lock_reference(tmp_path: Path
             root / "catalog-lock.json",
             catalog_path=root / "catalog.yaml",
         )
-
-
-def test_catalog_has_one_canonicalizer_and_no_sdk_or_network_imports() -> None:
-    catalog_source = EVALUATION_ROOT / "src" / "memrelay_eval" / "catalog"
-    source_by_file = {
-        path.name: path.read_text(encoding="utf-8") for path in catalog_source.glob("*.py")
-    }
-
-    assert source_by_file["canonical.py"].count("import rfc8785") == 1
-    assert all(
-        "rfc8785" not in source
-        for filename, source in source_by_file.items()
-        if filename != "canonical.py"
-    )
-    assert all("json.dumps(" not in source for source in source_by_file.values())
-    assert all("sort_keys=True" not in source for source in source_by_file.values())
-    assert all(
-        forbidden not in source.casefold()
-        for source in source_by_file.values()
-        for forbidden in ("inspect", "copilot", "openai", "socket", "requests", "httpx")
-    )

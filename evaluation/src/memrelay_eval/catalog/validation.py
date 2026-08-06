@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -215,7 +216,7 @@ def _semantic_diagnostics(loaded: LoadedCatalog) -> list[CatalogDiagnostic]:
 
 
 def _semantic_projection(catalog: Mapping[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in catalog.items() if key != "catalog_version"}
+    return deepcopy({key: value for key, value in catalog.items() if key != "catalog_version"})
 
 
 def _parse_version(value: object) -> tuple[int, int, int] | None:
