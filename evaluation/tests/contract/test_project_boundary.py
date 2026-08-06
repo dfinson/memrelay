@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,6 +25,16 @@ def test_product_metadata_does_not_include_evaluator() -> None:
     product_metadata = (REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert "memrelay-eval" not in product_metadata
     assert "memrelay_eval" not in product_metadata
+
+
+def test_evaluator_wheel_packages_the_authoritative_schemas() -> None:
+    evaluator_metadata = tomllib.loads(
+        (EVALUATION_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert evaluator_metadata["tool"]["hatch"]["build"]["targets"]["wheel"]["force-include"] == {
+        "schemas": "memrelay_eval/schemas"
+    }
 
 
 def test_manifest_schema_covers_version_1_fields_and_scope_rules() -> None:

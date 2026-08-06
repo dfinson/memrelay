@@ -57,6 +57,18 @@ class IneligibleEvidenceError(DomainError):
     """Evidence from a non-conformant adapter cannot support inclusion."""
 
 
+class InvalidGovernanceRequestError(DomainError):
+    """A repository authorization request does not satisfy the frozen contract."""
+
+
+class CrossRepositoryDeniedError(DomainError):
+    """Repository access was denied before any repository operation."""
+
+    def __init__(self, reason: object) -> None:
+        self.reason = reason
+        super().__init__(f"cross-repository execution denied: {reason}")
+
+
 class ConformancePauseError(DomainError):
     """A locked execution substrate drifted and must not be substituted."""
 

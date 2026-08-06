@@ -1,6 +1,6 @@
 # Story 7.3: Deny Cross-Repository Execution by Default
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -25,25 +25,25 @@ so that no private or unauthorized repository is accessed before the complete go
 
 ## Tasks / Subtasks
 
-- [ ] Define repository and authorization identities without conflation (AC: 1-3)
-  - [ ] Model opaque task-repository identity, requested repository identity, authenticated principal, authorization/purpose/policy versions, decision, validity window, and revocation state.
-  - [ ] Keep repository authorization identity separate from memory namespace/owner, git remote display name, cache key, treatment assignment, experiment/run identity, telemetry resource, and report label.
-  - [ ] Treat owner/org grouping and namespace membership as retrieval context only, never authorization.
-- [ ] Add an unavoidable pre-discovery deny guard (AC: 1)
-  - [ ] Place the guard before repository resolution/discovery, remote inspection, clone/worktree creation, cache lookup, assignment, credential acquisition, task materialization, and exposure.
-  - [ ] Deny `cross-repo` by default and deny any repository identity unequal to the already-authorized task repository.
-  - [ ] Reject environment flags, force switches, fallback repositories, permissive defaults, stale “last approved” artifacts, and operator bypasses.
-- [ ] Record privacy-minimized denial evidence (AC: 2)
-  - [ ] Append only the AC2 payload: opaque treatment-neutral request identity, authorization decision, policy version/hash, and typed reason through domain ports. Any ledger-envelope time is infrastructure metadata and must not carry or derive repository identity.
-  - [ ] Prove telemetry, manifests, logs, errors, and command output contain no repository name/path/content/hash derived from private content, credential, remote metadata, username, or treatment label.
-- [ ] Enforce architecture reachability and revocation (AC: 3)
-  - [ ] Keep cross-repository adapters absent from ordinary composition; require a verified, current Story 7.4 qualification artifact at the only enabling port.
-  - [ ] Recheck authorization and governance bundle at entry and immediately before each start; revocation atomically closes admission and trips the Story 6.6 breaker.
-  - [ ] Preserve already-started evidence under frozen policy without starting new discovery/work or selecting a replacement repository.
-- [ ] Add deny, privacy, and structural tests (AC: 1-3)
-  - [ ] Test all CLI/config/environment entry paths, same-owner/different-repo, aliases/remotes, forks, case/path normalization, stale cache, expired/revoked artifacts, race-to-start, and restart.
-  - [ ] Use only synthetic repository identifiers and local fakes; assert forbidden discovery/clone/cache/credential methods were never called.
-  - [ ] Add import/composition tests proving non-cross-repository stages cannot reach cross-repository adapters.
+- [x] Define repository and authorization identities without conflation (AC: 1-3)
+  - [x] Model opaque task-repository identity, requested repository identity, authenticated principal, authorization/purpose/policy versions, decision, validity window, and revocation state.
+  - [x] Keep repository authorization identity separate from memory namespace/owner, git remote display name, cache key, treatment assignment, experiment/run identity, telemetry resource, and report label.
+  - [x] Treat owner/org grouping and namespace membership as retrieval context only, never authorization.
+- [x] Add an unavoidable pre-discovery deny guard (AC: 1)
+  - [x] Place the guard before repository resolution/discovery, remote inspection, clone/worktree creation, cache lookup, assignment, credential acquisition, task materialization, and exposure.
+  - [x] Deny `cross-repo` by default and deny any repository identity unequal to the already-authorized task repository.
+  - [x] Reject environment flags, force switches, fallback repositories, permissive defaults, stale “last approved” artifacts, and operator bypasses.
+- [x] Record privacy-minimized denial evidence (AC: 2)
+  - [x] Append only the AC2 payload: opaque treatment-neutral request identity, authorization decision, policy version/hash, and typed reason through domain ports. Any ledger-envelope time is infrastructure metadata and must not carry or derive repository identity.
+  - [x] Prove telemetry, manifests, logs, errors, and command output contain no repository name/path/content/hash derived from private content, credential, remote metadata, username, or treatment label.
+- [x] Enforce architecture reachability and revocation (AC: 3)
+  - [x] Keep cross-repository adapters absent from ordinary composition; require a verified, current Story 7.4 qualification artifact at the only enabling port.
+  - [x] Recheck authorization and governance bundle at entry and immediately before each start; revocation atomically closes admission and trips the Story 6.6 breaker.
+  - [x] Preserve already-started evidence under frozen policy without starting new discovery/work or selecting a replacement repository.
+- [x] Add deny, privacy, and structural tests (AC: 1-3)
+  - [x] Test all CLI/config/environment entry paths, same-owner/different-repo, aliases/remotes, forks, case/path normalization, stale cache, expired/revoked artifacts, race-to-start, and restart.
+  - [x] Use only synthetic repository identifiers and local fakes; assert forbidden discovery/clone/cache/credential methods were never called.
+  - [x] Add import/composition tests proving non-cross-repository stages cannot reach cross-repository adapters.
 
 ## Dependencies and Prerequisites
 
@@ -119,12 +119,45 @@ No `evaluation/` tree exists yet. Use predecessor story contracts when implement
 
 ### Agent Model Used
 
-To be recorded by the implementing dev agent.
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- `PYTHONPATH=<worktree>/evaluation/src py -3.12 -m pytest evaluation/tests/unit/domain/test_cross_repository_deny.py evaluation/tests/contract/test_pre_discovery_authorization.py evaluation/tests/fault/test_governance_revocation.py evaluation/tests/architecture/test_cross_repository_unreachable.py`
+- `PYTHONPATH=<worktree>/evaluation/src py -3.12 -m pytest evaluation/tests`
+- `PYTHONPATH=<worktree>/src;<worktree>/evaluation/src py -3.12 -m pytest`
+- `py -3.12 -m ruff check .`
+- `py -3.12 -m ruff format --check .`
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added opaque, runtime-validated governance identities and privacy-minimized typed denial evidence.
+- Added a fail-closed pre-discovery controller that rejects cross-repository stages and repository mismatches before invoking repository operations.
+- Made the external governance port own an atomic synchronous or asynchronous admit-and-start boundary so revocation cannot race a newly started operation.
+- Kept the future Story 7.4 qualification path absent; no provider, private repository, Copilot, or OpenAI call is introduced.
+- Added synthetic fake-provider tests for rejection ordering, malformed values, malformed authority results, revocation, async admission, and CLI privacy.
+- Added a Python 3.13 CI conformance job that installs and tests the separate evaluator project without provider credentials or external adapters.
+- Replaced the environment-only test with direct-controller and CLI environment-alias matrices that exercise every local forbidden repository operation spy.
+- Added opaque synthetic same-owner, alias, fork, case, path, and stale-cache representation coverage without resolving or retaining repository labels.
+- Added schema-shape, real denial-payload, and schema-drift contracts with only standard-library JSON handling.
+- Documented the future authority-owned atomic admission obligation; Story 7.4 remains the only future consumer of that seam.
+- Completed independent review and the final contract-coverage closure; Story 7.3 is `done`.
 
 ### File List
+
+- `evaluation/schemas/repository-authorization.schema.json`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/governance.py`
+- `evaluation/src/memrelay_eval/domain/ids.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/orchestration/__init__.py`
+- `evaluation/src/memrelay_eval/orchestration/control.py`
+- `evaluation/src/memrelay_eval/orchestration/stages.py`
+- `evaluation/tests/architecture/test_cross_repository_unreachable.py`
+- `evaluation/tests/contract/test_pre_discovery_authorization.py`
+- `evaluation/tests/contract/test_repository_authorization_schema.py`
+- `evaluation/tests/fault/test_governance_revocation.py`
+- `evaluation/tests/unit/domain/test_cross_repository_deny.py`
+- `.github/workflows/ci.yml`

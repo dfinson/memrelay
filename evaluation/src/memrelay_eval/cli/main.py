@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
     bootstrap,
     lock_models,
+    run_stage,
     show_foundation_status,
     validate_authored_catalog,
 )
@@ -21,6 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
         "foundation", help="show current evaluator foundation status"
     )
     foundation.set_defaults(handler=show_foundation_status)
+    run = subcommands.add_parser("run", help="request a recognized evaluator stage")
+    run.add_argument("--stage", choices=("cross-repo",), required=True)
+    run.set_defaults(handler=run_stage)
     bootstrap_parser = subcommands.add_parser(
         "bootstrap", help="explicitly verify and lock the official Copilot runtime"
     )
@@ -51,8 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     handler = getattr(args, "handler", None)
     return 0 if handler is None else handler(args)
 

@@ -1,1 +1,1 @@
-"""Application services that coordinate domain locks through ports."""
+"""Application services that coordinate evaluator domain contracts through ports."""

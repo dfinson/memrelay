@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.local/schemas/repository-authorization.schema.json",
+  "title": "Repository authorization denial evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["request_id", "decision", "policy_version", "reason"],
+  "properties": {
+    "request_id": {
+      "type": "string",
+      "pattern": "^govrequest_[a-f0-9]{32}$"
+    },
+    "decision": {
+      "const": "denied"
+    },
+    "policy_version": {
+      "type": "string",
+      "pattern": "^policy_[a-f0-9]{32}$"
+    },
+    "reason": {
+      "enum": [
+        "cross_repository_stage_disabled",
+        "repository_mismatch",
+        "authorization_not_current",
+        "authorization_revoked"
+      ]
+    }
+  }
+}

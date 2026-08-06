@@ -130,6 +130,7 @@ GPT-5.6 Terra
 - Added source-located golden and unit coverage for malformed, unsafe, composite, duplicate, treatment-revealing, unresolved, and version-invalid catalogs.
 - Added dedicated loader coverage for successful parsing, typed parser diagnostics, source locations, nested duplicate keys, scalar mapping-key rejection, and prior-lock immutability.
 - Added full required-scenario-field and grader-reference closure matrices.
+- Packaged authoritative schemas in the evaluator wheel and load them through package resources so non-editable CI installs do not depend on checkout or interpreter paths.
 
 ### File List
 

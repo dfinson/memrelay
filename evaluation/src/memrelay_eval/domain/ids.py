@@ -99,3 +99,51 @@ class InclusionId(OpaqueId):
 
 class RetentionPolicyId(OpaqueId):
     prefix = "ret"
+
+
+class RepositoryId(OpaqueId):
+    """Opaque repository authorization identity, never a remote or namespace."""
+
+    prefix = "repository"
+
+
+class PrincipalId(OpaqueId):
+    """Opaque authenticated-principal identity."""
+
+    prefix = "principal"
+
+
+class AuthorizationId(OpaqueId):
+    """Opaque identity of an authorization grant."""
+
+    prefix = "authorization"
+
+
+class AuthorizationVersionId(OpaqueId):
+    """Opaque version of an authorization grant."""
+
+    prefix = "authorizationversion"
+
+
+class PurposeId(OpaqueId):
+    """Opaque identity of the authorized purpose."""
+
+    prefix = "purpose"
+
+
+class PurposeVersionId(OpaqueId):
+    """Opaque version of the authorized purpose."""
+
+    prefix = "purposeversion"
+
+
+class GovernanceRequestId(OpaqueId):
+    """Opaque identity used in privacy-minimized denial evidence."""
+
+    prefix = "govrequest"
+
+
+class PolicyVersionId(OpaqueId):
+    """Opaque version or hash identity for the governing policy."""
+
+    prefix = "policy"

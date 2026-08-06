@@ -8,22 +8,39 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from memrelay_eval.adapters.copilot.catalog import eligible_models
-from memrelay_eval.adapters.copilot.client import CopilotSdkClient, bootstrap_runtime
-from memrelay_eval.adapters.copilot.session import qualify_native_catalog
+from memrelay_eval.application.copilot_services import (
+    CopilotSdkClient,
+    bootstrap_runtime,
+    eligible_models,
+    qualify_native_catalog,
+)
 from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
 from memrelay_eval.domain.entities import QualificationCaps
-from memrelay_eval.domain.errors import ConformancePauseError
+from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
 from memrelay_eval.orchestration.control import (
     LockRepository,
     reuse_or_reject_model_lock,
     write_model_lock,
 )
+from memrelay_eval.orchestration.stages import refuse_cross_repository_stage
 
 
 def show_foundation_status(_: Namespace) -> int:
     print("memrelay-eval foundation: unpaid conformance adapters only")
     return 0
+
+
+def run_stage(args: Namespace) -> int:
+    """Handle the only currently recognized execution-stage request."""
+
+    if args.stage != "cross-repo":
+        raise ValueError("unsupported evaluator stage")
+    try:
+        refuse_cross_repository_stage()
+    except CrossRepositoryDeniedError as error:
+        print(f"execution denied: {error.reason}")
+        return 2
+    raise AssertionError("cross-repository execution must remain unavailable in evaluator v1")
 
 
 def bootstrap(args: Namespace) -> int:
