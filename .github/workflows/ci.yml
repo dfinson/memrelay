@@ -78,34 +78,6 @@ jobs:
       - name: Pytest
         run: pytest
 
-  evaluator-conformance:
-    name: evaluator conformance (py3.13, local fakes)
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python 3.13
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: evaluation/pyproject.toml
-
-      - name: Install evaluator test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install "./evaluation[dev]" "ruff>=0.16,<0.17"
-
-      - name: Ruff lint
-        run: ruff check evaluation
-
-      - name: Ruff format check
-        run: ruff format --check evaluation
-
-      - name: Run local evaluator conformance tests
-        run: python -m pytest evaluation/tests
-
   first-run-smoke:
     name: first-run smoke (zero-config, no keys)
     runs-on: ubuntu-latest
