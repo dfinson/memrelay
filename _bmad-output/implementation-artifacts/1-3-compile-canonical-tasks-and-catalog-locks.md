@@ -125,10 +125,10 @@ GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
-- 2026-08-06T11:47:33-04:00 - Full merged evaluator suite: 406 passed under CPython 3.13.5 on native Windows and CPython 3.13.14 under isolated WSL validation after reconciling Story 7.3.
-- 2026-08-06T11:47:33-04:00 - Focused Story 1.3 canonical/compiler, crash-recovery, ownership-lock, architecture, and CRLF portability suite: 115 passed.
-- 2026-08-06T11:47:33-04:00 - `uv lock --check`, clean canonical regeneration byte comparison, root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
-- 2026-08-06T11:47:33-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
+- 2026-08-06T13:05:47-04:00 - Full merged evaluator suite: 421 passed under CPython 3.13.5 on native Windows and CPython 3.13.14 under isolated WSL validation after reconciling Story 7.3.
+- 2026-08-06T13:05:47-04:00 - Focused Story 1.3 canonical/compiler, crash-recovery, ownership-lock, architecture, CRLF portability, custom-output, and receipt-durability suite: 129 passed.
+- 2026-08-06T13:05:47-04:00 - `uv lock --check`, clean canonical regeneration byte comparison, root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
+- 2026-08-06T13:05:47-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
 
 ### Completion Notes List
 
@@ -138,6 +138,8 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - Added redacted typed command manifests for successful, failed, and interrupted compiles, including recovery state; fixture content validation and eligibility remain explicitly not performed.
 - Added deterministic clean-process, RFC vector, Unicode/number boundary, digest omission, uppercase digest, tamper, AST/import-graph evasion, no-network, crash, concurrency, Windows-path, same-volume, and manifest contract coverage.
 - Added hermetic Python 3.13 evaluator conformance CI on Linux and Windows, including locked dependency installation and regeneration divergence checks.
+- Made catalog locks history-independent, moved change classification to command evidence, normalized checkout line endings for source hashes, and enforced exact custom output sets.
+- Hardened rollback, post-publish interruption receipts, catalog-root CWD refusal, retry bounds, and artifact-to-receipt fsync ordering.
 
 ### File List
 

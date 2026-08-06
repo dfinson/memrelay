@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from memrelay_eval.catalog import compiler as compiler_module
+from memrelay_eval.catalog import validation as validation_module
+from memrelay_eval.catalog.canonical import attach_digest, canonical_bytes
 from memrelay_eval.catalog.compiler import (
+    CatalogCompileError,
     CatalogRecoveryError,
     compile_catalog_command,
     verify_compiled_catalog,
@@ -154,6 +158,299 @@ def test_compile_preserves_authored_scenario_and_reference_order(tmp_path: Path)
     assert (
         assignment_inputs["assignment_inputs"][0]["protocol_ids"] == second_scenario["protocol_ids"]
     )
+
+
+def test_content_change_lock_is_history_independent_and_freshly_verifiable(tmp_path: Path) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    compile_in_process(root)
+    paths["catalog"].write_text(
+        paths["catalog"]
+        .read_text(encoding="utf-8")
+        .replace('catalog_version: "1.0.0"', 'catalog_version: "1.0.1"')
+        .replace("Validate the executable catalog", "Validate changed catalog content"),
+        encoding="utf-8",
+    )
+
+    changed = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+    changed_bytes = compiled_bytes(root)
+    changed_lock = json.loads(paths["lock"].read_text(encoding="utf-8"))
+    changed_manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+
+    assert changed.terminal_status == "succeeded"
+    assert "change_kind" not in changed_lock
+    assert changed_manifest["catalog_change_kind"] == "content"
+    verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
+
+    unchanged = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+
+    assert unchanged.terminal_status == "succeeded"
+    assert compiled_bytes(root) == changed_bytes
+    assert (
+        json.loads(paths["manifest"].read_text(encoding="utf-8"))["catalog_change_kind"] == "none"
+    )
+
+
+def test_custom_output_directory_is_locked_verified_and_exact(tmp_path: Path) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    output = root / "outputs"
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=output,
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+    lock = json.loads(paths["lock"].read_text(encoding="utf-8"))
+
+    assert result.terminal_status == "succeeded"
+    assert {document["path"] for document in lock["generated_outputs"].values()} == {
+        f"outputs/{filename}" for filename in GENERATED_FILENAMES
+    }
+    verify_compiled_catalog(output, paths["lock"], catalog_path=paths["catalog"])
+
+    (output / "rogue.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(CatalogCompileError, match="undeclared artifact"):
+        verify_compiled_catalog(output, paths["lock"], catalog_path=paths["catalog"])
+    (output / "rogue.json").unlink()
+
+    lock["generated_outputs"]["tasks.json"]["path"] = "generated/tasks.json"
+    paths["lock"].write_bytes(canonical_bytes(attach_digest(lock)))
+    with pytest.raises(CatalogCompileError, match="path is invalid"):
+        verify_compiled_catalog(output, paths["lock"], catalog_path=paths["catalog"])
+
+
+@pytest.mark.parametrize("rollback_failure", ("live_to_failed", "backup_to_live"))
+def test_rollback_failure_preserves_recoverable_prior_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rollback_failure: str
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    paths = compile_paths(root)
+    original_replace = compiler_module._durable_replace
+
+    def fail_rollback(source: Path, destination: Path) -> None:
+        if rollback_failure == "live_to_failed" and destination.name.startswith(
+            ".catalog-compile-failed-"
+        ):
+            raise OSError("injected live-to-failed rollback failure")
+        if (
+            rollback_failure == "backup_to_live"
+            and source.name.startswith(".catalog-compile-backup-")
+            and destination == root
+        ):
+            raise OSError("injected backup-to-live rollback failure")
+        original_replace(source, destination)
+
+    monkeypatch.setattr(compiler_module, "_durable_replace", fail_rollback)
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        after_live=lambda _: (_ for _ in ()).throw(RuntimeError("post-live failure")),
+    )
+
+    backups = list(root.parent.glob(".catalog-compile-backup-*"))
+    assert result.terminal_status == "failed"
+    assert backups
+    assert compiled_bytes(backups[0]) == before
+    assert list(root.parent.glob(".catalog-compile-transaction-*.json"))
+    if not root.exists():
+        fallback_manifest = root.parent / ".catalog-compile-manifest.json"
+        assert (
+            json.loads(fallback_manifest.read_text(encoding="utf-8"))["terminal_status"] == "failed"
+        )
+
+    monkeypatch.setattr(compiler_module, "_durable_replace", original_replace)
+    if root.exists():
+        verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
+    else:
+        verify_compiled_catalog(
+            root / "generated",
+            root / "catalog-lock.json",
+            catalog_path=root / "catalog.yaml",
+        )
+    assert root.exists()
+    assert not list(root.parent.glob(".catalog-compile-backup-*"))
+    assert not list(root.parent.glob(".catalog-compile-transaction-*.json"))
+
+
+@pytest.mark.parametrize("hook_name", ("after_publish_verify", "before_manifest", "after_manifest"))
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, _SimulatedTermination))
+def test_post_publish_interruption_keeps_truthful_hash_receipt(
+    tmp_path: Path, hook_name: str, exception_type: type[BaseException]
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    paths = compile_paths(root)
+    paths["catalog"].write_text(
+        paths["catalog"]
+        .read_text(encoding="utf-8")
+        .replace('catalog_version: "1.0.0"', 'catalog_version: "1.0.1"')
+        .replace("Validate the executable catalog", "Interrupted publication catalog"),
+        encoding="utf-8",
+    )
+
+    def interrupt(_: object) -> None:
+        raise exception_type()
+
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        **{hook_name: interrupt},
+    )
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+
+    assert result.terminal_status == "interrupted"
+    assert manifest["terminal_status"] == "interrupted"
+    assert manifest["canonical_output_sha256"]
+    assert manifest["catalog_input_sha256"] is not None
+    if hook_name == "after_publish_verify":
+        assert compiled_bytes(root) == before
+    else:
+        verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
+
+
+@pytest.mark.parametrize("exception_type", (KeyboardInterrupt, _SimulatedTermination))
+def test_interruption_inside_post_publish_verification_restores_prior_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_type: type[BaseException]
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    paths = compile_paths(root)
+    paths["catalog"].write_text(
+        paths["catalog"]
+        .read_text(encoding="utf-8")
+        .replace('catalog_version: "1.0.0"', 'catalog_version: "1.0.1"')
+        .replace("Validate the executable catalog", "Verification interruption catalog"),
+        encoding="utf-8",
+    )
+    original_verify = compiler_module._verify_compiled_catalog
+    call_count = 0
+
+    def interrupt_live_verify(*args: object, **kwargs: object) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise exception_type()
+        original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(compiler_module, "_verify_compiled_catalog", interrupt_live_verify)
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+
+    assert result.terminal_status == "interrupted"
+    assert call_count == 2
+    assert compiled_bytes(root) == before
+    assert manifest["canonical_output_sha256"]
+    assert manifest["catalog_input_sha256"] is not None
+
+
+def test_catalog_artifacts_sync_before_the_attesting_command_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    events: list[tuple[str, str]] = []
+    original_sync = compiler_module._fsync_directory
+    original_manifest = compiler_module._write_command_manifest
+
+    def record_sync(path: Path) -> None:
+        events.append(("sync", path.name))
+        original_sync(path)
+
+    def record_manifest(*args: object, **kwargs: object) -> None:
+        events.append(("manifest", "compile-manifest.json"))
+        original_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(compiler_module, "_fsync_directory", record_sync)
+    monkeypatch.setattr(compiler_module, "_write_command_manifest", record_manifest)
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+    manifest_index = events.index(("manifest", "compile-manifest.json"))
+
+    assert result.terminal_status == "succeeded"
+    assert ("sync", "generated") in events[:manifest_index]
+    assert ("sync", "catalog") in events[:manifest_index]
+
+
+def test_catalog_root_working_directory_is_rejected_without_mutation(tmp_path: Path) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    before = compiled_bytes(root)
+    paths = compile_paths(root)
+    command = [
+        sys.executable,
+        "-m",
+        "memrelay_eval.cli.main",
+        "compile-catalog",
+        "--catalog",
+        str(paths["catalog"]),
+        "--output-dir",
+        str(paths["output"]),
+        "--lock",
+        str(paths["lock"]),
+        "--manifest",
+        str(paths["manifest"]),
+    ]
+
+    completed = subprocess.run(command, cwd=root, check=False, capture_output=True, text=True)
+
+    assert completed.returncode == 1
+    assert "working directory outside the catalog root" in completed.stdout
+    assert compiled_bytes(root) == before
+
+
+def test_compiler_enforces_allowed_retries_when_schema_is_loosened(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    schema = json.loads((EVALUATION_ROOT / "schemas" / "scenario.schema.json").read_text())
+    schema["$defs"]["scenario"]["properties"]["allowed_retries"] = {"type": "integer"}
+    monkeypatch.setattr(validation_module, "_load_schema", lambda: schema)
+    paths["catalog"].write_text(
+        paths["catalog"]
+        .read_text(encoding="utf-8")
+        .replace("allowed_retries: 0", "allowed_retries: 2"),
+        encoding="utf-8",
+    )
+
+    result = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+    )
+
+    assert result.terminal_status == "failed"
+    assert result.error is not None
+    assert "allowed_retries must be an integer" in str(result.error)
 
 
 def test_compile_retains_good_output_on_validation_failure_and_writes_failure_manifest(
