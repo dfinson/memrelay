@@ -127,6 +127,20 @@ def test_valid_catalog_is_schema_2020_12_and_semantically_closed(tmp_path: Path)
     assert result.source_path == "catalog.yaml"
 
 
+def test_catalog_source_path_is_relative_to_the_current_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkout = tmp_path / "checkout"
+    source = checkout / "evaluation" / "catalog" / "catalog.yaml"
+    source.parent.mkdir(parents=True)
+    source.write_text(valid_catalog(), encoding="utf-8")
+    monkeypatch.chdir(checkout)
+
+    result = validate_catalog(source)
+
+    assert result.source_path == "evaluation/catalog/catalog.yaml"
+
+
 def test_pinned_schema_declares_json_schema_draft_2020_12() -> None:
     schema = (Path(__file__).parents[3] / "schemas" / "scenario.schema.json").read_text(
         encoding="utf-8"

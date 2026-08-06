@@ -73,8 +73,13 @@ def _load_schema() -> Mapping[str, Any]:
     return json.loads(source_schema.read_text(encoding="utf-8"))
 
 
-def _repository_root() -> Path:
-    return Path(__file__).parents[4]
+def _default_repository_root(path: Path) -> Path:
+    working_directory = Path.cwd().resolve()
+    try:
+        path.resolve().relative_to(working_directory)
+    except ValueError:
+        return path.resolve().parent
+    return working_directory
 
 
 def _pointer(parts: object) -> str:
@@ -334,7 +339,10 @@ def validate_catalog(
     """Validate one authored YAML catalog without writing artifacts or locks."""
 
     try:
-        loaded = load_catalog(path, repository_root=repository_root or _repository_root())
+        loaded = load_catalog(
+            path,
+            repository_root=repository_root or _default_repository_root(path),
+        )
     except CatalogLoadError as error:
         raise CatalogValidationError(error.diagnostics) from error
     schema = _load_schema()
