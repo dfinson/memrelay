@@ -125,10 +125,10 @@ GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
-- 2026-08-05T19:57:47-04:00 - `uv run pytest` in `evaluation/`: 202 passed under CPython 3.13.14.
-- 2026-08-05T19:57:47-04:00 - Focused canonical/compiler contract suite: 35 passed.
-- 2026-08-05T19:57:47-04:00 - Root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
-- 2026-08-05T19:57:47-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
+- 2026-08-05T20:08:08-04:00 - `uv run pytest` in `evaluation/`: 245 passed under CPython 3.13.14 after reconciling the durable CAS and runtime-lock stories.
+- 2026-08-05T20:08:08-04:00 - Focused canonical/compiler contract suite: 35 passed.
+- 2026-08-05T20:08:08-04:00 - Root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
+- 2026-08-05T20:08:08-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
 
 ### Completion Notes List
 
