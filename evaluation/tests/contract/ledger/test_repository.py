@@ -3,12 +3,25 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from multiprocessing import get_context
+from threading import Thread
 
 import pytest
-from memrelay_eval.adapters.fakes import InMemoryLedger
-from memrelay_eval.domain.entities import ArtifactLink, ArtifactRef, InclusionDecision
+from memrelay_eval.adapters.fakes import InMemoryLedger, InMemoryTelemetry
+from memrelay_eval.domain.entities import (
+    ArtifactLink,
+    ArtifactRef,
+    Attempt,
+    AttemptTerminal,
+    ExposureDecision,
+    FreshIsolationAttestation,
+    InclusionDecision,
+    InternalRetryPolicy,
+    Protocol,
+    RetryAuthorization,
+    Run,
+)
 from memrelay_eval.domain.errors import LedgerIntentConflictError, LedgerOwnershipError
 from memrelay_eval.domain.ids import (
     AssignmentId,
@@ -34,15 +47,20 @@ from memrelay_eval.domain.intents import (
 )
 from memrelay_eval.domain.states import (
     AttemptTerminalKind,
+    ExposureClassification,
     InclusionStatus,
+    InternalRetrySubsystem,
     RunState,
 )
 from memrelay_eval.ledger import SqliteLedger
 from memrelay_eval.ledger.schema import MIGRATIONS
+from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, InternalRetryRecorder
 from memrelay_eval.orchestration.control import LedgerControl
+from memrelay_eval.orchestration.retry import RetryAuthorizer
 from memrelay_eval.orchestration.worker import WorkerIntentEmitter
 
 NOW = datetime(2026, 8, 5, 21, 0, tzinfo=UTC)
+PROCESS_TIMEOUT_SECONDS = 45
 
 
 def _try_acquire_ledger(path: str, result: object) -> None:
@@ -60,6 +78,17 @@ def _hold_ledger_until_terminated(path: str, ready: object, release: object) -> 
     ready.put("owned")  # type: ignore[union-attr]
     release.wait()  # type: ignore[union-attr]
     ledger.close()
+
+
+def _race_to_acquire_ledger(path: str, result: object, release: object) -> None:
+    try:
+        ledger = SqliteLedger.open_control(path)
+    except LedgerOwnershipError:
+        result.put("blocked")  # type: ignore[union-attr]
+    else:
+        result.put("acquired")  # type: ignore[union-attr]
+        release.wait()  # type: ignore[union-attr]
+        ledger.close()
 
 
 def metadata(
@@ -224,8 +253,10 @@ def test_sqlite_ledger_records_normalized_append_only_lifecycle_and_refs(tmp_pat
     ]
     assert ledger.sqlite_settings() == {"journal_mode": "wal", "foreign_keys": True}
     assert ledger.integrity_check() == "ok"
-    assert ledger.schema_version == 1
-    assert ledger.migration_journal == ((1, MIGRATIONS[0].digest),)
+    assert ledger.schema_version == 2
+    assert ledger.migration_journal == tuple(
+        (migration.version, migration.digest) for migration in MIGRATIONS
+    )
     assert len(ledger.logical_history()) == 12
     ledger.close()
 
@@ -249,8 +280,8 @@ def test_control_ownership_is_exclusive_across_processes_and_released_on_close(
     result = context.Queue()
     contender = context.Process(target=_try_acquire_ledger, args=(str(path), result))
     contender.start()
-    assert result.get(timeout=15) == "blocked"
-    contender.join(timeout=15)
+    assert result.get(timeout=PROCESS_TIMEOUT_SECONDS) == "blocked"
+    contender.join(timeout=PROCESS_TIMEOUT_SECONDS)
     assert contender.exitcode == 0
 
     owner.close()
@@ -260,8 +291,8 @@ def test_control_ownership_is_exclusive_across_processes_and_released_on_close(
         args=(str(path), successor_result),
     )
     successor.start()
-    assert successor_result.get(timeout=15) == "acquired"
-    successor.join(timeout=15)
+    assert successor_result.get(timeout=PROCESS_TIMEOUT_SECONDS) == "acquired"
+    successor.join(timeout=PROCESS_TIMEOUT_SECONDS)
     assert successor.exitcode == 0
 
 
@@ -275,13 +306,282 @@ def test_control_ownership_is_released_when_owner_process_crashes(tmp_path: obje
         args=(str(path), ready, release),
     )
     owner.start()
-    assert ready.get(timeout=15) == "owned"
+    assert ready.get(timeout=PROCESS_TIMEOUT_SECONDS) == "owned"
     owner.terminate()
     owner.join(timeout=15)
     assert owner.exitcode is not None
 
     recovered = SqliteLedger.open_control(path)
     recovered.close()
+
+
+def test_control_ownership_race_has_exactly_one_process_winner(tmp_path: object) -> None:
+    path = tmp_path / "ledger.sqlite"  # type: ignore[operator]
+    context = get_context("spawn")
+    result = context.Queue()
+    release = context.Event()
+    contenders = tuple(
+        context.Process(target=_race_to_acquire_ledger, args=(str(path), result, release))
+        for _ in range(2)
+    )
+    for contender in contenders:
+        contender.start()
+    outcomes = sorted(result.get(timeout=PROCESS_TIMEOUT_SECONDS) for _ in contenders)
+    assert outcomes == ["acquired", "blocked"]
+    release.set()
+    for contender in contenders:
+        contender.join(timeout=PROCESS_TIMEOUT_SECONDS)
+        assert contender.exitcode == 0
+
+
+@pytest.mark.parametrize(
+    ("safe_metadata", "occurred_at", "expected_reason"),
+    [
+        pytest.param({key: 1}, NOW, "thin_ledger_violation", id=f"blocked-{key}")
+        for key in (
+            "prompt",
+            "patch",
+            "trace",
+            "grader",
+            "inspect",
+            "provider",
+            "credential",
+            "repository",
+            "repo",
+            "payload",
+            "event",
+            "body",
+            "secret",
+            "token",
+            "password",
+            "code",
+            "treatment",
+            "arm",
+            "condition",
+        )
+    ]
+    + [
+        ({"treat_ment": 1}, NOW, "thin_ledger_violation"),
+        ({"trial_arm": 1}, NOW, "thin_ledger_violation"),
+        ({}, datetime(2026, 8, 5, 21, 0), "non_utc_timestamp"),
+        (
+            {},
+            datetime(2026, 8, 5, 22, 0, tzinfo=timezone(timedelta(hours=1))),
+            "non_utc_timestamp",
+        ),
+    ],
+)
+def test_fake_and_sqlite_share_intent_preflight_rejections(
+    tmp_path: object,
+    safe_metadata: dict[str, int],
+    occurred_at: datetime,
+    expected_reason: str,
+) -> None:
+    intent = CreateExperimentIntent(
+        IntentMetadata(
+            IntentId.new(),
+            occurred_at,
+            reason_code="control_recorded",
+            safe_metadata=safe_metadata,
+        ),
+        ExperimentId.new(),
+        ProtocolId.new(),
+    )
+    durable = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    try:
+        outcomes = (InMemoryLedger().submit_intent(intent), durable.submit_intent(intent))
+    finally:
+        durable.close()
+    assert all(isinstance(outcome, IntentRejection) for outcome in outcomes)
+    assert [outcome.reason_code for outcome in outcomes] == [expected_reason, expected_reason]  # type: ignore[union-attr]
+
+
+def test_shared_preflight_applies_to_every_intent_scope_and_preserves_safe_keys(
+    tmp_path: object,
+) -> None:
+    reference = ArtifactRef.from_bytes(b"reference")
+
+    def unsafe_metadata() -> IntentMetadata:
+        return IntentMetadata(
+            IntentId.new(),
+            NOW,
+            reason_code="control_recorded",
+            safe_metadata={"trial_arm": 1},
+        )
+
+    intents = (
+        CreateExperimentIntent(unsafe_metadata(), ExperimentId.new(), ProtocolId.new()),
+        CreateRunIntent(unsafe_metadata(), RunId.new(), ExperimentId.new(), AssignmentId.new()),
+        CreateAttemptIntent(unsafe_metadata(), AttemptId.new(), RunId.new()),
+        RunTransitionIntent(
+            unsafe_metadata(),
+            RunId.new(),
+            RunState.PLANNED,
+            RunState.ASSIGNED,
+        ),
+        AttemptTerminalIntent(
+            unsafe_metadata(),
+            AttemptId.new(),
+            RunId.new(),
+            AttemptTerminalKind.PROVIDER_UNAVAILABLE,
+        ),
+        ArtifactLinkIntent(
+            unsafe_metadata(),
+            ArtifactLink(reference, "artifact_recorded", experiment_id=ExperimentId.new()),
+        ),
+        RetryLineageIntent(unsafe_metadata(), RunId.new(), AttemptId.new(), AttemptId.new()),
+        InclusionDecisionIntent(
+            unsafe_metadata(),
+            InclusionDecision(
+                InclusionId.new(),
+                RunId.new(),
+                InclusionStatus.EXCLUDED,
+                "reconciliation_complete",
+                "a" * 64,
+                NOW,
+            ),
+        ),
+    )
+    durable = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    try:
+        for intent in intents:
+            fake_result = InMemoryLedger().submit_intent(intent)
+            sqlite_result = durable.submit_intent(intent)
+            assert isinstance(fake_result, IntentRejection)
+            assert isinstance(sqlite_result, IntentRejection)
+            assert fake_result.reason_code == sqlite_result.reason_code == "thin_ledger_violation"
+
+        accepted_metadata = CreateExperimentIntent(
+            IntentMetadata(
+                IntentId.new(),
+                NOW,
+                reason_code="control_recorded",
+                safe_metadata={"assignment_id": 1},
+            ),
+            ExperimentId.new(),
+            ProtocolId.new(),
+        )
+        assert isinstance(InMemoryLedger().submit_intent(accepted_metadata), IntentAck)
+        assert isinstance(durable.submit_intent(accepted_metadata), IntentAck)
+    finally:
+        durable.close()
+
+
+def test_sqlite_retry_operations_are_atomic_and_recoverable(tmp_path: object) -> None:
+    ledger = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    experiment_id = ExperimentId.new()
+    run_id = RunId.new()
+    attempt_id = AttemptId.new()
+    assignment_id = AssignmentId.new()
+    accepted(
+        ledger.submit_intent(CreateExperimentIntent(metadata(), experiment_id, ProtocolId.new()))
+    )
+    accepted(
+        ledger.submit_intent(CreateRunIntent(metadata(), run_id, experiment_id, assignment_id))
+    )
+    accepted(ledger.submit_intent(CreateAttemptIntent(metadata(), attempt_id, run_id)))
+    terminal = AttemptTerminal(
+        attempt_id,
+        run_id,
+        AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE,
+        NOW,
+        "provisioning failure",
+        (ArtifactRef.from_bytes(b"terminal"),),
+    )
+    ledger.append_attempt_terminal(terminal)
+    assert ledger.attempt_terminal_for(attempt_id) == terminal
+    authorization = RetryAuthorization(
+        run_id,
+        assignment_id,
+        assignment_id,
+        attempt_id,
+        Attempt(AttemptId.new(), run_id),
+        terminal,
+        (ArtifactRef.from_bytes(b"unexposed"),),
+        (ArtifactRef.from_bytes(b"fresh"),),
+    )
+    outcomes: list[bool] = []
+    threads = tuple(
+        Thread(
+            target=lambda: outcomes.append(ledger.append_retry_authorization_once(authorization))
+        )
+        for _ in range(2)
+    )
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == [False, True]
+    assert ledger.retry_authorizations_for(run_id) == (authorization,)
+
+    retry_outcomes: list[object] = []
+    threads = tuple(
+        Thread(
+            target=lambda: retry_outcomes.append(
+                ledger.reserve_internal_retry(attempt_id, InternalRetrySubsystem.INSPECT, 1)
+            )
+        )
+        for _ in range(2)
+    )
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sum(item is not None for item in retry_outcomes) == 1
+    internal_retries = ledger.internal_retries_for(attempt_id, InternalRetrySubsystem.INSPECT)
+    assert internal_retries[0].retry_number == 1
+    ledger.close()
+
+    reopened = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    assert reopened.retry_authorizations_for(run_id) == (authorization,)
+    assert reopened.reserve_internal_retry(attempt_id, InternalRetrySubsystem.INSPECT, 1) is None
+    reopened.close()
+
+
+def test_story_17_retry_recorders_operate_against_sqlite_ledger(tmp_path: object) -> None:
+    ledger = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    experiment_id = ExperimentId.new()
+    run_id = RunId.new()
+    attempt_id = AttemptId.new()
+    assignment_id = AssignmentId.new()
+    accepted(
+        ledger.submit_intent(CreateExperimentIntent(metadata(), experiment_id, ProtocolId.new()))
+    )
+    accepted(
+        ledger.submit_intent(CreateRunIntent(metadata(), run_id, experiment_id, assignment_id))
+    )
+    accepted(ledger.submit_intent(CreateAttemptIntent(metadata(), attempt_id, run_id)))
+    terminal = AttemptTerminal(
+        attempt_id,
+        run_id,
+        AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE,
+        NOW,
+        "provisioning failure",
+        (ArtifactRef.from_bytes(b"terminal"),),
+    )
+    telemetry = InMemoryTelemetry()
+    AttemptTerminalRecorder(ledger, telemetry).append(terminal)
+    authorization = RetryAuthorizer(ledger).authorize(
+        Protocol(ProtocolId.new(), allows_pre_exposure_infrastructure_retry=True),
+        Run(run_id, assignment_id),
+        Attempt(attempt_id, run_id),
+        terminal,
+        exposure=ExposureDecision(
+            ExposureClassification.UNEXPOSED,
+            (ArtifactRef.from_bytes(b"unexposed"),),
+        ),
+        isolation=FreshIsolationAttestation(True, (ArtifactRef.from_bytes(b"fresh isolation"),)),
+    )
+    record = InternalRetryRecorder(
+        attempt_id,
+        (InternalRetryPolicy(InternalRetrySubsystem.SDK, maximum_retries=1),),
+        ledger,
+        telemetry,
+    ).record(InternalRetrySubsystem.SDK)
+    assert ledger.retry_authorizations_for(run_id) == (authorization,)
+    assert ledger.attempt_terminal_for(attempt_id) == terminal
+    assert ledger.internal_retries_for(attempt_id, InternalRetrySubsystem.SDK) == (record,)
+    ledger.close()
 
 
 @pytest.mark.skipif(
@@ -615,7 +915,7 @@ def test_fake_and_sqlite_share_retry_source_attempt_rejection(
         )
     )
     assert isinstance(result, IntentRejection)
-    assert result.reason_code == "retry_source_mismatch"
+    assert result.reason_code == "retry_authorization_control_only"
     if isinstance(ledger, SqliteLedger):
         ledger.close()
 
@@ -920,7 +1220,17 @@ def test_terminal_attempts_and_authorized_retry_remain_separate_from_run_lifecyc
     tmp_path: object,
 ) -> None:
     ledger = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
-    _, run_id, first_attempt = seed(ledger)
+    experiment_id = ExperimentId.new()
+    run_id = RunId.new()
+    first_attempt = AttemptId.new()
+    assignment_id = AssignmentId.new()
+    accepted(
+        ledger.submit_intent(CreateExperimentIntent(metadata(), experiment_id, ProtocolId.new()))
+    )
+    accepted(
+        ledger.submit_intent(CreateRunIntent(metadata(), run_id, experiment_id, assignment_id))
+    )
+    accepted(ledger.submit_intent(CreateAttemptIntent(metadata(), first_attempt, run_id)))
     second_attempt = AttemptId.new()
     pre_exposure_evidence = ArtifactRef.from_bytes(b"pre-exposure infrastructure evidence")
     unverified_terminal = ledger.submit_intent(
@@ -953,25 +1263,21 @@ def test_terminal_attempts_and_authorized_retry_remain_separate_from_run_lifecyc
             )
         )
     )
-    retry = accepted(
-        ledger.submit_intent(
-            RetryLineageIntent(
-                metadata(
-                    source_attempt_id=first_attempt,
-                    monotonic_ns=11,
-                    reason_code="authorized_retry",
-                ),
-                run_id,
-                first_attempt,
-                second_attempt,
-            )
-        )
+    authorization = RetryAuthorization(
+        run_id,
+        assignment_id,
+        assignment_id,
+        first_attempt,
+        Attempt(second_attempt, run_id),
+        ledger.attempt_terminal_for(first_attempt),
+        (ArtifactRef.from_bytes(b"unexposed"),),
+        (ArtifactRef.from_bytes(b"fresh isolation"),),
     )
-
-    assert retry.kind.value == "retry_lineage"
+    assert ledger.append_retry_authorization_once(authorization) is True
     assert ledger.history(run_id) == ()
     assert ledger.attempt_terminals(run_id)[0].attempt_id == first_attempt
     assert ledger.retry_lineage(run_id) == ((first_attempt, second_attempt),)
+    assert ledger.retry_authorizations_for(run_id) == (authorization,)
     unlinked_attempt = ledger.submit_intent(
         CreateAttemptIntent(metadata(), AttemptId.new(), run_id)
     )
@@ -1005,7 +1311,7 @@ def test_terminal_attempts_and_authorized_retry_remain_separate_from_run_lifecyc
         )
     )
     assert isinstance(rejected, IntentRejection)
-    assert rejected.reason_code == "retry_already_authorized"
+    assert rejected.reason_code == "retry_authorization_control_only"
     ledger.close()
 
 

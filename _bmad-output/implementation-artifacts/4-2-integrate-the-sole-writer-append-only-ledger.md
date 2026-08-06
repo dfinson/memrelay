@@ -128,6 +128,11 @@ GPT-5.6 Terra
 - `PYTHONPATH=<worktree>\evaluation\src python -m pytest evaluation\tests -q` — 144 passed, 1 Windows-only fork test skipped.
 - `PYTHONPATH=<worktree>\src python -m pytest -q` — 1305 passed, 2 optional cloud-backend tests skipped.
 - `python -m ruff check . && python -m ruff format --check .` — passed.
+- `uv lock --project evaluation --check && uv run --project evaluation --locked --extra dev pytest evaluation/tests` — 319 passed, 1 POSIX-only fork test skipped on native Windows CPython 3.13.5.
+- `uv run --project evaluation --locked --extra dev pytest evaluation/tests/contract/ledger/test_repository.py evaluation/tests/unit/orchestration/test_retry.py evaluation/tests/contract/test_attempt_lineage.py evaluation/tests/architecture/test_sole_writer_boundary.py` — 80 passed, 1 POSIX-only fork test skipped on native Windows CPython 3.13.5.
+- `UV_PROJECT_ENVIRONMENT=/tmp/memrelay-eval-4-2 uv run --project evaluation --locked --extra dev pytest evaluation/tests/contract/ledger/test_repository.py evaluation/tests/fault/ledger/test_crash_reopen.py` — 66 passed on Linux/WSL CPython 3.13.14, including the POSIX fork lease path.
+- `UV_PROJECT_ENVIRONMENT=/tmp/memrelay-eval-4-2 uv run --project evaluation --locked --extra dev pytest evaluation/tests` — 319 passed on Linux/WSL CPython 3.13.14.
+- `PYTHONPATH=<worktree>\src python -m pytest` — 1305 passed, 2 optional cloud-backend tests skipped.
 
 ### Completion Notes List
 
@@ -140,6 +145,8 @@ GPT-5.6 Terra
 - Regression coverage confirms `LedgerControl` persists a typed, idempotent `attempt_creation_control_only` rejection through the public `LedgerPort.reject_intent` operation for the SQLite adapter, including conflicting intent-ID reuse.
 - Final repairs limit workers to source-attempt-scoped lifecycle and artifact intents; add fork-safe POSIX inherited-handle cleanup; align fake/SQLite retry-source and artifact-ownership validation; and add an explicit Python 3.13 evaluator test step to CI without installing the evaluator editable.
 - Malformed intent delivery now preflights safe metadata and evidence-ref types before canonical serialization, uses a body-free rejection digest for safe idempotent replay, and persists typed thin rejections through SQLite, fake, and control paths.
+- Review remediation moves the complete thin-metadata vocabulary, normalized treatment/arm/condition key screening, and strict UTC timestamp checks into the shared domain preflight used by fake and SQLite. Durable SQLite now implements Story 1.7's atomic terminal lookup, per-subsystem retry reservation, and one-retry-per-run authorization with additive schema version 2 constraints, replay/crash recovery, and native Windows/POSIX ownership coverage. The analysis check is explicitly a future-boundary assertion because this story creates no analysis module.
+- Reconciliation follows accepted Story 1.7 authority: `retry_eligibility_denial_code(protocol, terminal, exposure, isolation)` remains the only eligibility policy, while the SQLite ledger records its already-authorized decision atomically. `RetryLineageIntent` cannot create retries, avoiding a second/weak authorization path; the direct atomic authorization writes the immutable retry attempt, authorization, and retry-link rows together. The worker-facing sink remains limited to typed intent acknowledgement/rejection, while `SqliteLedger` is the sole control-process authority for both ingress and Story 1.7 atomic operations.
 
 ### File List
 

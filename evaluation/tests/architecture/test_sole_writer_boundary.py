@@ -35,10 +35,14 @@ def test_worker_attempt_modules_have_no_sqlite_or_store_handle_boundary_escape()
         assert "connection" not in source
 
 
-def test_analysis_cannot_open_or_mutate_operational_sqlite() -> None:
+def test_future_analysis_boundary_cannot_open_or_mutate_operational_sqlite() -> None:
+    """Reserve this boundary for a future analysis package; none exists in this story."""
+
     analysis_root = SOURCE_ROOT / "analysis"
+    if not analysis_root.exists():
+        return
     violations: list[str] = []
-    for path in analysis_root.rglob("*.py") if analysis_root.exists() else ():
+    for path in analysis_root.rglob("*.py"):
         source = path.read_text(encoding="utf-8")
         imports = imports_in(path)
         if any(name == "sqlite3" or name.startswith("sqlite3.") for name in imports):

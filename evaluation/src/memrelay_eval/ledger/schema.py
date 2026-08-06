@@ -156,6 +156,55 @@ MIGRATIONS = (
             "CREATE INDEX IF NOT EXISTS artifact_links_by_run ON artifact_links(run_id, sequence)",
         ),
     ),
+    Migration(
+        version=2,
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS attempt_terminal_evidence_refs (
+                attempt_id TEXT NOT NULL REFERENCES attempt_terminals(attempt_id),
+                ordinal INTEGER NOT NULL,
+                artifact_id TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                PRIMARY KEY (attempt_id, ordinal)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS retry_authorizations (
+                run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+                assignment_id TEXT NOT NULL,
+                parent_attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                retry_attempt_id TEXT NOT NULL UNIQUE REFERENCES attempts(attempt_id),
+                created_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS retry_authorization_evidence_refs (
+                run_id TEXT NOT NULL REFERENCES retry_authorizations(run_id),
+                evidence_scope TEXT NOT NULL
+                    CHECK (evidence_scope IN ('exposure', 'isolation')),
+                ordinal INTEGER NOT NULL,
+                artifact_id TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                PRIMARY KEY (run_id, evidence_scope, ordinal)
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS internal_retries (
+                attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                subsystem TEXT NOT NULL,
+                retry_number INTEGER NOT NULL CHECK (retry_number >= 1),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (attempt_id, subsystem, retry_number)
+            )
+            """,
+            (
+                "CREATE INDEX IF NOT EXISTS internal_retries_by_attempt_subsystem "
+                "ON internal_retries(attempt_id, subsystem, retry_number)"
+            ),
+        ),
+    ),
 )
 
 

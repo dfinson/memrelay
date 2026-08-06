@@ -20,8 +20,8 @@ from .entities import (
 )
 from .governance import AuthorizationResult, DenialEvidence, RepositoryAccessRequest
 from .ids import AssignmentId, AttemptId, RunId
-from .states import InternalRetrySubsystem
 from .intents import IntentAck, IntentRejection, LedgerIntentType
+from .states import InternalRetrySubsystem
 
 _Result = TypeVar("_Result")
 

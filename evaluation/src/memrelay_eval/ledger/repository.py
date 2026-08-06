@@ -10,6 +10,7 @@ import weakref
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Literal, cast
 
@@ -21,16 +22,21 @@ else:
 from memrelay_eval.domain.entities import (
     ArtifactLink,
     ArtifactRef,
+    Attempt,
     AttemptTerminal,
     InclusionDecision,
+    InternalRetryRecord,
+    RetryAuthorization,
     RunTransition,
 )
 from memrelay_eval.domain.errors import (
+    AttemptTerminalAlreadyRecordedError,
     LedgerDirectWriteError,
     LedgerIntentConflictError,
     LedgerOwnershipError,
 )
 from memrelay_eval.domain.ids import (
+    ArtifactId,
     AssignmentId,
     AttemptId,
     ExperimentId,
@@ -57,10 +63,11 @@ from memrelay_eval.domain.intents import (
     canonical_json_bytes,
     delivery_payload_digest,
 )
-from memrelay_eval.domain.policies import is_retryable_terminal, validate_run_transition
+from memrelay_eval.domain.policies import validate_run_transition
 from memrelay_eval.domain.states import (
     AttemptTerminalKind,
     InclusionStatus,
+    InternalRetrySubsystem,
     LedgerIntentKind,
     RunState,
 )
@@ -565,6 +572,30 @@ class SqliteLedger:
         ).fetchone()
         if existing is not None:
             raise _RejectIntent("attempt_already_terminal")
+        self._insert_terminal_record(
+            intent.attempt_id,
+            str(intent.intent_id),
+            intent.run_id,
+            intent.classification,
+            occurred_at,
+            intent.metadata.monotonic_ns,
+            intent.metadata.source_attempt_id,
+            intent.metadata.reason_code,
+            intent.metadata.evidence_refs,
+        )
+
+    def _insert_terminal_record(
+        self,
+        attempt_id: AttemptId,
+        receipt_id: str,
+        run_id: RunId,
+        classification: AttemptTerminalKind,
+        occurred_at: str,
+        monotonic_ns: int | None,
+        source_attempt_id: AttemptId | None,
+        reason_code: str,
+        evidence_refs: Sequence[ArtifactRef],
+    ) -> None:
         self.__connection.execute(
             """
             INSERT INTO attempt_terminals (
@@ -573,16 +604,36 @@ class SqliteLedger:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(intent.attempt_id),
-                str(intent.intent_id),
-                str(intent.run_id),
-                intent.classification.value,
+                str(attempt_id),
+                receipt_id,
+                str(run_id),
+                classification.value,
                 occurred_at,
-                intent.metadata.monotonic_ns,
-                _optional_id(intent.metadata.source_attempt_id),
-                intent.metadata.reason_code,
+                monotonic_ns,
+                _optional_id(source_attempt_id),
+                reason_code,
             ),
         )
+        self._append_terminal_evidence_refs(attempt_id, evidence_refs)
+
+    def _append_terminal_evidence_refs(
+        self, attempt_id: AttemptId, references: Sequence[ArtifactRef]
+    ) -> None:
+        for ordinal, reference in enumerate(references):
+            self.__connection.execute(
+                """
+                INSERT INTO attempt_terminal_evidence_refs
+                    (attempt_id, ordinal, artifact_id, artifact_sha256, size_bytes)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    str(attempt_id),
+                    ordinal,
+                    str(reference.artifact_id),
+                    reference.sha256,
+                    reference.size_bytes,
+                ),
+            )
 
     def _append_artifact_link_intent(self, intent: ArtifactLinkIntent, occurred_at: str) -> None:
         link = intent.link
@@ -626,61 +677,8 @@ class SqliteLedger:
         )
 
     def _append_retry_intent(self, intent: RetryLineageIntent, occurred_at: str) -> None:
-        self._require_attempt_for_run(intent.previous_attempt_id, intent.run_id)
-        if intent.previous_attempt_id == intent.retry_attempt_id:
-            raise _RejectIntent("invalid_retry_lineage")
-        if intent.metadata.source_attempt_id != intent.previous_attempt_id:
-            raise _RejectIntent("retry_source_mismatch")
-        terminal = self.__connection.execute(
-            "SELECT classification FROM attempt_terminals WHERE attempt_id = ?",
-            (str(intent.previous_attempt_id),),
-        ).fetchone()
-        if terminal is None or not is_retryable_terminal(
-            AttemptTerminalKind(terminal["classification"])
-        ):
-            raise _RejectIntent("retry_not_authorized")
-        existing = self.__connection.execute(
-            "SELECT 1 FROM retry_links WHERE run_id = ? LIMIT 1",
-            (str(intent.run_id),),
-        ).fetchone()
-        if existing is not None:
-            raise _RejectIntent("retry_already_authorized")
-        if (
-            self.__connection.execute(
-                "SELECT 1 FROM attempts WHERE attempt_id = ?", (str(intent.retry_attempt_id),)
-            ).fetchone()
-            is not None
-        ):
-            raise _RejectIntent("retry_attempt_already_exists")
-        self.__connection.execute(
-            """
-            INSERT INTO attempts (attempt_id, run_id, intent_id, occurred_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                str(intent.retry_attempt_id),
-                str(intent.run_id),
-                str(intent.intent_id),
-                occurred_at,
-            ),
-        )
-        self.__connection.execute(
-            """
-            INSERT INTO retry_links (
-                previous_attempt_id, retry_attempt_id, intent_id, run_id, occurred_at,
-                monotonic_ns, reason_code
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(intent.previous_attempt_id),
-                str(intent.retry_attempt_id),
-                str(intent.intent_id),
-                str(intent.run_id),
-                occurred_at,
-                intent.metadata.monotonic_ns,
-                intent.metadata.reason_code,
-            ),
-        )
+        del intent, occurred_at
+        raise _RejectIntent("retry_authorization_control_only")
 
     def _append_inclusion_intent(self, intent: InclusionDecisionIntent, occurred_at: str) -> None:
         decision = intent.decision
@@ -882,6 +880,294 @@ class SqliteLedger:
         )
         self._raise_direct_rejection(result)
 
+    def append_attempt_terminal(self, terminal: AttemptTerminal) -> None:
+        """Atomically retain one immutable terminal record for a known attempt."""
+
+        self._ensure_open()
+        occurred_at = _utc_z(terminal.occurred_at)
+        with self.__lock:
+            self.__connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_attempt_for_run(terminal.attempt_id, terminal.run_id)
+                if self.attempt_terminal_for(terminal.attempt_id) is not None:
+                    raise AttemptTerminalAlreadyRecordedError(
+                        AttemptTerminalAlreadyRecordedError.code
+                    )
+                receipt_id = f"terminal:{terminal.attempt_id}"
+                digest = _direct_record_digest(
+                    "attempt_terminal",
+                    {
+                        "attempt_id": str(terminal.attempt_id),
+                        "run_id": str(terminal.run_id),
+                        "classification": terminal.classification.value,
+                        "occurred_at": occurred_at,
+                        "reason": terminal.reason,
+                    },
+                )
+                self.__connection.execute(
+                    """
+                    INSERT INTO intent_receipts
+                        (intent_id, payload_digest, kind, outcome, reason_code, occurred_at)
+                    VALUES (?, ?, ?, 'accepted', NULL, ?)
+                    """,
+                    (receipt_id, digest, LedgerIntentKind.ATTEMPT_TERMINAL.value, occurred_at),
+                )
+                self._insert_terminal_record(
+                    terminal.attempt_id,
+                    receipt_id,
+                    terminal.run_id,
+                    terminal.classification,
+                    occurred_at,
+                    None,
+                    terminal.attempt_id,
+                    terminal.reason,
+                    terminal.evidence_refs,
+                )
+                self.__connection.execute("COMMIT")
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self.__connection.execute("ROLLBACK")
+                raise
+
+    def attempt_terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None:
+        self._ensure_open()
+        with self.__lock:
+            return self._attempt_terminal_for_locked(attempt_id)
+
+    def _attempt_terminal_for_locked(self, attempt_id: AttemptId) -> AttemptTerminal | None:
+        row = self.__connection.execute(
+            """
+            SELECT run_id, classification, occurred_at, reason_code
+            FROM attempt_terminals WHERE attempt_id = ?
+            """,
+            (str(attempt_id),),
+        ).fetchone()
+        if row is None:
+            return None
+        evidence_rows = self.__connection.execute(
+            """
+            SELECT artifact_id, artifact_sha256, size_bytes
+            FROM attempt_terminal_evidence_refs
+            WHERE attempt_id = ? ORDER BY ordinal
+            """,
+            (str(attempt_id),),
+        ).fetchall()
+        return AttemptTerminal(
+            attempt_id,
+            RunId(row["run_id"]),
+            AttemptTerminalKind(row["classification"]),
+            _parse_utc(row["occurred_at"]),
+            row["reason_code"],
+            tuple(
+                ArtifactRef(
+                    ArtifactId(item["artifact_id"]),
+                    item["artifact_sha256"],
+                    item["size_bytes"],
+                )
+                for item in evidence_rows
+            ),
+        )
+
+    def reserve_internal_retry(
+        self,
+        attempt_id: AttemptId,
+        subsystem: InternalRetrySubsystem,
+        maximum_retries: int,
+    ) -> InternalRetryRecord | None:
+        """Allocate a retry ordinal exactly once within one attempt/subsystem budget."""
+
+        self._ensure_open()
+        if maximum_retries < 0:
+            raise ValueError("maximum_retries must not be negative")
+        if not isinstance(subsystem, InternalRetrySubsystem):
+            raise ValueError("subsystem must use the frozen internal retry vocabulary")
+        with self.__lock:
+            self.__connection.execute("BEGIN IMMEDIATE")
+            try:
+                if (
+                    self.__connection.execute(
+                        "SELECT 1 FROM attempts WHERE attempt_id = ?", (str(attempt_id),)
+                    ).fetchone()
+                    is None
+                ):
+                    raise LedgerDirectWriteError("unknown_attempt")
+                row = self.__connection.execute(
+                    """
+                    SELECT COALESCE(MAX(retry_number), 0) AS latest
+                    FROM internal_retries WHERE attempt_id = ? AND subsystem = ?
+                    """,
+                    (str(attempt_id), subsystem.value),
+                ).fetchone()
+                retry_number = int(row["latest"]) + 1
+                if retry_number > maximum_retries:
+                    self.__connection.execute("COMMIT")
+                    return None
+                self.__connection.execute(
+                    """
+                    INSERT INTO internal_retries
+                        (attempt_id, subsystem, retry_number, created_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (str(attempt_id), subsystem.value, retry_number, _utc_z(datetime.now(UTC))),
+                )
+                self._fault("before_internal_retry_commit")
+                self.__connection.execute("COMMIT")
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self.__connection.execute("ROLLBACK")
+                raise
+        return InternalRetryRecord(attempt_id, subsystem, retry_number)
+
+    def internal_retries_for(
+        self, attempt_id: AttemptId, subsystem: InternalRetrySubsystem
+    ) -> tuple[InternalRetryRecord, ...]:
+        self._ensure_open()
+        with self.__lock:
+            rows = self.__connection.execute(
+                """
+                SELECT retry_number FROM internal_retries
+                WHERE attempt_id = ? AND subsystem = ? ORDER BY retry_number
+                """,
+                (str(attempt_id), subsystem.value),
+            ).fetchall()
+        return tuple(
+            InternalRetryRecord(attempt_id, subsystem, row["retry_number"]) for row in rows
+        )
+
+    def append_retry_authorization_once(self, authorization: RetryAuthorization) -> bool:
+        """Atomically make the sole retry attempt for a run durable."""
+
+        self._ensure_open()
+        with self.__lock:
+            self.__connection.execute("BEGIN IMMEDIATE")
+            try:
+                if (
+                    self.__connection.execute(
+                        "SELECT 1 FROM retry_authorizations WHERE run_id = ?",
+                        (str(authorization.run_id),),
+                    ).fetchone()
+                    is not None
+                ):
+                    self.__connection.execute("COMMIT")
+                    return False
+                run = self.__connection.execute(
+                    "SELECT assignment_id FROM runs WHERE run_id = ?", (str(authorization.run_id),)
+                ).fetchone()
+                if run is None:
+                    raise LedgerDirectWriteError("unknown_run")
+                if run["assignment_id"] != str(authorization.assignment_id):
+                    raise LedgerDirectWriteError("retry_assignment_mismatch")
+                self._require_attempt_for_run(authorization.parent_attempt_id, authorization.run_id)
+                if (
+                    self._attempt_terminal_for_locked(authorization.parent_attempt_id)
+                    != authorization.parent_terminal
+                ):
+                    raise LedgerDirectWriteError("retry_terminal_not_authoritative")
+                if (
+                    self.__connection.execute(
+                        "SELECT 1 FROM attempts WHERE attempt_id = ?",
+                        (str(authorization.attempt.id),),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise LedgerDirectWriteError("retry_attempt_already_exists")
+                occurred_at = _utc_z(datetime.now(UTC))
+                receipt_id = f"retry:{authorization.attempt.id}"
+                digest = _direct_record_digest(
+                    "retry_authorization",
+                    {
+                        "run_id": str(authorization.run_id),
+                        "assignment_id": str(authorization.assignment_id),
+                        "parent_attempt_id": str(authorization.parent_attempt_id),
+                        "retry_attempt_id": str(authorization.attempt.id),
+                    },
+                )
+                self.__connection.execute(
+                    """
+                    INSERT INTO intent_receipts
+                        (intent_id, payload_digest, kind, outcome, reason_code, occurred_at)
+                    VALUES (?, ?, ?, 'accepted', NULL, ?)
+                    """,
+                    (receipt_id, digest, LedgerIntentKind.RETRY_LINEAGE.value, occurred_at),
+                )
+                self.__connection.execute(
+                    """
+                    INSERT INTO attempts (attempt_id, run_id, intent_id, occurred_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        str(authorization.attempt.id),
+                        str(authorization.run_id),
+                        receipt_id,
+                        occurred_at,
+                    ),
+                )
+                self.__connection.execute(
+                    """
+                    INSERT INTO retry_authorizations (
+                        run_id, assignment_id, parent_attempt_id, retry_attempt_id, created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(authorization.run_id),
+                        str(authorization.assignment_id),
+                        str(authorization.parent_attempt_id),
+                        str(authorization.attempt.id),
+                        occurred_at,
+                    ),
+                )
+                self.__connection.execute(
+                    """
+                    INSERT INTO retry_links (
+                        previous_attempt_id, retry_attempt_id, intent_id, run_id, occurred_at,
+                        monotonic_ns, reason_code
+                    ) VALUES (?, ?, ?, ?, ?, NULL, 'retry_authorized')
+                    """,
+                    (
+                        str(authorization.parent_attempt_id),
+                        str(authorization.attempt.id),
+                        receipt_id,
+                        str(authorization.run_id),
+                        occurred_at,
+                    ),
+                )
+                self._append_retry_authorization_evidence(
+                    authorization.run_id, "exposure", authorization.exposure_evidence_refs
+                )
+                self._append_retry_authorization_evidence(
+                    authorization.run_id, "isolation", authorization.isolation_evidence_refs
+                )
+                self._fault("before_retry_authorization_commit")
+                self.__connection.execute("COMMIT")
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self.__connection.execute("ROLLBACK")
+                raise
+        return True
+
+    def _append_retry_authorization_evidence(
+        self,
+        run_id: RunId,
+        evidence_scope: Literal["exposure", "isolation"],
+        references: Sequence[ArtifactRef],
+    ) -> None:
+        for ordinal, reference in enumerate(references):
+            self.__connection.execute(
+                """
+                INSERT INTO retry_authorization_evidence_refs (
+                    run_id, evidence_scope, ordinal, artifact_id, artifact_sha256, size_bytes
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(run_id),
+                    evidence_scope,
+                    ordinal,
+                    str(reference.artifact_id),
+                    reference.sha256,
+                    reference.size_bytes,
+                ),
+            )
+
     def append_artifact_link(self, link: ArtifactLink) -> None:
         result = self.submit_intent(
             ArtifactLinkIntent(
@@ -964,6 +1250,57 @@ class SqliteLedger:
                 (str(run_id),),
             ).fetchall()
         return tuple((AttemptId(row[0]), AttemptId(row[1])) for row in rows)
+
+    def retry_authorizations_for(self, run_id: RunId) -> tuple[RetryAuthorization, ...]:
+        self._ensure_open()
+        with self.__lock:
+            rows = self.__connection.execute(
+                """
+                SELECT assignment_id, parent_attempt_id, retry_attempt_id
+                FROM retry_authorizations WHERE run_id = ?
+                """,
+                (str(run_id),),
+            ).fetchall()
+            authorizations: list[RetryAuthorization] = []
+            for row in rows:
+                parent_attempt_id = AttemptId(row["parent_attempt_id"])
+                parent_terminal = self._attempt_terminal_for_locked(parent_attempt_id)
+                if parent_terminal is None:
+                    raise RuntimeError("retry authorization has no authoritative parent terminal")
+                evidence = self.__connection.execute(
+                    """
+                    SELECT evidence_scope, artifact_id, artifact_sha256, size_bytes
+                    FROM retry_authorization_evidence_refs
+                    WHERE run_id = ? ORDER BY evidence_scope, ordinal
+                    """,
+                    (str(run_id),),
+                ).fetchall()
+                evidence_by_scope: dict[str, list[ArtifactRef]] = {
+                    "exposure": [],
+                    "isolation": [],
+                }
+                for reference in evidence:
+                    evidence_by_scope[reference["evidence_scope"]].append(
+                        ArtifactRef(
+                            ArtifactId(reference["artifact_id"]),
+                            reference["artifact_sha256"],
+                            reference["size_bytes"],
+                        )
+                    )
+                assignment_id = AssignmentId(row["assignment_id"])
+                authorizations.append(
+                    RetryAuthorization(
+                        run_id=run_id,
+                        assignment_id=assignment_id,
+                        parent_assignment_id=assignment_id,
+                        parent_attempt_id=parent_attempt_id,
+                        attempt=Attempt(AttemptId(row["retry_attempt_id"]), run_id),
+                        parent_terminal=parent_terminal,
+                        exposure_evidence_refs=tuple(evidence_by_scope["exposure"]),
+                        isolation_evidence_refs=tuple(evidence_by_scope["isolation"]),
+                    )
+                )
+        return tuple(authorizations)
 
     def logical_history(self) -> tuple[LedgerEvent, ...]:
         self._ensure_open()
@@ -1104,3 +1441,7 @@ def _optional_id(value: object | None) -> str | None:
 
 def _safe_code(value: object) -> bool:
     return isinstance(value, str) and _REASON_CODE.fullmatch(value) is not None
+
+
+def _direct_record_digest(kind: str, payload: dict[str, str]) -> str:
+    return sha256(canonical_json_bytes({"kind": kind, **payload})).hexdigest()

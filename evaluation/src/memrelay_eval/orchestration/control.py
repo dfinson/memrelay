@@ -19,7 +19,12 @@ from memrelay_eval.application.copilot_catalog import (
     select_models,
 )
 from memrelay_eval.canonical import canonical_bytes
-from memrelay_eval.domain.entities import ModelQualification, QualificationCaps, QualificationUsage
+from memrelay_eval.domain.entities import (
+    ModelQualification,
+    QualificationCaps,
+    QualificationUsage,
+    RetryAuthorization,
+)
 from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
 from memrelay_eval.domain.governance import (
     AuthorizationDecision,
@@ -194,33 +199,6 @@ class CrossRepositoryAdmissionController:
         evidence = DenialEvidence.from_result(request, result)
         self._evidence_sink.append_denial(evidence)
         raise CrossRepositoryDeniedError(result.reason)
-from memrelay_eval.domain.intents import (
-    ArtifactLinkIntent,
-    AttemptTerminalIntent,
-    CreateAttemptIntent,
-    CreateExperimentIntent,
-    CreateRunIntent,
-    InclusionDecisionIntent,
-    IntentAck,
-    IntentRejection,
-    LedgerIntentType,
-    RetryLineageIntent,
-    RunTransitionIntent,
-)
-from memrelay_eval.domain.intents import (
-    ArtifactLinkIntent,
-    AttemptTerminalIntent,
-    CreateAttemptIntent,
-    CreateExperimentIntent,
-    CreateRunIntent,
-    InclusionDecisionIntent,
-    IntentAck,
-    IntentRejection,
-    LedgerIntentType,
-    RetryLineageIntent,
-    RunTransitionIntent,
-)
-from memrelay_eval.domain.ports import LedgerPort
 
 
 class LockRepository:
@@ -466,6 +444,8 @@ def _assert_redacted(value: object, path: str = "") -> None:
         raise ConformancePauseError(
             "lock_secret_value", f"lock document contains credential-like data at {path}"
         )
+
+
 class LedgerControl:
     """The only orchestration component allowed to submit worker lifecycle intents."""
 
@@ -525,10 +505,10 @@ class LedgerControl:
 
         return self._ledger.submit_intent(intent)
 
-    def authorize_retry(self, intent: RetryLineageIntent) -> IntentAck | IntentRejection:
-        """Create the sole successor only after the ledger verifies retry preconditions."""
+    def authorize_retry(self, authorization: RetryAuthorization) -> bool:
+        """Persist a retry decision already authorized by Story 1.7's policy service."""
 
-        return self._ledger.submit_intent(intent)
+        return self._ledger.append_retry_authorization_once(authorization)
 
     def record_inclusion(self, intent: InclusionDecisionIntent) -> IntentAck | IntentRejection:
         """Record a reconciled inclusion decision under control-process authority."""

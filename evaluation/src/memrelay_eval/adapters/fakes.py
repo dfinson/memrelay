@@ -38,7 +38,6 @@ from memrelay_eval.domain.intents import (
     RunTransitionIntent,
     delivery_payload_digest,
 )
-from memrelay_eval.domain.policies import is_retryable_terminal
 from memrelay_eval.domain.states import (
     AttemptTerminalKind,
     InclusionStatus,
@@ -336,6 +335,7 @@ class InMemoryLedger:
             intent.classification,
             intent.metadata.occurred_at,
             intent.metadata.reason_code,
+            intent.metadata.evidence_refs,
         )
         return self._ack(intent)
 
@@ -358,25 +358,7 @@ class InMemoryLedger:
         return self._ack(intent)
 
     def _submit_retry(self, intent: RetryLineageIntent) -> IntentAck | IntentRejection:
-        terminal = self._terminals.get(intent.previous_attempt_id)
-        if intent.metadata.source_attempt_id != intent.previous_attempt_id:
-            return self.reject_intent(intent, "retry_source_mismatch")
-        if (
-            self._attempts.get(intent.previous_attempt_id) != intent.run_id
-            or terminal is None
-            or not is_retryable_terminal(terminal.classification)
-        ):
-            return self.reject_intent(intent, "retry_not_authorized")
-        if any(self._attempts[previous] == intent.run_id for previous, _ in self._retry_links):
-            return self.reject_intent(intent, "retry_already_authorized")
-        if (
-            intent.previous_attempt_id == intent.retry_attempt_id
-            or intent.retry_attempt_id in self._attempts
-        ):
-            return self.reject_intent(intent, "retry_attempt_already_exists")
-        self._attempts[intent.retry_attempt_id] = intent.run_id
-        self._retry_links.append((intent.previous_attempt_id, intent.retry_attempt_id))
-        return self._ack(intent)
+        return self.reject_intent(intent, "retry_authorization_control_only")
 
     def _submit_inclusion(self, intent: InclusionDecisionIntent) -> IntentAck | IntentRejection:
         decision = intent.decision

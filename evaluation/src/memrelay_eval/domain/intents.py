@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -14,6 +15,35 @@ from typing import Any, ClassVar
 from .entities import ArtifactLink, ArtifactRef, InclusionDecision
 from .ids import AssignmentId, AttemptId, ExperimentId, IntentId, ProtocolId, RunId
 from .states import AttemptTerminalKind, LedgerIntentKind, RunState
+
+_DIGEST = re.compile(r"^[a-f0-9]{64}$")
+_METADATA_KEY = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_REASON_CODE = re.compile(r"^[a-z][a-z0-9_.-]{0,63}$")
+_MAX_EVIDENCE_REFS = 16
+_MAX_SAFE_METADATA = 16
+_PROHIBITED_METADATA_TERMS = frozenset(
+    {
+        "arm",
+        "body",
+        "code",
+        "condition",
+        "credential",
+        "event",
+        "grader",
+        "inspect",
+        "patch",
+        "password",
+        "payload",
+        "prompt",
+        "provider",
+        "repo",
+        "repository",
+        "secret",
+        "token",
+        "trace",
+        "treatment",
+    }
+)
 
 
 def _timestamp_payload(value: datetime) -> str:
@@ -273,7 +303,7 @@ def preflight_intent_rejection(intent: object) -> str | None:
     metadata = getattr(intent, "metadata", None)
     if not isinstance(metadata, IntentMetadata) or not isinstance(metadata.intent_id, IntentId):
         return "invalid_intent_metadata"
-    if not isinstance(metadata.occurred_at, datetime):
+    if not _is_utc_timestamp(metadata.occurred_at):
         return "non_utc_timestamp"
     if metadata.source_attempt_id is not None and not isinstance(
         metadata.source_attempt_id, AttemptId
@@ -283,23 +313,39 @@ def preflight_intent_rejection(intent: object) -> str | None:
         metadata.expected_prior_state, RunState
     ):
         return "invalid_expected_state"
-    if metadata.expected_prior_digest is not None and not isinstance(
-        metadata.expected_prior_digest, str
+    if metadata.expected_prior_digest is not None and (
+        not isinstance(metadata.expected_prior_digest, str)
+        or not _DIGEST.fullmatch(metadata.expected_prior_digest)
     ):
         return "invalid_expected_digest"
     if metadata.monotonic_ns is not None and (
-        isinstance(metadata.monotonic_ns, bool) or not isinstance(metadata.monotonic_ns, int)
+        isinstance(metadata.monotonic_ns, bool)
+        or not isinstance(metadata.monotonic_ns, int)
+        or metadata.monotonic_ns < 0
     ):
         return "invalid_monotonic_time"
-    if not isinstance(metadata.reason_code, str):
+    if not isinstance(metadata.reason_code, str) or not _REASON_CODE.fullmatch(
+        metadata.reason_code
+    ):
         return "invalid_reason_code"
     if not isinstance(metadata.evidence_refs, tuple) or any(
         not isinstance(reference, ArtifactRef) for reference in metadata.evidence_refs
     ):
         return "invalid_evidence_refs"
-    if not isinstance(metadata.safe_metadata, Mapping) or not metadata.has_only_small_scalars():
+    if len(metadata.evidence_refs) > _MAX_EVIDENCE_REFS:
+        return "invalid_evidence_refs"
+    if (
+        not isinstance(metadata.safe_metadata, Mapping)
+        or len(metadata.safe_metadata) > _MAX_SAFE_METADATA
+        or not metadata.has_only_small_scalars()
+    ):
         return "thin_ledger_violation"
-    if any(not isinstance(key, str) for key in metadata.safe_metadata):
+    if any(
+        not isinstance(key, str)
+        or not _METADATA_KEY.fullmatch(key)
+        or _contains_prohibited_metadata_term(key)
+        for key in metadata.safe_metadata
+    ):
         return "thin_ledger_violation"
     if isinstance(intent, CreateExperimentIntent):
         valid = isinstance(intent.experiment_id, ExperimentId) and isinstance(
@@ -344,6 +390,19 @@ def preflight_intent_rejection(intent: object) -> str | None:
     else:
         valid = False
     return None if valid else "invalid_opaque_identity"
+
+
+def _is_utc_timestamp(value: object) -> bool:
+    return (
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and value.utcoffset() == UTC.utcoffset(None)
+    )
+
+
+def _contains_prohibited_metadata_term(key: str) -> bool:
+    normalized = "".join(character for character in key.lower() if character.isalnum())
+    return any(term in normalized for term in _PROHIBITED_METADATA_TERMS)
 
 
 def delivery_payload_digest(intent: object) -> tuple[str, str | None]:

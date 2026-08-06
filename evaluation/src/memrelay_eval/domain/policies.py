@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from .errors import InvalidLifecycleTransitionError
 from .states import AttemptTerminalKind, RunState
+
+if TYPE_CHECKING:
+    from .entities import (
+        AttemptTerminal,
+        ExposureDecision,
+        FreshIsolationAttestation,
+        Protocol,
+    )
 
 _ALLOWED_TRANSITIONS = {
     RunState.PLANNED: frozenset({RunState.ASSIGNED}),
@@ -44,9 +54,3 @@ def retry_eligibility_denial_code(
     if isolation is None or not isolation.is_conclusive:
         return "retry_fresh_isolation_unattested"
     return None
-
-
-def is_retryable_terminal(classification: AttemptTerminalKind) -> bool:
-    """Return whether the frozen protocol allows this terminal class one retry."""
-
-    return classification is AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE
