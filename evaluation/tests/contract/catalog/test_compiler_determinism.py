@@ -9,6 +9,7 @@ import sys
 import time
 from collections.abc import Callable
 from copy import deepcopy
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -164,6 +165,8 @@ def test_content_change_lock_is_history_independent_and_freshly_verifiable(tmp_p
     root = catalog_root(tmp_path)
     paths = compile_paths(root)
     compile_in_process(root)
+    prior_lock = tmp_path / "prior-lock.json"
+    prior_lock.write_bytes(paths["lock"].read_bytes())
     paths["catalog"].write_text(
         paths["catalog"]
         .read_text(encoding="utf-8")
@@ -177,6 +180,7 @@ def test_content_change_lock_is_history_independent_and_freshly_verifiable(tmp_p
         output_dir=paths["output"],
         lock_path=paths["lock"],
         manifest_path=paths["manifest"],
+        prior_lock=prior_lock,
     )
     changed_bytes = compiled_bytes(root)
     changed_lock = json.loads(paths["lock"].read_text(encoding="utf-8"))
@@ -268,7 +272,7 @@ def test_rollback_failure_preserves_recoverable_prior_backup(
     assert compiled_bytes(backups[0]) == before
     assert list(root.parent.glob(".catalog-compile-transaction-*.json"))
     if not root.exists():
-        fallback_manifest = root.parent / ".catalog-compile-manifest.json"
+        fallback_manifest = root.parent / ".catalog-command-evidence" / "compile-manifest.json"
         assert (
             json.loads(fallback_manifest.read_text(encoding="utf-8"))["terminal_status"] == "failed"
         )
@@ -451,6 +455,78 @@ def test_compiler_enforces_allowed_retries_when_schema_is_loosened(
     assert result.terminal_status == "failed"
     assert result.error is not None
     assert "allowed_retries must be an integer" in str(result.error)
+
+
+def test_ambient_stale_lock_does_not_change_compilation_identity(tmp_path: Path) -> None:
+    fresh_root = catalog_root(tmp_path / "fresh")
+    stale_root = catalog_root(tmp_path / "stale")
+    stale_paths = compile_paths(stale_root)
+    stale_paths["lock"].write_text('{"stale":"unrelated"}', encoding="utf-8")
+
+    compile_in_process(fresh_root)
+    compile_in_process(stale_root)
+
+    assert compiled_bytes(stale_root) == compiled_bytes(fresh_root)
+
+
+def test_explicit_prior_lock_controls_version_policy_and_binds_manifest_hash(
+    tmp_path: Path,
+) -> None:
+    root = catalog_root(tmp_path)
+    paths = compile_paths(root)
+    compile_in_process(root)
+    prior_lock = tmp_path / "explicit-prior-lock.json"
+    prior_lock.write_bytes(paths["lock"].read_bytes())
+    original_prior_sha256 = sha256(prior_lock.read_bytes()).hexdigest()
+    changed = (
+        paths["catalog"]
+        .read_text(encoding="utf-8")
+        .replace("Validate the executable catalog", "Explicit version policy catalog")
+    )
+    paths["catalog"].write_text(changed, encoding="utf-8")
+
+    rejected = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        prior_lock=prior_lock,
+    )
+    assert rejected.terminal_status == "failed"
+    assert json.loads(paths["manifest"].read_text(encoding="utf-8"))["prior_lock"] == {
+        "path": "explicit-prior-lock.json",
+        "sha256": original_prior_sha256,
+    }
+
+    paths["catalog"].write_text(
+        changed.replace('catalog_version: "1.0.0"', 'catalog_version: "1.0.1"'),
+        encoding="utf-8",
+    )
+    accepted = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        prior_lock=prior_lock,
+    )
+    manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+
+    assert accepted.terminal_status == "succeeded"
+    assert manifest["prior_lock"]["sha256"] == original_prior_sha256
+
+    prior_lock.write_bytes(prior_lock.read_bytes() + b" ")
+    tampered = compile_catalog_command(
+        paths["catalog"],
+        output_dir=paths["output"],
+        lock_path=paths["lock"],
+        manifest_path=paths["manifest"],
+        prior_lock=prior_lock,
+    )
+    tampered_manifest = json.loads(paths["manifest"].read_text(encoding="utf-8"))
+
+    assert tampered.terminal_status == "failed"
+    assert tampered_manifest["prior_lock"]["sha256"] == sha256(prior_lock.read_bytes()).hexdigest()
+    assert tampered_manifest["prior_lock"]["sha256"] != original_prior_sha256
 
 
 def test_compile_retains_good_output_on_validation_failure_and_writes_failure_manifest(
@@ -746,6 +822,41 @@ def test_recovery_never_guesses_between_multiple_transaction_journals(tmp_path: 
         verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
 
 
+def test_recovery_refuses_a_backup_with_source_bytes_that_do_not_match_its_lock(
+    tmp_path: Path,
+) -> None:
+    root = catalog_root(tmp_path)
+    compile_in_process(root)
+    paths = compile_paths(root)
+    transaction_id = "a" * 32
+    backup = root.parent / f".catalog-compile-backup-{transaction_id}"
+    staging = root.parent / f".catalog-compile-stage-{transaction_id}"
+    compiler_module._write_transaction(
+        root,
+        transaction_id=transaction_id,
+        staging=staging,
+        backup=backup,
+        source_sha256=compiler_module._catalog_source_sha256(paths["catalog"]),
+        backup_lock_sha256=sha256(paths["lock"].read_bytes()).hexdigest(),
+        runtime_lock={"path": None, "sha256": None},
+        output_dir="generated",
+    )
+    os.replace(root, backup)
+    (backup / "catalog.yaml").write_text("corrupted: source\n", encoding="utf-8")
+
+    with pytest.raises(CatalogCompileError):
+        verify_compiled_catalog(
+            root / "generated",
+            root / "catalog-lock.json",
+            catalog_path=root / "catalog.yaml",
+        )
+
+    assert not root.exists()
+    assert backup.exists()
+    assert (backup / "catalog-lock.json").exists()
+    assert list(root.parent.glob(".catalog-compile-transaction-*.json"))
+
+
 def test_cross_process_compile_lock_has_one_writer_and_releases_after_winner_crash(
     tmp_path: Path,
 ) -> None:
@@ -913,6 +1024,7 @@ def test_command_manifests_are_complete_and_redacted(tmp_path: Path, terminal: s
         "catalog_input_sha256",
         "canonical_output_sha256",
         "runtime_lock",
+        "prior_lock",
         "protocol_id",
         "protocol_ids",
         "terminal_status",

@@ -99,6 +99,7 @@ class CompilationResult:
     runtime_lock: Mapping[str, str | None]
     recovery_status: str
     change_kind: str
+    prior_lock: Mapping[str, str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,16 +211,15 @@ def _compile_catalog_locked(
     catalog_root: Path,
     recovery_status: str,
 ) -> CompilationResult:
-    effective_prior_lock = prior_lock
-    if effective_prior_lock is None and lock_path.exists():
-        effective_prior_lock = lock_path
+    _validate_prior_lock_input(prior_lock)
     validated = validate_catalog(
         catalog_path,
-        prior_lock=effective_prior_lock,
+        prior_lock=prior_lock,
         repository_root=catalog_root,
     )
     source_sha256 = _catalog_source_sha256(catalog_path)
     runtime_lock_reference = _runtime_lock_reference(runtime_lock)
+    prior_lock_reference = _prior_lock_reference(prior_lock)
     documents = _compiled_documents(
         validated,
         catalog_input_sha256=_sha256(canonical_bytes(validated.catalog)),
@@ -241,7 +241,7 @@ def _compile_catalog_locked(
             staging=staging,
             backup=backup,
             source_sha256=source_sha256,
-            prior_lock_sha256=_optional_file_sha256(effective_prior_lock),
+            backup_lock_sha256=_valid_backup_lock_sha256(lock_path),
             runtime_lock=runtime_lock_reference,
             output_dir=generated_relative_dir,
         )
@@ -324,6 +324,7 @@ def _compile_catalog_locked(
         runtime_lock=runtime_lock_reference,
         recovery_status=recovery_status,
         change_kind=validated.change_kind,
+        prior_lock=prior_lock_reference,
     )
 
 
@@ -357,6 +358,7 @@ def compile_catalog_command(
         return CompileCommandResult("failed", 1, None, error)
     source_sha256 = _optional_catalog_source_sha256(catalog_path)
     runtime_lock_reference = _runtime_lock_reference_or_missing(runtime_lock)
+    prior_lock_reference = _prior_lock_reference(prior_lock)
     compilation: CompilationResult | None = None
     try:
         compilation = compile_catalog(
@@ -380,6 +382,7 @@ def compile_catalog_command(
             protocol_ids=interruption.protocol_ids,
             runtime_lock=interruption.runtime_lock,
             error_code="interrupted_after_publish",
+            prior_lock=prior_lock_reference,
         )
         return CompileCommandResult(
             "interrupted",
@@ -397,6 +400,7 @@ def compile_catalog_command(
             protocol_ids=(),
             runtime_lock=runtime_lock_reference,
             error_code="interrupted",
+            prior_lock=prior_lock_reference,
         )
         return CompileCommandResult("interrupted", 130, None, None)
     except CatalogValidationError as error:
@@ -409,6 +413,7 @@ def compile_catalog_command(
             protocol_ids=(),
             runtime_lock=runtime_lock_reference,
             error_code="catalog_validation",
+            prior_lock=prior_lock_reference,
         )
         return CompileCommandResult("failed", 1, None, error)
     except Exception as error:
@@ -424,6 +429,7 @@ def compile_catalog_command(
             protocol_ids=(),
             runtime_lock=runtime_lock_reference,
             error_code="catalog_compile",
+            prior_lock=prior_lock_reference,
         )
         return CompileCommandResult("failed", 1, None, compile_error)
     except BaseException:
@@ -437,6 +443,7 @@ def compile_catalog_command(
             protocol_ids=(),
             runtime_lock=runtime_lock_reference,
             error_code="interrupted",
+            prior_lock=prior_lock_reference,
         )
         return CompileCommandResult("interrupted", 130, None, interruption)
 
@@ -454,6 +461,7 @@ def compile_catalog_command(
             error_code=None,
             recovery_status=compilation.recovery_status,
             change_kind=compilation.change_kind,
+            prior_lock=compilation.prior_lock,
         )
         if after_manifest is not None:
             after_manifest(compilation)
@@ -469,6 +477,7 @@ def compile_catalog_command(
             error_code="interrupted_after_publish",
             recovery_status=compilation.recovery_status,
             change_kind=compilation.change_kind,
+            prior_lock=compilation.prior_lock,
         )
         return CompileCommandResult(
             "interrupted",
@@ -903,7 +912,7 @@ def _write_transaction(
     staging: Path,
     backup: Path,
     source_sha256: str,
-    prior_lock_sha256: str | None,
+    backup_lock_sha256: str | None,
     runtime_lock: Mapping[str, str | None],
     output_dir: str,
 ) -> Path:
@@ -916,7 +925,7 @@ def _write_transaction(
             "staging": staging.name,
             "backup": backup.name,
             "source_sha256": source_sha256,
-            "prior_lock_sha256": prior_lock_sha256,
+            "backup_lock_sha256": backup_lock_sha256,
             "runtime_lock": dict(runtime_lock),
             "output_dir": output_dir,
         }
@@ -1049,8 +1058,8 @@ def _validate_recovery_backup(
     backup: Path,
     transaction: Mapping[str, object],
 ) -> None:
-    prior_lock_sha256 = transaction.get("prior_lock_sha256")
-    if prior_lock_sha256 is None:
+    backup_lock_sha256 = transaction.get("backup_lock_sha256")
+    if backup_lock_sha256 is None:
         source = backup / "catalog.yaml"
         if _optional_catalog_source_sha256(source) != _required_string(
             transaction, "source_sha256"
@@ -1065,20 +1074,25 @@ def _validate_recovery_backup(
                 "catalog recovery failed: prior source cannot be validated"
             ) from error
         return
-    if not isinstance(prior_lock_sha256, str):
-        raise CatalogRecoveryError("catalog recovery failed: prior lock hash is invalid")
+    if not isinstance(backup_lock_sha256, str):
+        raise CatalogRecoveryError("catalog recovery failed: backup lock hash is invalid")
     lock_path = backup / "catalog-lock.json"
-    if _optional_file_sha256(lock_path) != prior_lock_sha256:
+    if _optional_file_sha256(lock_path) != backup_lock_sha256:
         raise CatalogRecoveryError(
-            "catalog recovery failed: prior lock bytes do not match the journal"
+            "catalog recovery failed: backup lock bytes do not match the journal"
         )
     lock_document, _ = _read_canonical_document(lock_path)
-    _verify_compiled_catalog(
-        backup / _transaction_output_dir(transaction),
-        lock_path,
-        catalog_path=backup / "catalog.yaml",
-        expected_runtime_lock=_runtime_lock_from_catalog_lock(lock_document),
-    )
+    try:
+        _verify_compiled_catalog(
+            backup / _transaction_output_dir(transaction),
+            lock_path,
+            catalog_path=backup / "catalog.yaml",
+            expected_runtime_lock=_runtime_lock_from_catalog_lock(lock_document),
+        )
+    except (CatalogCompileError, CatalogValidationError) as error:
+        raise CatalogRecoveryError(
+            "catalog recovery failed: backup source does not match its sealed lock"
+        ) from error
 
 
 def _runtime_lock_from_catalog_lock(lock: Mapping[str, object]) -> dict[str, str | None]:
@@ -1216,6 +1230,32 @@ def _runtime_lock_reference_or_missing(path: Path | None) -> dict[str, str | Non
     return {"path": path.name, "sha256": _optional_file_sha256(path)}
 
 
+def _prior_lock_reference(path: Path | None) -> dict[str, str | None]:
+    if path is None:
+        return {"path": None, "sha256": None}
+    return {"path": path.name, "sha256": _optional_file_sha256(path)}
+
+
+def _validate_prior_lock_input(path: Path | None) -> None:
+    if path is None:
+        return
+    lock, _ = _read_canonical_document(path)
+    if not isinstance(lock.get("semantic_source"), Mapping) or not isinstance(
+        lock.get("catalog_version"), str
+    ):
+        raise CatalogCompileError("explicit prior lock lacks catalog semantic source or version")
+
+
+def _valid_backup_lock_sha256(path: Path) -> str | None:
+    if not path.exists():
+        return None
+    try:
+        _, raw = _read_canonical_document(path)
+    except CatalogCompileError:
+        return None
+    return _sha256(raw)
+
+
 def _allowed_retries(scenario: Mapping[str, object]) -> int:
     value = scenario.get("allowed_retries")
     if not isinstance(value, int) or isinstance(value, bool) or value not in {0, 1}:
@@ -1256,6 +1296,7 @@ def _write_command_manifest(
     error_code: str | None,
     recovery_status: str = "not_needed",
     change_kind: str | None = None,
+    prior_lock: Mapping[str, str | None] | None = None,
 ) -> None:
     document = attach_digest(
         {
@@ -1267,6 +1308,7 @@ def _write_command_manifest(
             "catalog_input_sha256": catalog_input_sha256,
             "canonical_output_sha256": dict(output_sha256),
             "runtime_lock": dict(runtime_lock),
+            "prior_lock": dict(prior_lock or {"path": None, "sha256": None}),
             "protocol_id": protocol_ids[0] if len(protocol_ids) == 1 else None,
             "protocol_ids": list(protocol_ids),
             "schema_versions": {
@@ -1286,7 +1328,11 @@ def _write_command_manifest(
     data = canonical_bytes(document)
     destination = path
     if not destination.parent.exists():
-        destination = destination.parent.parent / f".{destination.parent.name}-{destination.name}"
+        destination = (
+            destination.parent.parent
+            / f".{destination.parent.name}-command-evidence"
+            / destination.name
+        )
     destination.parent.mkdir(parents=True, exist_ok=True)
     _write_bytes_durable(destination, data)
 
