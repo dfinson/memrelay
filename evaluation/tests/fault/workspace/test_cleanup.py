@@ -20,6 +20,17 @@ from memrelay_eval.adapters.workspace.worktree import TemporaryWorktreeWorkspace
 from memrelay_eval.domain.ids import AttemptId, RunId
 
 
+class _OwnershipOnlyWorkspaceProvider(IsolatedCloneWorkspaceProvider):
+    """Exercise cross-process allocation without Git work obscuring the ownership race."""
+
+    def _materialize(self, handle, spec) -> None:
+        del spec
+        handle.workspace_root.mkdir()
+
+    def _verify_materialization(self, handle, spec) -> None:
+        del handle, spec
+
+
 def _git(path: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(path), *args],
@@ -70,7 +81,7 @@ def _cross_process_create(
         allocation_root=Path(allocation_root),
     )
     try:
-        provider = IsolatedCloneWorkspaceProvider()
+        provider = _OwnershipOnlyWorkspaceProvider()
         handle = asyncio.run(provider.create(spec))
         asyncio.run(provider.destroy(handle))
     except WorkspaceProviderError as error:
