@@ -127,6 +127,9 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - Windows evaluator suite: 125 passed, 2 skipped because this host lacks symlink privilege. Pinned
   evaluator runtime validation: CPython 3.13.14 via isolated WSL uv environment, 122 passed and
   4 Windows-junction tests skipped by explicit platform capability.
+- After rebasing onto the merged catalog/CAS baseline at `f905634` (and subsequent main merges),
+  the full evaluator ran on CPython 3.13.14 via isolated WSL uv: 268 passed, 5 Windows-junction
+  tests skipped by explicit platform capability.
 
 ### File List
 
