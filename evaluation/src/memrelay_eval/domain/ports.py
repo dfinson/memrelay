@@ -11,6 +11,7 @@ from .entities import (
     ArtifactRef,
     AttemptTerminal,
     InclusionDecision,
+    NativeModelCatalog,
     RunTransition,
     TelemetryObservation,
 )
@@ -35,7 +36,7 @@ class ExecutionAuthorityPort(Protocol):
 
 
 class AgentRuntimePort(Protocol):
-    async def list_models(self) -> object: ...
+    async def list_models(self) -> NativeModelCatalog: ...
     async def run_session(self, session: object) -> object: ...
 
 

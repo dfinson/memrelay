@@ -292,3 +292,185 @@ class TelemetryObservation:
     def __post_init__(self) -> None:
         _utc_z(self.occurred_at)
         object.__setattr__(self, "attributes", MappingProxyType(dict(self.attributes)))
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeIdentity:
+    """The non-secret identity of the SDK and runtime execution substrate."""
+
+    sdk_version: str
+    wheel_filename: str
+    wheel_sha256: str
+    runtime_version: str
+    runtime_sha256: str
+    transport: str
+    auth_mode: str
+    subscription_identity_sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.sdk_version or not self.runtime_version or not self.transport:
+            raise ValueError("runtime identity requires version and transport fields")
+        if self.auth_mode != "copilot_subscription":
+            raise ValueError("only current Copilot subscription authentication is supported")
+        if self.wheel_filename != "github_copilot_sdk-1.0.8-py3-none-any.whl":
+            raise ValueError("the Copilot SDK wheel filename is frozen")
+        for digest in (
+            self.wheel_sha256,
+            self.runtime_sha256,
+            self.subscription_identity_sha256,
+        ):
+            if not _SHA256.fullmatch(digest):
+                raise ValueError("runtime identity hashes must be lowercase SHA-256")
+
+
+@dataclass(frozen=True, slots=True)
+class NativeModel:
+    """A model exactly as reported by the native Copilot catalog."""
+
+    native_id: str
+    family: str
+    capabilities: Mapping[str, object]
+    reasoning_effort: object
+    context_tier: object
+
+    def __post_init__(self) -> None:
+        if not self.native_id:
+            raise ValueError("native model IDs are required")
+        object.__setattr__(self, "capabilities", MappingProxyType(dict(self.capabilities)))
+
+
+@dataclass(frozen=True, slots=True)
+class NativeModelCatalog:
+    """Immutable raw and projected model-catalog evidence."""
+
+    raw_sha256: str
+    projection_sha256: str
+    models: tuple[NativeModel, ...]
+
+    def __post_init__(self) -> None:
+        if not _SHA256.fullmatch(self.raw_sha256) or not _SHA256.fullmatch(self.projection_sha256):
+            raise ValueError("catalog hashes must be lowercase SHA-256")
+        if len({model.native_id for model in self.models}) != len(self.models):
+            raise ValueError("native model IDs must be unique")
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationCaps:
+    """Frozen aggregate limits for a finite, explicit qualification invocation."""
+
+    session_limit: int
+    credit_limit: float | None
+    token_limit: int | None
+    active_seconds_limit: float | None
+    wall_seconds_limit: float | None
+
+    def __post_init__(self) -> None:
+        if self.session_limit < 1:
+            raise ValueError("qualification session_limit must be positive")
+        for value in (
+            self.credit_limit,
+            self.token_limit,
+            self.active_seconds_limit,
+            self.wall_seconds_limit,
+        ):
+            if value is None or value < 0:
+                raise ValueError("qualification caps must be explicit non-negative values")
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationUsage:
+    sessions: int = 0
+    credits: float = 0.0
+    tokens: int = 0
+    active_seconds: float = 0.0
+    wall_seconds: float = 0.0
+
+    def __post_init__(self) -> None:
+        if (
+            self.sessions < 0
+            or self.credits < 0
+            or self.tokens < 0
+            or self.active_seconds < 0
+            or self.wall_seconds < 0
+        ):
+            raise ValueError("qualification usage cannot be negative")
+
+    def plus(self, other: QualificationUsage) -> QualificationUsage:
+        return QualificationUsage(
+            sessions=self.sessions + other.sessions,
+            credits=self.credits + other.credits,
+            tokens=self.tokens + other.tokens,
+            active_seconds=self.active_seconds + other.active_seconds,
+            wall_seconds=self.wall_seconds + other.wall_seconds,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class QualificationTaskResult:
+    """One nonstudy task session; failures are evidence and are never retried."""
+
+    executable_passed: bool
+    protected_check_fraction: float
+    usage: QualificationUsage
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.protected_check_fraction <= 1.0:
+            raise ValueError("protected_check_fraction must be in [0, 1]")
+        if self.usage.sessions != 1:
+            raise ValueError("each qualification result represents exactly one session")
+
+
+@dataclass(frozen=True, slots=True)
+class ModelQualification:
+    """Complete eight-task result for one native model."""
+
+    native_id: str
+    task_results: tuple[QualificationTaskResult, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.task_results) != 8:
+            raise ValueError(
+                "each eligible model must receive exactly eight qualification sessions"
+            )
+
+    @property
+    def executable_passes(self) -> int:
+        return sum(result.executable_passed for result in self.task_results)
+
+    @property
+    def protected_check_fraction(self) -> float:
+        return sum(result.protected_check_fraction for result in self.task_results) / 8
+
+    @property
+    def median_active_seconds(self) -> float:
+        values = sorted(result.usage.active_seconds for result in self.task_results)
+        return (values[3] + values[4]) / 2
+
+    @property
+    def median_credits(self) -> float:
+        values = sorted(result.usage.credits for result in self.task_results)
+        return (values[3] + values[4]) / 2
+
+    @property
+    def usage(self) -> QualificationUsage:
+        total = QualificationUsage()
+        for result in self.task_results:
+            total = total.plus(result.usage)
+        return total
+
+
+@dataclass(frozen=True, slots=True)
+class LockedModel:
+    """A selected model's exact native catalog properties."""
+
+    role: str
+    native_id: str
+    family: str
+    capabilities: Mapping[str, object]
+    reasoning_effort: object
+    context_tier: object
+
+    def __post_init__(self) -> None:
+        if self.role not in {"M0", "M1", "M2", "judge"}:
+            raise ValueError("model lock role is invalid")
+        object.__setattr__(self, "capabilities", MappingProxyType(dict(self.capabilities)))
