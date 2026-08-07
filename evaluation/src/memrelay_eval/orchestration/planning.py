@@ -240,8 +240,13 @@ def _raise_if_redacted_text(text: str) -> None:
 
 def _redaction_match_text(text: str) -> str:
     """Return a detection-only skeleton without changing emitted manifest bytes."""
-    normalized = unicodedata.normalize("NFKC", text)
-    visible = "".join(character for character in normalized if not _is_default_ignorable(character))
+    normalized = unicodedata.normalize("NFKD", text)
+    visible = "".join(
+        character
+        for character in normalized
+        if not _is_default_ignorable(character)
+        and not unicodedata.category(character).startswith("M")
+    )
     return visible.translate(_REDACTION_CONFUSABLES).casefold()
 
 

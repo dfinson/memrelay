@@ -147,9 +147,10 @@ class TestRedactionEnforcement:
         "payload",
         (
             '{"note":"cred\u200bential store"}',
-            '{"note":"secr\u200cet value"}',
-            '{"note":"pro\u2060vider payload"}',
-            '{"note":"cred\ufe0fential store"}',
+            '{"note":"cred\u200cential store"}',
+            '{"note":"cred\u2060ential store"}',
+            '{"note":"cred\ufeffential store"}',
+            '{"note":"cre\u0301dential store"}',
         ),
     )
     def test_default_ignorables_cannot_split_prohibited_json_terms(self, payload: str) -> None:
@@ -159,11 +160,14 @@ class TestRedactionEnforcement:
     @pytest.mark.parametrize(
         "payload",
         (
-            "credential\u200d store",
-            "secr\ufeffet material",
+            "cred\u200bential store",
+            "cred\u200cential store",
+            "cred\u2060ential store",
+            "cred\ufeffential store",
+            "cre\u0301dential store",
         ),
     )
-    def test_default_ignorables_cannot_split_prohibited_plaintext_terms(self, payload: str) -> None:
+    def test_normalization_cannot_split_prohibited_plaintext_terms(self, payload: str) -> None:
         with pytest.raises(RedactionViolationError):
             redaction_scan(payload.encode("utf-8"))
 
@@ -171,12 +175,25 @@ class TestRedactionEnforcement:
         "payload",
         (
             '{"note":"cr\u0435dential store"}',
-            '{"note":"pr\u043evider payload"}',
-            '{"note":"s\u0435cret material"}',
-            '{"note":"us\u0435r identity"}',
+            '{"note":"u\u0455er identity"}',
+            '{"note":"\u0441ode payload"}',
+            '{"note":"pr\u03bfvider payload"}',
         ),
     )
     def test_confusable_prohibited_json_terms_fail_closed(self, payload: str) -> None:
+        with pytest.raises(RedactionViolationError):
+            redaction_scan(payload.encode("utf-8"))
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            "cr\u0435dential store",
+            "u\u0455er identity",
+            "\u0441ode payload",
+            "pr\u03bfvider payload",
+        ),
+    )
+    def test_confusable_prohibited_plaintext_terms_fail_closed(self, payload: str) -> None:
         with pytest.raises(RedactionViolationError):
             redaction_scan(payload.encode("utf-8"))
 
