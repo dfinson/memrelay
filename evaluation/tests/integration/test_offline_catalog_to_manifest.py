@@ -7,21 +7,16 @@ Validates AC-2: input/output hashes, runtime lock, protocol ID, typed terminal s
 from __future__ import annotations
 
 import json
-import os
 import socket
-import tempfile
 from pathlib import Path
 
 import pytest
-
 from memrelay_eval.orchestration.planning import (
     NetworkDenyError,
     PlanningResult,
     network_deny_guard,
     plan_offline,
     plan_offline_to_command_manifest,
-    redaction_scan,
-    validate_evidence_label,
 )
 
 CATALOG_PATH = Path(__file__).parents[2] / "catalog" / "catalog.yaml"
@@ -39,19 +34,16 @@ class TestNetworkDenyGuard:
     """Verify that the network deny guard blocks all socket operations."""
 
     def test_socket_creation_blocked(self) -> None:
-        with network_deny_guard():
-            with pytest.raises(NetworkDenyError):
-                socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        with network_deny_guard(), pytest.raises(NetworkDenyError):
+            socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     def test_getaddrinfo_blocked(self) -> None:
-        with network_deny_guard():
-            with pytest.raises(NetworkDenyError):
-                socket.getaddrinfo("example.com", 80)
+        with network_deny_guard(), pytest.raises(NetworkDenyError):
+            socket.getaddrinfo("example.com", 80)
 
     def test_gethostbyname_blocked(self) -> None:
-        with network_deny_guard():
-            with pytest.raises(NetworkDenyError):
-                socket.gethostbyname("example.com")
+        with network_deny_guard(), pytest.raises(NetworkDenyError):
+            socket.gethostbyname("example.com")
 
     def test_restored_after_context(self) -> None:
         original = socket.socket
@@ -126,7 +118,9 @@ class TestOfflinePlanningEndToEnd:
         # Verify no assigned/provisioned/running transitions exist
         assert "assigned" not in json.dumps(content).lower().replace("assignment", "")
 
-    def test_no_credentials_in_environment(self, clean_output_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_credentials_in_environment(
+        self, clean_output_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Credential canaries in environment produce no leakage."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-canary-test-key")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_canary_token")
@@ -171,4 +165,3 @@ class TestCommandManifest:
         document = json.loads(manifest_bytes)
         assert document["terminal_status"] == "failed"
         assert document["error_code"] == "catalog_failed"
-

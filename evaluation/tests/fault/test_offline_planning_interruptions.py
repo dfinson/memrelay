@@ -6,17 +6,13 @@ assignment failure, interruption handling.
 
 from __future__ import annotations
 
-import signal
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from memrelay_eval.orchestration.planning import (
     EvidenceLabelError,
     NetworkDenyError,
-    PlanningError,
-    PlanningResult,
     RedactionViolationError,
     network_deny_guard,
     plan_offline,
@@ -93,15 +89,15 @@ class TestNetworkDenial:
 
     def test_socket_blocked(self) -> None:
         import socket as _socket
-        with network_deny_guard():
-            with pytest.raises(NetworkDenyError):
-                _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+
+        with network_deny_guard(), pytest.raises(NetworkDenyError):
+            _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
 
     def test_dns_blocked(self) -> None:
         import socket as _socket
-        with network_deny_guard():
-            with pytest.raises(NetworkDenyError):
-                _socket.getaddrinfo("example.com", 443)
+
+        with network_deny_guard(), pytest.raises(NetworkDenyError):
+            _socket.getaddrinfo("example.com", 443)
 
 
 class TestRedactionEnforcement:
@@ -141,4 +137,3 @@ class TestEvidenceLabels:
                 manifest_path=tmp_path / "manifest.json",
                 evidence_classification="efficacy",
             )
-

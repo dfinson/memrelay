@@ -10,9 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from memrelay_eval.cli.main import main
-
 
 CATALOG_PATH = Path(__file__).parents[2] / "catalog" / "catalog.yaml"
 
@@ -31,12 +29,17 @@ class TestPlanOfflineCLI:
         output_dir = tmp_path / "gen"
         output_dir.mkdir()
         manifest = tmp_path / "manifest.json"
-        exit_code = main([
-            "plan-offline",
-            "--catalog", str(CATALOG_PATH),
-            "--output-dir", str(output_dir),
-            "--manifest", str(manifest),
-        ])
+        exit_code = main(
+            [
+                "plan-offline",
+                "--catalog",
+                str(CATALOG_PATH),
+                "--output-dir",
+                str(output_dir),
+                "--manifest",
+                str(manifest),
+            ]
+        )
         assert exit_code == 0
 
     def test_stdout_is_valid_command_manifest(
@@ -45,12 +48,17 @@ class TestPlanOfflineCLI:
         output_dir = tmp_path / "gen"
         output_dir.mkdir()
         manifest = tmp_path / "manifest.json"
-        main([
-            "plan-offline",
-            "--catalog", str(CATALOG_PATH),
-            "--output-dir", str(output_dir),
-            "--manifest", str(manifest),
-        ])
+        main(
+            [
+                "plan-offline",
+                "--catalog",
+                str(CATALOG_PATH),
+                "--output-dir",
+                str(output_dir),
+                "--manifest",
+                str(manifest),
+            ]
+        )
         output = capsys.readouterr().out
         document = json.loads(output)
         assert document["command"] == "plan-offline"
@@ -68,12 +76,17 @@ class TestPlanOfflineCLI:
         output_dir = tmp_path / "gen"
         output_dir.mkdir()
         manifest = tmp_path / "manifest.json"
-        exit_code = main([
-            "plan-offline",
-            "--catalog", str(bad_catalog),
-            "--output-dir", str(output_dir),
-            "--manifest", str(manifest),
-        ])
+        exit_code = main(
+            [
+                "plan-offline",
+                "--catalog",
+                str(bad_catalog),
+                "--output-dir",
+                str(output_dir),
+                "--manifest",
+                str(manifest),
+            ]
+        )
         assert exit_code != 0
         output = capsys.readouterr().out
         document = json.loads(output)
@@ -85,12 +98,17 @@ class TestPlanOfflineCLI:
         output_dir = tmp_path / "gen"
         output_dir.mkdir()
         manifest = tmp_path / "manifest.json"
-        exit_code = main([
-            "plan-offline",
-            "--catalog", str(tmp_path / "nonexistent.yaml"),
-            "--output-dir", str(output_dir),
-            "--manifest", str(manifest),
-        ])
+        exit_code = main(
+            [
+                "plan-offline",
+                "--catalog",
+                str(tmp_path / "nonexistent.yaml"),
+                "--output-dir",
+                str(output_dir),
+                "--manifest",
+                str(manifest),
+            ]
+        )
         assert exit_code != 0
 
     def test_never_prompts_for_input(self, tmp_path: Path) -> None:
@@ -99,11 +117,15 @@ class TestPlanOfflineCLI:
         output_dir.mkdir()
         manifest = tmp_path / "manifest.json"
         with patch("builtins.input", side_effect=AssertionError("must not prompt")):
-            exit_code = main([
-                "plan-offline",
-                "--catalog", str(CATALOG_PATH),
-                "--output-dir", str(output_dir),
-                "--manifest", str(manifest),
-            ])
+            exit_code = main(
+                [
+                    "plan-offline",
+                    "--catalog",
+                    str(CATALOG_PATH),
+                    "--output-dir",
+                    str(output_dir),
+                    "--manifest",
+                    str(manifest),
+                ]
+            )
         assert exit_code == 0
-
