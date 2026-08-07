@@ -1,6 +1,6 @@
 # Story 1.4: Govern Fixtures, Traceability, and Task Eligibility
 
-Status: review
+Status: done
 
 ## Story
 
@@ -139,6 +139,8 @@ Direct senior-developer implementation (BMAD `bmad-dev-story` workflow tooling w
 
 ### Completion Notes List
 
+- Story 1.5 consumes only this story's immutable, evidence-backed eligible disposition;
+  it does not re-evaluate or bypass the Story 1.4 governance policy.
 - Implemented `fixtures.py` (AC1 hard gate): resolves fixture paths against the catalog root with symlink/`..`/absolute/drive/UNC escape containment, verifies exact SHA-256/media type/revision/license/provenance/extraction path/classification/redistribution policy, and raises a compile-blocking `FixtureVerificationError` on any violation so an invalid fixture fails the entire catalog compile closed (proven at the full `compile_catalog_command` level in `tests/fault/test_catalog_governance_faults.py`).
 - Implemented `eligibility.py` (AC3/AC4 soft, immutable disposition): never raises; always returns a full `eligible`/`rejected` disposition with failure codes, evidence refs, reviewer role, and a canonical digest, so a scientifically ineligible scenario still allows the catalog to compile while recording the rejection (also proven at the full-compile level in the same fault-test file).
 - Wired both gates into `compiler.py`'s `_compiled_documents()`/`_traceability_records()`, replacing all placeholder `"not_performed"` fixture/eligibility fields in `tasks.json`, `fixture-manifest.json`, and `traceability.json` with real computed values (identical `eligibility_evaluation` object embedded in both `tasks.json` and `traceability.json`).

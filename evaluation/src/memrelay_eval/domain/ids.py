@@ -77,6 +77,18 @@ class ArtifactId(OpaqueId):
     prefix = "art"
 
 
+class ConfigurationId(OpaqueId):
+    prefix = "config"
+
+
+class EnrollmentPlanId(OpaqueId):
+    prefix = "enrollment"
+
+
+class EnvironmentStratumId(OpaqueId):
+    prefix = "environment"
+
+
 class EvidenceId(OpaqueId):
     prefix = "evidence"
 

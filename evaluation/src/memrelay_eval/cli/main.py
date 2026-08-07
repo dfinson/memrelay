@@ -11,6 +11,7 @@ from memrelay_eval.cli.commands import (
     compile_authored_catalog,
     lock_models,
     run_stage,
+    show_effective_configuration,
     show_foundation_status,
     validate_authored_catalog,
 )
@@ -24,6 +25,25 @@ def build_parser() -> argparse.ArgumentParser:
         "foundation", help="show current evaluator foundation status"
     )
     foundation.set_defaults(handler=show_foundation_status)
+    effective_config = subcommands.add_parser(
+        "effective-config",
+        help="resolve explicit configuration and print a redacted canonical projection",
+    )
+    effective_config.add_argument("--config", help="evaluator TOML configuration file")
+    effective_config.add_argument("--stage")
+    effective_config.add_argument("--timeout-seconds", type=int)
+    effective_config.add_argument("--max-concurrency", type=int)
+    effective_config.add_argument(
+        "--network-policy",
+        help="JSON object for the explicit CLI network policy",
+    )
+    effective_config.add_argument(
+        "--credential-reference",
+        action="append",
+        metavar="VARIABLE:PROCESS",
+        help="named credential variable and exact target process; never a credential value",
+    )
+    effective_config.set_defaults(handler=show_effective_configuration)
     run = subcommands.add_parser("run", help="request a recognized evaluator stage")
     run.add_argument("--stage", choices=("cross-repo",), required=True)
     run.set_defaults(handler=run_stage)

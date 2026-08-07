@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.local/schemas/effective-config.schema.json",
+  "title": "Redacted Effective Evaluator Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "artifact_type",
+    "schema_version",
+    "fields",
+    "digest"
+  ],
+  "properties": {
+    "artifact_type": {
+      "const": "effective_configuration"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "fields": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "value",
+          "provenance"
+        ],
+        "properties": {
+          "value": {},
+          "provenance": {
+            "enum": [
+              "cli",
+              "protocol_stage",
+              "evaluator_file",
+              "safe_default"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

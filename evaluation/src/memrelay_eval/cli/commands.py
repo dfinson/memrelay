@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -14,10 +15,19 @@ from memrelay_eval.application.copilot_services import (
     eligible_models,
     qualify_native_catalog,
 )
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.catalog.compiler import compile_catalog_command
 from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
 from memrelay_eval.domain.entities import QualificationCaps
-from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
+from memrelay_eval.domain.errors import (
+    ConformancePauseError,
+    CrossRepositoryDeniedError,
+    InvalidConfigurationError,
+)
+from memrelay_eval.orchestration.configuration import (
+    load_evaluator_toml,
+    resolve_effective_configuration,
+)
 from memrelay_eval.orchestration.control import (
     LockRepository,
     reuse_or_reject_model_lock,
@@ -28,6 +38,31 @@ from memrelay_eval.orchestration.stages import refuse_cross_repository_stage
 
 def show_foundation_status(_: Namespace) -> int:
     print("memrelay-eval foundation: unpaid conformance adapters only")
+    return 0
+
+
+def show_effective_configuration(args: Namespace) -> int:
+    """Resolve explicit sources and print only the redacted canonical projection."""
+    evaluator_file = load_evaluator_toml(Path(args.config)) if args.config is not None else {}
+    cli: dict[str, object] = {
+        "stage": args.stage,
+        "timeout_seconds": args.timeout_seconds,
+        "max_concurrency": args.max_concurrency,
+    }
+    if args.network_policy is not None:
+        try:
+            cli["network_policy"] = json.loads(args.network_policy)
+        except json.JSONDecodeError as error:
+            raise InvalidConfigurationError() from error
+    if args.credential_reference:
+        cli["credential_references"] = [
+            {"variable_name": variable, "target_process": process}
+            for variable, process in (
+                _split_credential_reference(value) for value in args.credential_reference
+            )
+        ]
+    configuration = resolve_effective_configuration(cli=cli, evaluator_file=evaluator_file)
+    print(canonical_bytes(configuration.to_document()).decode("utf-8"))
     return 0
 
 
@@ -151,3 +186,10 @@ def compile_authored_catalog(args: Namespace) -> int:
 
 def _optional_path(value: str | None) -> Path | None:
     return Path(value) if value is not None else None
+
+
+def _split_credential_reference(value: str) -> tuple[str, str]:
+    variable, separator, process = value.partition(":")
+    if not separator or not variable or not process:
+        raise InvalidConfigurationError()
+    return variable, process

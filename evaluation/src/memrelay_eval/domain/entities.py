@@ -15,8 +15,11 @@ from .ids import (
     AssignmentId,
     AttemptId,
     ClaimId,
+    ConfigurationId,
     CostEntryId,
     EndpointId,
+    EnrollmentPlanId,
+    EnvironmentStratumId,
     EvidenceId,
     ExperimentId,
     HistoryId,
@@ -132,6 +135,136 @@ class ArtifactRef:
     def from_bytes(cls, data: bytes) -> ArtifactRef:
         digest = sha256(data).hexdigest()
         return cls(ArtifactId.from_digest(digest), digest, len(data))
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenArtifactInput:
+    """The immutable identity and non-secret provenance of one enrollment input."""
+
+    artifact: ArtifactRef
+    schema_version: str
+    provenance: str
+
+    def __post_init__(self) -> None:
+        if not self.schema_version or not self.provenance:
+            raise InvalidArtifactManifestError(
+                "frozen input schema version and provenance are required"
+            )
+
+    def to_record(self) -> dict[str, str]:
+        return {
+            "artifact_identity": str(self.artifact.artifact_id),
+            "schema_version": self.schema_version,
+            "digest": self.artifact.sha256,
+            "provenance": self.provenance,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveConfigurationArtifact:
+    """Hash-addressed, redacted configuration evidence for an enrollment attempt."""
+
+    id: ConfigurationId
+    artifact: ArtifactRef
+    document_digest: str
+
+    def __post_init__(self) -> None:
+        if not _SHA256.fullmatch(self.document_digest):
+            raise InvalidArtifactManifestError(
+                "effective configuration digest must be a lowercase SHA-256 digest"
+            )
+        if self.id != ConfigurationId.from_digest(self.document_digest):
+            raise InvalidArtifactManifestError(
+                "configuration identity must be derived from its document digest"
+            )
+
+    def to_frozen_input(self) -> FrozenArtifactInput:
+        return FrozenArtifactInput(
+            self.artifact, schema_version="1.0.0", provenance="effective_configuration"
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EnvironmentStratum:
+    """A deterministic identity that prevents pooling across changed hosts."""
+
+    id: EnvironmentStratumId
+    fingerprint_digest: str
+
+    def __post_init__(self) -> None:
+        if not _SHA256.fullmatch(self.fingerprint_digest):
+            raise InvalidArtifactManifestError(
+                "environment fingerprint digest must be a lowercase SHA-256 digest"
+            )
+        if self.id != EnvironmentStratumId.from_digest(self.fingerprint_digest):
+            raise InvalidArtifactManifestError(
+                "environment stratum identity must derive from the fingerprint digest"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class EnrollmentPlanLineage:
+    """Immutable relation from a replacement plan to the plan it supersedes."""
+
+    parent_plan_id: EnrollmentPlanId
+    reason: str
+    replacement_attempt_id: AttemptId | None = None
+
+    def __post_init__(self) -> None:
+        if self.reason not in {"protocol_revision", "attempt_configuration_revision"}:
+            raise InvalidArtifactManifestError("enrollment lineage reason is invalid")
+        if self.reason == "attempt_configuration_revision" and self.replacement_attempt_id is None:
+            raise InvalidArtifactManifestError(
+                "configuration revisions require a replacement attempt identity"
+            )
+
+    def to_record(self) -> dict[str, str]:
+        record = {
+            "parent_plan_id": str(self.parent_plan_id),
+            "reason": self.reason,
+        }
+        if self.replacement_attempt_id is not None:
+            record["replacement_attempt_id"] = str(self.replacement_attempt_id)
+        return record
+
+
+@dataclass(frozen=True, slots=True)
+class EnrollmentPlan:
+    """A treatment-neutral pre-assignment seal over immutable input artifacts."""
+
+    id: EnrollmentPlanId
+    artifact: ArtifactRef
+    document_digest: str
+    inputs: Mapping[str, FrozenArtifactInput]
+    parity_inputs_digest: str
+    lineage: EnrollmentPlanLineage | None = None
+    unpaid_conformance: bool = False
+
+    def __post_init__(self) -> None:
+        if not _SHA256.fullmatch(self.document_digest) or not _SHA256.fullmatch(
+            self.parity_inputs_digest
+        ):
+            raise InvalidArtifactManifestError("enrollment plan digests must be lowercase SHA-256")
+        if self.id != EnrollmentPlanId.from_digest(self.document_digest):
+            raise InvalidArtifactManifestError(
+                "enrollment plan identity must derive from its document digest"
+            )
+        expected = {
+            "catalog",
+            "protocol",
+            "effective_configuration",
+            "environment_fingerprint",
+            "native_model_catalog",
+            "assignment_algorithm",
+            "seed_commitment",
+            "blocks",
+            "ordered_inputs",
+            "price_tables",
+            "eligibility_dispositions",
+        }
+        if set(self.inputs) != expected:
+            raise InvalidArtifactManifestError("enrollment plan input set is incomplete")
+        object.__setattr__(self, "inputs", MappingProxyType(dict(self.inputs)))
 
 
 @dataclass(frozen=True, slots=True)

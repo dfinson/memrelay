@@ -1,6 +1,6 @@
 # Story 1.5: Freeze Effective Configuration and Enrollment Inputs
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -33,23 +33,23 @@ So that post-assignment changes cannot silently alter the protocol.
 
 ## Tasks / Subtasks
 
-- [ ] Implement explicit configuration models and resolver (AC: 1)
-  - [ ] Apply precedence exactly: CLI > frozen protocol/stage > evaluator file > safe defaults.
-  - [ ] Reject unknown/ambiguous keys, implicit environment overrides, and secret values in ordinary config.
-  - [ ] Permit environment references only as credential variable name + named target process; never read/persist a value in the control configuration.
-- [ ] Implement redacted effective configuration artifacts (AC: 1, 2)
-  - [ ] Replace credential values with structured markers retaining variable name and process.
-  - [ ] Canonicalize/hash with Story 1.3 and store through `ArtifactStorePort`.
-  - [ ] Include source/provenance for every effective field without leaking secrets.
-- [ ] Implement enrollment freeze (AC: 2)
-  - [ ] Freeze exact catalog/protocol/environment/model-catalog/assignment/seed/block/ordered-input/price-table identities.
-  - [ ] Capture environment fingerprint: OS/build, CPU, memory, storage class, power mode, Python/runtime, process limits, network policy, and background-load policy.
-  - [ ] Produce parity-hash inputs; do not compute treatment-specific parity here.
-  - [ ] Retain each frozen input's artifact identity, schema/version, digest, and provenance; never embed mutable file paths as the authority.
-- [ ] Enforce post-assignment immutability (AC: 3)
-  - [ ] Reject in-place mutation of every frozen input/value.
-  - [ ] Require new protocol identity or attempt/config artifact as applicable and preserve lineage.
-- [ ] Add resolver, redaction, canonicalization, fingerprint, mutation, and no-secret tests (AC: 1-3)
+- [x] Implement explicit configuration models and resolver (AC: 1)
+  - [x] Apply precedence exactly: CLI > frozen protocol/stage > evaluator file > safe defaults.
+  - [x] Reject unknown/ambiguous keys, implicit environment overrides, and secret values in ordinary config.
+  - [x] Permit environment references only as credential variable name + named target process; never read/persist a value in the control configuration.
+- [x] Implement redacted effective configuration artifacts (AC: 1, 2)
+  - [x] Replace credential values with structured markers retaining variable name and process.
+  - [x] Canonicalize/hash with Story 1.3 and store through `ArtifactStorePort`.
+  - [x] Include source/provenance for every effective field without leaking secrets.
+- [x] Implement enrollment freeze (AC: 2)
+  - [x] Freeze exact catalog/protocol/environment/model-catalog/assignment/seed/block/ordered-input/price-table identities.
+  - [x] Capture environment fingerprint: OS/build, CPU, memory, storage class, power mode, Python/runtime, process limits, network policy, and background-load policy.
+  - [x] Produce parity-hash inputs; do not compute treatment-specific parity here.
+  - [x] Retain each frozen input's artifact identity, schema/version, digest, and provenance; never embed mutable file paths as the authority.
+- [x] Enforce post-assignment immutability (AC: 3)
+  - [x] Reject in-place mutation of every frozen input/value.
+  - [x] Require new protocol identity or attempt/config artifact as applicable and preserve lineage.
+- [x] Add resolver, redaction, canonicalization, fingerprint, mutation, and no-secret tests (AC: 1-3)
 
 ## Developer Context
 
@@ -122,12 +122,30 @@ Configuration is data with provenance, not ambient process state. Environment va
 
 ### Agent Model Used
 
-TBD by implementation agent
+GitHub Copilot CLI
 
 ### Debug Log References
+
+`py -3.13 -m pytest tests` from `evaluation\` with `PYTHONPATH=evaluation\src` — 608 passed, 4 platform-specific skips.
+
+`py -3.12 -m pytest` from the repository root with `PYTHONPATH=src` — 1305 passed, 2 optional-backend skips.
+
+`py -3.13 -m ruff check evaluation/src evaluation/tests` — passed.
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added explicit non-secret configuration resolution, TOML loading, credential-reference redaction, and canonical effective-configuration artifacts.
+- Added environment fingerprint strata, environment-bound blocks, immutable enrollment-plan freezing, input-only parity hashing, assignment mutation guards, and successor lineage checks.
+- Preserved Story 1.4 by consuming only its immutable eligible disposition rather than re-evaluating eligibility.
+- Fixture-backed artifact stores remain marked as unpaid conformance and cannot authorize study inclusion.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/domain/{environment.py,entities.py,errors.py,ids.py,policies.py}`
+- `evaluation/src/memrelay_eval/orchestration/{configuration.py,freeze.py,blocks.py}`
+- `evaluation/src/memrelay_eval/cli/{commands.py,main.py}`
+- `evaluation/schemas/effective-config.schema.json`
+- `evaluation/tests/unit/orchestration/{test_configuration.py,test_freeze.py}`
+- `evaluation/tests/contract/test_effective_config_redaction.py`
+- `evaluation/README.md`
