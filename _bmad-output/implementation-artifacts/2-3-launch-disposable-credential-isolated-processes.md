@@ -1,6 +1,6 @@
 # Story 2.3: Launch Disposable Credential-Isolated Processes
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -104,12 +104,33 @@ Credential isolation is by OS process. Task-agent and judge workers use host Cop
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added stdlib-only process adapters with explicit role/domain credential allowlists.
+- Added inert child-process synthetic canary conformance with value-free boundary evidence.
+- Added per-role/per-attempt disposable launch ownership, process-tree timeout/cancellation
+  compensation, terminal socket cleanup, and no-reuse enforcement.
+- Added bounded attempt-worker coordination plus contract, fault, and architecture tests.
 
 ### File List
+
+- evaluation/src/memrelay_eval/adapters/process/__init__.py
+- evaluation/src/memrelay_eval/adapters/process/environment.py
+- evaluation/src/memrelay_eval/adapters/process/cleanup.py
+- evaluation/src/memrelay_eval/adapters/process/launcher.py
+- evaluation/src/memrelay_eval/orchestration/limits.py
+- evaluation/src/memrelay_eval/orchestration/worker.py
+- evaluation/src/memrelay_eval/domain/errors.py
+- evaluation/src/memrelay_eval/domain/ports.py
+- evaluation/tests/contract/process/test_environment_allowlists.py
+- evaluation/tests/fault/process/test_process_cleanup.py
+- evaluation/tests/architecture/test_process_boundary.py
+- _bmad-output/implementation-artifacts/sprint-status.yaml
+
+### Change Log
+
+- 2026-08-07: Implemented disposable credential-isolated process launch conformance.

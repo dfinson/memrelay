@@ -96,3 +96,27 @@ class LedgerDirectWriteError(DomainError):
 
 class LedgerOwnershipError(DomainError):
     """A second control repository attempted to own the same ledger database."""
+
+
+class ProcessEnvironmentError(DomainError):
+    """A process environment crossed an undeclared credential boundary."""
+
+
+class ProcessBoundaryConformanceError(DomainError):
+    """Synthetic canaries produced a non-conformant process-boundary projection."""
+
+    def __init__(self, evidence: tuple[object, ...]) -> None:
+        self.evidence = evidence
+        super().__init__("process boundary conformance failed")
+
+
+class ProcessLaunchError(DomainError):
+    """A disposable process could not be started from its declared launch request."""
+
+
+class ProcessReuseError(ProcessLaunchError):
+    """A role/attempt pair was already consumed and must never be reused."""
+
+
+class ProcessLimitError(ProcessLaunchError):
+    """A bounded local process pool cannot admit another active attempt."""
