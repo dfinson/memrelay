@@ -140,4 +140,11 @@ Claude Sonnet 5 (bmad-orchestrator attended session)
 - 771 evaluator tests pass (4 expected platform skips), 1305 product tests pass
 
 ### File List
-
+- `evaluation/src/memrelay_eval/orchestration/planning.py`
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/tests/architecture/test_offline_planning_architecture.py`
+- `evaluation/tests/fault/test_offline_planning_interruptions.py`
+- `evaluation/tests/integration/test_offline_catalog_to_manifest.py`
+- `evaluation/tests/integration/test_planning_command_manifests.py`
