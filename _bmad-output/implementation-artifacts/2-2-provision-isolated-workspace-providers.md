@@ -1,6 +1,6 @@
 # Story 2.2: Provision Isolated Workspace Providers
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -27,19 +27,19 @@ So that concurrent trials cannot contaminate one another.
 
 ## Tasks / Subtasks
 
-- [ ] Define provider-neutral workspace handles/specifications (AC: 1)
-  - [ ] Allocate every root named in AC1 from an opaque attempt ID without encoding treatment.
-  - [ ] Record canonical root ownership and reject collision, reuse, symlink/junction escape, or shared writability.
-- [ ] Implement temporary git-worktree provider (AC: 1)
-  - [ ] Create from the frozen revision; preserve dirty-state policy and immutable source hash.
-  - [ ] Keep all agent/cache/staging/product roots attempt-local.
-- [ ] Implement isolated-clone provider with identical observable contract (AC: 1)
-  - [ ] Clone from the frozen local source without network and verify revision/content policy.
-  - [ ] Run the same isolation suite against both providers.
-- [ ] Implement idempotent compensating cleanup (AC: 2)
-  - [ ] Record cleanup attempts/results without deleting lifecycle or terminal evidence.
-  - [ ] Quarantine failed cleanup roots; never assign them to another attempt.
-- [ ] Add collision, concurrency, crash, cancellation, and platform contract tests (AC: 1-2)
+- [x] Define provider-neutral workspace handles/specifications (AC: 1)
+  - [x] Allocate every root named in AC1 from an opaque attempt ID without encoding treatment.
+  - [x] Record canonical root ownership and reject collision, reuse, symlink/junction escape, or shared writability.
+- [x] Implement temporary git-worktree provider (AC: 1)
+  - [x] Create from the frozen revision; preserve dirty-state policy and immutable source hash.
+  - [x] Keep all agent/cache/staging/product roots attempt-local.
+- [x] Implement isolated-clone provider with identical observable contract (AC: 1)
+  - [x] Clone from the frozen local source without network and verify revision/content policy.
+  - [x] Run the same isolation suite against both providers.
+- [x] Implement idempotent compensating cleanup (AC: 2)
+  - [x] Record cleanup attempts/results without deleting lifecycle or terminal evidence.
+  - [x] Quarantine failed cleanup roots; never assign them to another attempt.
+- [x] Add collision, concurrency, crash, cancellation, and platform contract tests (AC: 1-2)
 
 ## Developer Context
 
@@ -100,12 +100,44 @@ Workspace isolation is a causal boundary, not a convenience directory. Every att
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- `$env:PYTHONPATH = (Resolve-Path .\evaluation\src).Path; C:\Python312\python.exe -m pytest .\evaluation\tests`
+- `wsl -d Ubuntu -e /usr/bin/env bash -lc 'cd /mnt/c/Users/davidfinson/.copilot/repos/copilot-worktrees/memrelay/dfinson-refactored-enigma/evaluation && UV_PROJECT_ENVIRONMENT=/tmp/memrelay-eval-py313 uv run --python 3.13 --extra dev pytest tests'`
+- `$env:PYTHONPATH = (Resolve-Path .\src).Path; C:\Python312\python.exe -m pytest`
+- `C:\Python312\python.exe -m ruff check .`
+- `C:\Python312\python.exe -m ruff format --check .`
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added provider-neutral workspace specifications, handles, frozen snapshots, ownership registry,
+  cleanup records, and deterministic unpaid-conformance ownership/cleanup evidence.
+- Added temporary worktree and isolated local-clone providers with private Git metadata, no writable
+  remotes, frozen revision/content verification, opaque telemetry identities, and attempt-local roots.
+- Added provider-parity, collision, source-mutation, cleanup-fault, quarantine, no-network, and
+  paid-runtime import boundary contract coverage, including Windows junction/reparse and cross-process
+  ownership-race cases.
+- Hardened all allocation, ownership, quarantine, and cleanup paths against symlinks, junctions, and
+  reparse points; live attempt roots are host-private temporary directories, ownership/quarantine
+  tombstones use Windows handle-relative creation, and cleanup rejects nested reparse descendants.
+- Git materialization disables credential helpers, network transports, and recursive submodules except
+  the explicit local frozen-source transfer.
+- Windows evaluator suite: 125 passed, 2 skipped because this host lacks symlink privilege. Pinned
+  evaluator runtime validation: CPython 3.13.14 via isolated WSL uv environment, 122 passed and
+  4 Windows-junction tests skipped by explicit platform capability.
+- After rebasing onto the merged catalog/CAS baseline at `f905634` (and subsequent main merges),
+  the full evaluator ran on CPython 3.13.14 via isolated WSL uv: 268 passed, 5 Windows-junction
+  tests skipped by explicit platform capability.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/2-2-provision-isolated-workspace-providers.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/src/memrelay_eval/adapters/workspace/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/workspace/base.py`
+- `evaluation/src/memrelay_eval/adapters/workspace/clone.py`
+- `evaluation/src/memrelay_eval/adapters/workspace/worktree.py`
+- `evaluation/tests/contract/workspace/test_isolation.py`
+- `evaluation/tests/fault/workspace/test_cleanup.py`
