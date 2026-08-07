@@ -147,3 +147,9 @@ class PolicyVersionId(OpaqueId):
     """Opaque version or hash identity for the governing policy."""
 
     prefix = "policy"
+
+
+class IntentId(OpaqueId):
+    """Opaque delivery identity for a worker-to-control ledger intent."""
+
+    prefix = "intent"

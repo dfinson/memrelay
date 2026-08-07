@@ -61,3 +61,14 @@ class ArtifactScope(StrEnum):
 class InclusionStatus(StrEnum):
     INCLUDED = "included"
     EXCLUDED = "excluded"
+
+
+class LedgerIntentKind(StrEnum):
+    CREATE_EXPERIMENT = "create_experiment"
+    CREATE_RUN = "create_run"
+    CREATE_ATTEMPT = "create_attempt"
+    RUN_TRANSITION = "run_transition"
+    ATTEMPT_TERMINAL = "attempt_terminal"
+    ARTIFACT_LINK = "artifact_link"
+    RETRY_LINEAGE = "retry_lineage"
+    INCLUSION_DECISION = "inclusion_decision"

@@ -84,3 +84,15 @@ class QualificationLimitError(ConformancePauseError):
 
 class RuntimeLockError(ConformancePauseError):
     """The pinned SDK wheel or bundled runtime cannot be used safely."""
+
+
+class LedgerIntentConflictError(DomainError):
+    """An opaque intent identity was reused with a different payload."""
+
+
+class LedgerDirectWriteError(DomainError):
+    """A caller attempted to bypass the control-owned intent boundary."""
+
+
+class LedgerOwnershipError(DomainError):
+    """A second control repository attempted to own the same ledger database."""

@@ -1,6 +1,6 @@
 # Story 4.2: Integrate the Sole-Writer Append-Only Ledger
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -34,29 +34,29 @@ So that workers cannot corrupt operational truth or place large evidence in the 
 
 ## Tasks / Subtasks
 
-- [ ] Define typed worker-to-control intents (AC: 1)
-  - [ ] Add immutable intents for experiment/run/attempt creation, run transition, attempt terminal classification, artifact link, retry link, and inclusion decision.
-  - [ ] Include opaque intent ID, source attempt, expected prior state/digest, UTC and monotonic timing where applicable, evidence refs, and stable reason code.
-  - [ ] Make duplicate delivery idempotent by intent ID plus canonical payload digest; conflicting reuse fails closed.
-- [ ] Implement SQLite WAL schema and repository behind `LedgerPort` (AC: 1, 2)
-  - [ ] Append separate normalized rows for identities, transitions, terminal attempts, artifact links, retry lineage, and inclusion decisions.
-  - [ ] Enable WAL and integrity/foreign-key settings explicitly; serialize all writes through one control-owned connection.
-  - [ ] Expose history/read projections without update/delete methods.
-- [ ] Integrate the sole writer into Inspect control composition (AC: 1)
-  - [ ] Validate every intent against domain state/exposure/retry policy before one transaction appends it.
-  - [ ] Return typed acknowledgement/rejection; preserve rejected intent evidence without inventing lifecycle transitions.
-  - [ ] Ensure worker launch environments contain no evaluator SQLite path, handle, library-specific object, or inherited connection; architecture tests also reject `sqlite3` imports/opens from worker code.
-- [ ] Enforce thin-ledger boundaries (AC: 3)
-  - [ ] Accept only opaque IDs, canonical digests, small typed metadata, and Story 4.1 `ArtifactRef`s.
-  - [ ] Reject payload bodies, prompts, patches, traces, grader/judge bodies, Inspect events, provider payloads, credentials, and repository names.
-- [ ] Implement append-only migrations and crash recovery (AC: 2)
-  - [ ] Version and hash schema migrations in an append-only migration journal; add tables/columns without rewriting prior rows or event meaning.
-  - [ ] Reopen after process kill/WAL recovery with byte-for-byte canonical history and intact retry lineage.
-  - [ ] Detect partial intent application and replay safely without double transition/inclusion records.
-- [ ] Enforce analysis separation (AC: 3)
-  - [ ] Provide no analysis mutation API; mechanically reject imports/connections from `analysis`.
-  - [ ] Leave atomic reconciled Parquet publication and read-only DuckDB to Epic 5.
-- [ ] Add lifecycle, concurrency, migration, crash, and boundary tests (AC: 1-3).
+- [x] Define typed worker-to-control intents (AC: 1)
+  - [x] Add immutable intents for experiment/run/attempt creation, run transition, attempt terminal classification, artifact link, retry link, and inclusion decision.
+  - [x] Include opaque intent ID, source attempt, expected prior state/digest, UTC and monotonic timing where applicable, evidence refs, and stable reason code.
+  - [x] Make duplicate delivery idempotent by intent ID plus canonical payload digest; conflicting reuse fails closed.
+- [x] Implement SQLite WAL schema and repository behind `LedgerPort` (AC: 1, 2)
+  - [x] Append separate normalized rows for identities, transitions, terminal attempts, artifact links, retry lineage, and inclusion decisions.
+  - [x] Enable WAL and integrity/foreign-key settings explicitly; serialize all writes through one control-owned connection.
+  - [x] Expose history/read projections without update/delete methods.
+- [x] Integrate the sole writer into Inspect control composition (AC: 1)
+  - [x] Validate every intent against domain state/exposure/retry policy before one transaction appends it.
+  - [x] Return typed acknowledgement/rejection; preserve rejected intent evidence without inventing lifecycle transitions.
+  - [x] Ensure worker launch environments contain no evaluator SQLite path, handle, library-specific object, or inherited connection; architecture tests also reject `sqlite3` imports/opens from worker code.
+- [x] Enforce thin-ledger boundaries (AC: 3)
+  - [x] Accept only opaque IDs, canonical digests, small typed metadata, and Story 4.1 `ArtifactRef`s.
+  - [x] Reject payload bodies, prompts, patches, traces, grader/judge bodies, Inspect events, provider payloads, credentials, and repository names.
+- [x] Implement append-only migrations and crash recovery (AC: 2)
+  - [x] Version and hash schema migrations in an append-only migration journal; add tables/columns without rewriting prior rows or event meaning.
+  - [x] Reopen after process kill/WAL recovery with byte-for-byte canonical history and intact retry lineage.
+  - [x] Detect partial intent application and replay safely without double transition/inclusion records.
+- [x] Enforce analysis separation (AC: 3)
+  - [x] Provide no analysis mutation API; mechanically reject imports/connections from `analysis`.
+  - [x] Leave atomic reconciled Parquet publication and read-only DuckDB to Epic 5.
+- [x] Add lifecycle, concurrency, migration, crash, and boundary tests (AC: 1-3).
 
 ## Developer Context
 
@@ -120,12 +120,41 @@ SQLite is durable operational truth, not an evidence warehouse or analytics engi
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- `PYTHONPATH=<worktree>\evaluation\src python -m pytest evaluation\tests\contract\ledger\test_repository.py evaluation\tests\fault\ledger\test_crash_reopen.py evaluation\tests\architecture\test_sole_writer_boundary.py evaluation\tests\contract\test_fakes.py -q` — 45 passed, 1 Windows-only fork test skipped.
+- `PYTHONPATH=<worktree>\evaluation\src python -m pytest evaluation\tests -q` — 144 passed, 1 Windows-only fork test skipped.
+- `PYTHONPATH=<worktree>\src python -m pytest -q` — 1305 passed, 2 optional cloud-backend tests skipped.
+- `python -m ruff check . && python -m ruff format --check .` — passed.
+- `uv lock --project evaluation --check && uv run --project evaluation --locked --extra dev pytest evaluation/tests` — 319 passed, 1 POSIX-only fork test skipped on native Windows CPython 3.13.5.
+- `uv run --project evaluation --locked --extra dev pytest evaluation/tests/contract/ledger/test_repository.py evaluation/tests/unit/orchestration/test_retry.py evaluation/tests/contract/test_attempt_lineage.py evaluation/tests/architecture/test_sole_writer_boundary.py` — 80 passed, 1 POSIX-only fork test skipped on native Windows CPython 3.13.5.
+- `UV_PROJECT_ENVIRONMENT=/tmp/memrelay-eval-4-2 uv run --project evaluation --locked --extra dev pytest evaluation/tests/contract/ledger/test_repository.py evaluation/tests/fault/ledger/test_crash_reopen.py` — 66 passed on Linux/WSL CPython 3.13.14, including the POSIX fork lease path.
+- `UV_PROJECT_ENVIRONMENT=/tmp/memrelay-eval-4-2 uv run --project evaluation --locked --extra dev pytest evaluation/tests` — 319 passed on Linux/WSL CPython 3.13.14.
+- `PYTHONPATH=<worktree>\src python -m pytest` — 1305 passed, 2 optional cloud-backend tests skipped.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable typed worker-to-control intents with canonical SHA-256 payload digests, typed acknowledgements/rejections, thin rejected-intent evidence, and fail-closed ID reuse.
+- Added a sole-control-owned stdlib SQLite WAL ledger with additive migration hash journal, normalized append-only tables, foreign keys, integrity checks, replay-safe receipt handling, and read projections.
+- Kept run lifecycle transitions separate from immutable attempt terminals and authorized only one pre-exposure infrastructure retry lineage.
+- Added narrow worker intent emission/control handling and mechanical worker/analysis SQLite boundary coverage; no product or future telemetry, reconciliation, backup, or analysis implementation changed.
+- Added repository, fault/reopen, concurrency, migration-journal, thin-boundary, and architecture tests.
+- Review repairs: added an OS-backed control ownership lease with process-crash release coverage; aligned `WorkerIntentEmitter`, `LedgerControl`, and the unpaid fake; made attempt creation/retry authorization control-bound and pre-exposure-evidence-gated; and bound terminal lifecycle state to one matching inclusion decision.
+- Regression coverage confirms `LedgerControl` persists a typed, idempotent `attempt_creation_control_only` rejection through the public `LedgerPort.reject_intent` operation for the SQLite adapter, including conflicting intent-ID reuse.
+- Final repairs limit workers to source-attempt-scoped lifecycle and artifact intents; add fork-safe POSIX inherited-handle cleanup; align fake/SQLite retry-source and artifact-ownership validation; and add an explicit Python 3.13 evaluator test step to CI without installing the evaluator editable.
+- Malformed intent delivery now preflights safe metadata and evidence-ref types before canonical serialization, uses a body-free rejection digest for safe idempotent replay, and persists typed thin rejections through SQLite, fake, and control paths.
+- Review remediation moves the complete thin-metadata vocabulary, normalized treatment/arm/condition key screening, and strict UTC timestamp checks into the shared domain preflight used by fake and SQLite. Durable SQLite now implements Story 1.7's atomic terminal lookup, per-subsystem retry reservation, and one-retry-per-run authorization with additive schema version 2 constraints, replay/crash recovery, and native Windows/POSIX ownership coverage. The analysis check is explicitly a future-boundary assertion because this story creates no analysis module.
+- Reconciliation follows accepted Story 1.7 authority: `retry_eligibility_denial_code(protocol, terminal, exposure, isolation)` remains the only eligibility policy, while the SQLite ledger records its already-authorized decision atomically. `RetryLineageIntent` cannot create retries, avoiding a second/weak authorization path; the direct atomic authorization writes the immutable retry attempt, authorization, and retry-link rows together. The worker-facing sink remains limited to typed intent acknowledgement/rejection, while `SqliteLedger` is the sole control-process authority for both ingress and Story 1.7 atomic operations.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/domain/{__init__,errors,ids,intents,policies,ports,states}.py`
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/src/memrelay_eval/ledger/{__init__,schema,sqlite,repository}.py`
+- `evaluation/src/memrelay_eval/orchestration/{__init__,control,worker,attempt}.py`
+- `evaluation/tests/contract/ledger/test_repository.py`
+- `evaluation/tests/fault/ledger/test_crash_reopen.py`
+- `evaluation/tests/architecture/test_sole_writer_boundary.py`
+- `.github/workflows/ci.yml`

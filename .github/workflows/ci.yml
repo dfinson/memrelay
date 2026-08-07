@@ -79,6 +79,36 @@ jobs:
       - name: Pytest
         run: pytest
 
+  evaluator:
+    name: evaluator (py3.13, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    defaults:
+      run:
+        working-directory: evaluation
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv and Python 3.13
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: evaluation/uv.lock
+
+      - name: Verify locked evaluator environment
+        run: uv lock --check
+
+      - name: Install evaluator dependencies from its lockfile
+        run: uv sync --locked --extra dev
+
+      - name: Run evaluator contract, fault, and ownership tests
+        run: uv run --locked pytest
   first-run-smoke:
     name: first-run smoke (zero-config, no keys)
     runs-on: ubuntu-latest
@@ -160,7 +190,6 @@ jobs:
 
       - name: Enforce precision@k baseline
         run: python tests/eval/generate_baseline.py --check
-
   evaluator-conformance:
     name: evaluator conformance (${{ matrix.os }}, py3.13)
     runs-on: ${{ matrix.os }}
