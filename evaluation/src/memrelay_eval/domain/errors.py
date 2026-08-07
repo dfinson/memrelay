@@ -193,3 +193,33 @@ class ProcessLimitError(ProcessLaunchError):
 
 class ProcessWorkerBoundaryError(ProcessLaunchError):
     """A process request conflicts with its authoritative attempt workspace boundary."""
+
+
+class InvalidAssignmentAlgorithmError(DomainError):
+    """A frozen assignment algorithm record is absent, malformed, or unregistered."""
+
+    code = "invalid_assignment_algorithm"
+
+
+class SeedCommitmentMismatchError(DomainError):
+    """The provisioning seed does not match the sealed commitment."""
+
+    code = "seed_commitment_mismatch"
+
+
+class AssignmentResolutionDeniedError(DomainError):
+    """Assignment resolution was attempted outside the provisioning authority."""
+
+    code = "assignment_resolution_denied"
+
+
+class ExposureAlreadyRecordedError(DomainError):
+    """An attempt has an immutable, append-only exposure record already."""
+
+    code = "exposure_already_recorded"
+
+
+class DurableConformanceRequiredError(DomainError):
+    """A durable execution gate lacks qualified ledger and telemetry adapters."""
+
+    code = "durable_conformance_required"

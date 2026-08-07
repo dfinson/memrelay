@@ -11,6 +11,7 @@ from memrelay_eval.domain.entities import (
     ArtifactManifest,
     ArtifactRef,
     AttemptTerminal,
+    ExposureRecord,
     InclusionDecision,
     InternalRetryRecord,
     RetryAuthorization,
@@ -103,6 +104,8 @@ class InMemoryLedger:
     def __init__(self) -> None:
         self._transitions: list[RunTransition] = []
         self._attempt_terminals: list[AttemptTerminal] = []
+        self._exposure_records: list[ExposureRecord] = []
+        self._exposure_lock = Lock()
         self._internal_retries: list[InternalRetryRecord] = []
         self._retry_authorizations: list[RetryAuthorization] = []
         self._artifact_links: list[ArtifactLink] = []
@@ -135,6 +138,14 @@ class InMemoryLedger:
             (item for item in self._attempt_terminals if item.attempt_id == attempt_id),
             None,
         )
+
+    def append_exposure_record(self, record: ExposureRecord) -> None:
+        with self._exposure_lock:
+            if any(item.attempt_id == record.attempt_id for item in self._exposure_records):
+                from memrelay_eval.domain.errors import ExposureAlreadyRecordedError
+
+                raise ExposureAlreadyRecordedError(ExposureAlreadyRecordedError.code)
+            self._exposure_records.append(record)
 
     def reserve_internal_retry(
         self,
@@ -389,6 +400,10 @@ class InMemoryLedger:
     @property
     def attempt_terminals(self) -> tuple[AttemptTerminal, ...]:
         return tuple(self._attempt_terminals)
+
+    @property
+    def exposure_records(self) -> tuple[ExposureRecord, ...]:
+        return tuple(self._exposure_records)
 
     @property
     def internal_retries(self) -> tuple[InternalRetryRecord, ...]:

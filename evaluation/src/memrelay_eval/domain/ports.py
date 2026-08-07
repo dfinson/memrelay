@@ -6,11 +6,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from datetime import datetime
 from typing import Protocol, TypeVar
 
+from .assignment import OpaqueAssignment, ProvisioningResolution
 from .entities import (
     ArtifactLink,
     ArtifactManifest,
     ArtifactRef,
     AttemptTerminal,
+    ExposureRecord,
     InclusionDecision,
     InternalRetryRecord,
     NativeModelCatalog,
@@ -31,6 +33,7 @@ class LedgerPort(Protocol):
     def reject_intent(self, intent: LedgerIntentType, reason_code: str) -> IntentRejection: ...
     def append_transition(self, transition: RunTransition) -> None: ...
     def append_attempt_terminal(self, terminal: AttemptTerminal) -> None: ...
+    def append_exposure_record(self, record: ExposureRecord) -> None: ...
     def attempt_terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None: ...
     def reserve_internal_retry(
         self,
@@ -77,8 +80,13 @@ class WorkspacePort(Protocol):
 
 
 class AssignmentPort(Protocol):
-    def assign(self, request: object) -> object: ...
-    def resolve_for_provisioning(self, assignment_id: AssignmentId) -> object: ...
+    def assign(self, request: object) -> OpaqueAssignment: ...
+
+
+class ProvisioningAssignmentPort(Protocol):
+    """The narrow assignment-resolution port injected only into provisioning."""
+
+    def resolve(self, assignment_id: AssignmentId) -> ProvisioningResolution: ...
 
 
 class GraderPort(Protocol):

@@ -35,6 +35,7 @@ from .states import (
     ArtifactScope,
     AttemptTerminalKind,
     ExposureClassification,
+    ExposurePhase,
     InclusionStatus,
     InternalRetrySubsystem,
     RunState,
@@ -398,13 +399,44 @@ class ExposureDecision:
 
     classification: ExposureClassification
     evidence_refs: tuple[ArtifactRef, ...] = ()
+    reason_code: str = "legacy_exposure_decision"
+    first_monotonic_exposure_time: float | None = None
+    observations: tuple[ExposureObservation, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+        object.__setattr__(self, "observations", tuple(self.observations))
+
+    @property
+    def is_conclusively_unexposed(self) -> bool:
+        return (
+            self.classification is ExposureClassification.UNEXPOSED
+            and self.reason_code in {"conclusively_unexposed", "legacy_exposure_decision"}
+            and bool(self.evidence_refs)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExposureObservation:
+    """One evidence-backed observation at a lifecycle exposure boundary."""
+
+    phase: ExposurePhase
+    observed: bool
+    occurred_at: datetime
+    monotonic_seconds: float
+    evidence_refs: tuple[ArtifactRef, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 
-    @property
-    def is_conclusively_unexposed(self) -> bool:
-        return self.classification is ExposureClassification.UNEXPOSED and bool(self.evidence_refs)
+
+@dataclass(frozen=True, slots=True)
+class ExposureRecord:
+    """Append-only attempt evidence used to govern retry eligibility."""
+
+    attempt_id: AttemptId
+    assignment_id: AssignmentId
+    decision: ExposureDecision
 
 
 @dataclass(frozen=True, slots=True)
