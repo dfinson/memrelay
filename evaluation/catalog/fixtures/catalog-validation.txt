@@ -1,0 +1,4 @@
+schema_version: catalog-validation-fixture/1.0.0
+content_kind: synthetic-plain-text
+purpose: Backs the Story 1.3 smoke-test scenario "Validate the executable catalog" with a byte-verifiable, license-clear fixture used only for evaluator conformance.
+provenance_statement: This text was authored directly for the memrelay evaluator test suite. It does not contain any personal data, credentials, or third-party copyrighted material.

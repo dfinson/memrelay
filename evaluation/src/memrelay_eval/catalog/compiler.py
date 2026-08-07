@@ -19,6 +19,7 @@ else:
 
 from memrelay_eval.domain.errors import DomainError
 
+from . import eligibility, fixtures
 from .canonical import attach_digest, canonical_bytes, verify_digest
 from .loader import SourceLocation
 from .validation import CatalogValidationError, CatalogValidationResult, validate_catalog
@@ -225,6 +226,7 @@ def _compile_catalog_locked(
         catalog_input_sha256=_sha256(canonical_bytes(validated.catalog)),
         source_sha256=source_sha256,
         runtime_lock=runtime_lock_reference,
+        catalog_root=catalog_root,
     )
     relative_output_dir = output_dir.resolve().relative_to(catalog_root)
     generated_relative_dir = _generated_relative_dir(output_dir, catalog_root)
@@ -516,12 +518,37 @@ def _compiled_documents(
     catalog_input_sha256: str,
     source_sha256: str,
     runtime_lock: Mapping[str, str | None],
+    catalog_root: Path,
 ) -> dict[str, Mapping[str, object]]:
     catalog = validated.catalog
     catalog_id = _required_string(catalog, "catalog_id")
+    references = _required_mapping(catalog.get("references"), "references")
+    declared_fixtures = [
+        _required_mapping(fixture, "fixture") for fixture in _required_list(references, "fixtures")
+    ]
+    fixture_results = fixtures.verify_fixtures(declared_fixtures, catalog_root)
+    declared_study_validity = [
+        _required_mapping(record, f"references/study_validity/{index}")
+        for index, record in enumerate(_required_list(references, "study_validity"))
+    ]
+    study_validity_records = {
+        _required_string(record, "id"): record for record in declared_study_validity
+    }
+
     task_records: list[dict[str, object]] = []
     for scenario_index, scenario_value in enumerate(_required_list(catalog, "scenarios")):
         scenario = _required_mapping(scenario_value, f"scenarios/{scenario_index}")
+        scenario_fixture_refs = list(_required_list(scenario, "fixture_refs"))
+        fixture_validation = _fixture_validation_summary(scenario_fixture_refs, fixture_results)
+        eligibility_evaluation = eligibility.evaluate_task_eligibility(
+            catalog_id=catalog_id,
+            scenario_id=_required_string(scenario, "id"),
+            scenario_data_classification=_required_string(scenario, "data_classification"),
+            fixture_refs=scenario_fixture_refs,
+            fixture_results=fixture_results,
+            study_validity_ref=_required_string(scenario, "study_validity_ref"),
+            study_validity_records=study_validity_records,
+        )
         task_records.append(
             attach_digest(
                 {
@@ -530,7 +557,7 @@ def _compiled_documents(
                     "catalog_id": catalog_id,
                     "scenario_id": _required_string(scenario, "id"),
                     "protocol_ids": list(_required_list(scenario, "protocol_ids")),
-                    "fixture_refs": list(_required_list(scenario, "fixture_refs")),
+                    "fixture_refs": scenario_fixture_refs,
                     "task_input": {
                         "title": _required_string(scenario, "title"),
                         "priority": _required_string(scenario, "priority"),
@@ -555,9 +582,10 @@ def _compiled_documents(
                             scenario.get("resource_limits"), "resource_limits"
                         ),
                         "grader_ref": _required_string(scenario, "grader_ref"),
+                        "study_validity_ref": _required_string(scenario, "study_validity_ref"),
                     },
-                    "fixture_validation": "not_performed",
-                    "eligibility_evaluation": "not_performed",
+                    "fixture_validation": fixture_validation,
+                    "eligibility_evaluation": eligibility_evaluation,
                     "unpaid_conformance": UNPAID_CONFORMANCE,
                 }
             )
@@ -602,21 +630,24 @@ def _compiled_documents(
             "generator_version": GENERATOR_VERSION,
             "catalog_id": catalog_id,
             "catalog_input_sha256": catalog_input_sha256,
-            "fixture_content_validation": "not_performed",
+            "fixture_content_validation": {
+                "status": "verified",
+                "fixture_count": len(fixture_results),
+            },
             "unpaid_conformance": UNPAID_CONFORMANCE,
             "fixtures": [
                 attach_digest(
                     {
                         "schema_version": COMPILED_SCHEMA_VERSION,
                         "catalog_id": catalog_id,
-                        "fixture": _required_mapping(fixture, "fixture"),
-                        "fixture_content_validation": "not_performed",
+                        "fixture": fixture,
+                        "fixture_content_validation": _fixture_content_validation(
+                            fixture_results[_required_string(fixture, "id")]
+                        ),
                         "unpaid_conformance": UNPAID_CONFORMANCE,
                     }
                 )
-                for fixture in _required_list(
-                    _required_mapping(catalog.get("references"), "references"), "fixtures"
-                )
+                for fixture in declared_fixtures
             ],
         }
     )
@@ -635,6 +666,25 @@ def _compiled_documents(
         _GENERATED_FILENAMES["assignment_inputs"]: assignment_document,
         _GENERATED_FILENAMES["fixture_manifest"]: fixture_document,
         _GENERATED_FILENAMES["traceability"]: traceability_document,
+    }
+
+
+def _fixture_content_validation(result: fixtures.FixtureVerificationResult) -> dict[str, object]:
+    return {
+        "status": "verified" if result.verified else "rejected",
+        "resolved_sha256": result.resolved_sha256,
+        "codes": list(result.codes),
+    }
+
+
+def _fixture_validation_summary(
+    fixture_refs: list[object], fixture_results: Mapping[str, fixtures.FixtureVerificationResult]
+) -> dict[str, object]:
+    referenced_ids = [_required_string_value(value) for value in fixture_refs]
+    results = [fixture_results[identifier] for identifier in referenced_ids]
+    return {
+        "status": "verified" if all(result.verified for result in results) else "rejected",
+        "fixture_ids": referenced_ids,
     }
 
 
@@ -672,22 +722,34 @@ def _traceability_records(
                 "catalog_source": declarations["graders"][grader],
             }
         )
+        study_validity_ref = _required_string(scenario, "study_validity_ref")
+        links.append(
+            {
+                "relation": "study_validity_ref",
+                "id": study_validity_ref,
+                "scenario_source": _location_document(
+                    validated.locations, f"{prefix}/study_validity_ref"
+                ),
+                "catalog_source": declarations["study_validity"][study_validity_ref],
+            }
+        )
         field_locations = {
             field: _location_document(validated.locations, f"{prefix}/{field}")
             for field in _TRACE_SCENARIO_FIELDS
         }
+        task_record = task_records[scenario_index]
         records.append(
             attach_digest(
                 {
                     "schema_version": COMPILED_SCHEMA_VERSION,
                     "catalog_id": _required_string(catalog, "catalog_id"),
                     "scenario_id": _required_string(scenario, "id"),
-                    "task_digest": task_records[scenario_index]["digest"],
+                    "task_digest": task_record["digest"],
                     "scenario_source": _location_document(validated.locations, prefix),
                     "field_locations": field_locations,
                     "references": links,
-                    "fixture_content_validation": "not_performed",
-                    "eligibility_evaluation": "not_performed",
+                    "fixture_content_validation": task_record["fixture_validation"],
+                    "eligibility_evaluation": task_record["eligibility_evaluation"],
                     "unpaid_conformance": UNPAID_CONFORMANCE,
                 }
             )
@@ -814,6 +876,7 @@ def _verify_compiled_catalog(
             catalog_input_sha256=catalog_input_sha256,
             source_sha256=source_sha256,
             runtime_lock=expected_runtime_lock or {"path": None, "sha256": None},
+            catalog_root=catalog_path.resolve().parent,
         )
         expected_output_sha256: dict[str, str] = {}
         for filename, expected_document in expected_documents.items():

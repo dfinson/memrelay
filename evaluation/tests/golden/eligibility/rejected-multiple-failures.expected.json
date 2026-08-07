@@ -1,0 +1,64 @@
+{
+  "catalog_id": "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "codes": [
+    "BASELINE_UNSTABLE",
+    "CANARY_CONTAMINATION",
+    "CUTOFF_UNVERIFIED",
+    "GOLD_UNSTABLE",
+    "HOLDOUT_OVERLAP",
+    "NECESSITY_INSUFFICIENT",
+    "SHORTCUT_UNRESOLVED",
+    "TASK_DATA_CLASSIFICATION_PROHIBITED"
+  ],
+  "digest": "c29d588cafa38c4e3fc4684e710e8b8ada40f441a056dab14da4e3c6955ee1dc",
+  "disposition": "rejected",
+  "evidence_refs": [
+    "fixture_cccccccccccccccccccccccccccccccc",
+    "studyvalidity_99999999999999999999999999999999"
+  ],
+  "fixture_sha256": {
+    "fixture_cccccccccccccccccccccccccccccccc": "5277786376473628800fc7df15b50a2d596714f457e5901e588174d63eed73f8"
+  },
+  "reviewer_roles": [
+    "evaluation-scientist"
+  ],
+  "scenario_data_classification": "private",
+  "scenario_id": "scenario_66666666666666666666666666666666",
+  "schema_version": "1.0.0",
+  "study_validity_ref": "studyvalidity_99999999999999999999999999999999",
+  "study_validity_snapshot": {
+    "baseline_stability": {
+      "passes": 2,
+      "runs": 3
+    },
+    "contamination": {
+      "canary_hits": 2,
+      "canary_id": "canary_aaaaaaaabbbbbbbbccccccccdddddddd",
+      "cutoff_status": "unavailable"
+    },
+    "gold_stability": {
+      "passes": 1,
+      "runs": 3
+    },
+    "holdout": {
+      "overlap_detected": true,
+      "segment": "development"
+    },
+    "id": "studyvalidity_99999999999999999999999999999999",
+    "memory_necessity": {
+      "rationale": "The task can be solved without any cross-session memory.",
+      "reviewer_role": "evaluation-scientist",
+      "score": 1
+    },
+    "shortcut_audit": {
+      "reviewer_role": "evaluation-scientist",
+      "routes_examined": [
+        "Direct answer lookup from the scenario prompt text alone."
+      ],
+      "unresolved_shortcuts": [
+        "Identifier leakage in the fixture filename."
+      ]
+    }
+  },
+  "unpaid_conformance": true
+}

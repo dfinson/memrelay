@@ -1,0 +1,40 @@
+{
+  "catalog_id": "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "scenario_id": "scenario_66666666666666666666666666666666",
+  "scenario_data_classification": "private",
+  "fixture_refs": ["fixture_cccccccccccccccccccccccccccccccc"],
+  "fixture_results": {
+    "fixture_cccccccccccccccccccccccccccccccc": {
+      "verified": true,
+      "resolved_sha256": "5277786376473628800fc7df15b50a2d596714f457e5901e588174d63eed73f8",
+      "provenance": "synthetic"
+    }
+  },
+  "study_validity_ref": "studyvalidity_99999999999999999999999999999999",
+  "study_validity_records": {
+    "studyvalidity_99999999999999999999999999999999": {
+      "id": "studyvalidity_99999999999999999999999999999999",
+      "memory_necessity": {
+        "reviewer_role": "evaluation-scientist",
+        "score": 1,
+        "rationale": "The task can be solved without any cross-session memory."
+      },
+      "shortcut_audit": {
+        "reviewer_role": "evaluation-scientist",
+        "routes_examined": ["Direct answer lookup from the scenario prompt text alone."],
+        "unresolved_shortcuts": ["Identifier leakage in the fixture filename."]
+      },
+      "contamination": {
+        "canary_id": "canary_aaaaaaaabbbbbbbbccccccccdddddddd",
+        "canary_hits": 2,
+        "cutoff_status": "unavailable"
+      },
+      "holdout": {
+        "segment": "development",
+        "overlap_detected": true
+      },
+      "baseline_stability": {"runs": 3, "passes": 2},
+      "gold_stability": {"runs": 3, "passes": 1}
+    }
+  }
+}
