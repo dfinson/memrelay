@@ -83,6 +83,7 @@ class NativeTerminalRecord:
     patch_references: tuple[str, ...]
     usage: Mapping[str, int | float]
     failure_code: str | None = None
+    corroborates_inspect: bool = True
 
     def __post_init__(self) -> None:
         if self.state not in {"succeeded", "failed", "cancelled", "timed_out"}:
@@ -92,6 +93,11 @@ class NativeTerminalRecord:
         if self.state == "failed" and not self.failure_code:
             raise ExecutionAdapterError(
                 "native_failure_code_missing", "failed native terminal lacks a type"
+            )
+        if not self.corroborates_inspect and self.state != "failed":
+            raise ExecutionAdapterError(
+                "native_terminal_corroboration_invalid",
+                "only a typed native failure may be non-corroborating",
             )
         object.__setattr__(self, "event_references", tuple(self.event_references))
         object.__setattr__(self, "patch_references", tuple(self.patch_references))

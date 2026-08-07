@@ -133,3 +133,51 @@ def test_terminal_authority_conflict_blocks_reconciliation_after_persistence() -
     terminal = ledger.attempt_terminal_for(attempt_id)
     assert terminal is not None
     assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    "failure_code",
+    (
+        "native_terminal_status_missing",
+        "native_terminal_status_null",
+        "native_terminal_status_unknown",
+        "native_terminal_payload_invalid",
+    ),
+)
+def test_malformed_native_terminal_blocks_reconciliation_with_partial_evidence(
+    failure_code: str,
+) -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    controller = InspectAttemptController(
+        FakeScheduler(
+            NativeTerminalRecord(
+                "failed",
+                ("partial-event",),
+                (),
+                {"total_tokens": 1},
+                failure_code,
+                corroborates_inspect=False,
+            )
+        ),
+        store,
+        AttemptTerminalRecorder(ledger, InMemoryTelemetry()),
+    )
+    attempt_id = AttemptId.new()
+
+    with pytest.raises(ExecutionEvidenceConflictError, match="cannot independently corroborate"):
+        asyncio.run(
+            controller.execute(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=RunId.new(),
+                inspect_state="failed",
+                eval_bytes=b"partial eval",
+                inspect_export={"status": "failed"},
+            )
+        )
+
+    terminal = ledger.attempt_terminal_for(attempt_id)
+    assert terminal is not None
+    assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
+    assert len(terminal.evidence_refs) == 3

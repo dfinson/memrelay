@@ -68,6 +68,10 @@ def reconcile_execution_evidence(
 
     if evidence.eval_artifact.size_bytes == 0:
         raise ExecutionEvidenceConflictError("Inspect .eval evidence is missing")
+    if not evidence.native_terminal.corroborates_inspect:
+        raise ExecutionEvidenceConflictError(
+            "malformed native terminal cannot independently corroborate Inspect"
+        )
     exported_state = inspect_export.get("status")
     if not isinstance(exported_state, str):
         raise ExecutionEvidenceConflictError("Inspect JSON export lacks terminal status")

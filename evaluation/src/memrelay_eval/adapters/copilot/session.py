@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -235,24 +235,118 @@ async def _disconnect_session(session: object | None) -> None:
 
 
 def _terminal_record(event: object) -> NativeTerminalRecord:
-    data = event.to_dict() if hasattr(event, "to_dict") else {}
-    if not isinstance(data, dict):
-        data = {}
-    status = data.get("status", "succeeded")
-    state = status if status in {"succeeded", "failed", "cancelled", "timed_out"} else "failed"
-    refs = data.get("event_references", ())
-    patches = data.get("patch_references", ())
-    usage = data.get("usage", {})
+    to_dict = getattr(event, "to_dict", None)
+    if not callable(to_dict):
+        return _malformed_terminal("payload_invalid")
+    try:
+        data = to_dict()
+    except (TypeError, ValueError):
+        return _malformed_terminal("payload_invalid")
+    if not isinstance(data, Mapping):
+        return _malformed_terminal("payload_invalid")
+
+    event_references, refs_valid = _reference_field(data, "event_references")
+    patch_references, patches_valid = _reference_field(data, "patch_references")
+    usage, usage_valid = _usage_field(data)
+    if "status" not in data:
+        return _malformed_terminal(
+            "status_missing",
+            event_references,
+            patch_references,
+            usage,
+        )
+    status = data["status"]
+    if status is None:
+        return _malformed_terminal(
+            "status_null",
+            event_references,
+            patch_references,
+            usage,
+        )
+    if not isinstance(status, str) or not status:
+        return _malformed_terminal(
+            "status_invalid",
+            event_references,
+            patch_references,
+            usage,
+        )
+    if status not in {"succeeded", "failed", "cancelled", "timed_out"}:
+        return _malformed_terminal(
+            "status_unknown",
+            event_references,
+            patch_references,
+            usage,
+        )
+    if not refs_valid or not patches_valid or not usage_valid:
+        return _malformed_terminal(
+            "fields_invalid",
+            event_references,
+            patch_references,
+            usage,
+        )
+
+    failure_code = data.get("failure_code")
+    if failure_code is not None and (not isinstance(failure_code, str) or not failure_code):
+        return _malformed_terminal(
+            "failure_code_invalid",
+            event_references,
+            patch_references,
+            usage,
+        )
+    if status == "failed" and failure_code is None:
+        return _malformed_terminal(
+            "failure_code_missing",
+            event_references,
+            patch_references,
+            usage,
+        )
     return NativeTerminalRecord(
-        state,
-        tuple(item for item in refs if isinstance(item, str)) if isinstance(refs, list) else (),
-        tuple(item for item in patches if isinstance(item, str))
-        if isinstance(patches, list)
-        else (),
-        usage if isinstance(usage, dict) else {},
-        data.get("failure_code")
-        if isinstance(data.get("failure_code"), str)
-        else ("native_failed" if state == "failed" else None),
+        status,
+        event_references,
+        patch_references,
+        usage,
+        failure_code,
+    )
+
+
+def _reference_field(data: Mapping[object, object], name: str) -> tuple[tuple[str, ...], bool]:
+    value = data.get(name)
+    if not isinstance(value, list):
+        return (), False
+    references = tuple(item for item in value if isinstance(item, str) and item)
+    return references, len(references) == len(value)
+
+
+def _usage_field(data: Mapping[object, object]) -> tuple[dict[str, int | float], bool]:
+    value = data.get("usage")
+    if not isinstance(value, Mapping):
+        return {}, False
+    usage = {
+        key: amount
+        for key, amount in value.items()
+        if isinstance(key, str)
+        and key
+        and isinstance(amount, (int, float))
+        and not isinstance(amount, bool)
+    }
+    return usage, len(usage) == len(value)
+
+
+def _malformed_terminal(
+    code: str,
+    event_references: tuple[str, ...] = (),
+    patch_references: tuple[str, ...] = (),
+    usage: Mapping[str, int | float] | None = None,
+) -> NativeTerminalRecord:
+    """A malformed SDK record is evidence of failure, never proof of success."""
+
+    return NativeTerminalRecord(
+        "failed",
+        event_references,
+        patch_references,
+        usage or {},
+        f"native_terminal_{code}",
+        corroborates_inspect=False,
     )
 
 
