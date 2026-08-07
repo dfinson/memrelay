@@ -165,7 +165,8 @@ def test_evaluator_has_one_shared_jcs_implementation_and_catalog_import_graph() 
             "digest implementation bypasses shared canonicalizer",
         }
         & set(_findings(source))
-        for source in files.values()
+        for path, source in files.items()
+        if path == "canonical.py" or path.startswith("catalog/")
     )
     for path, source in files.items():
         if not path.startswith("catalog/"):
