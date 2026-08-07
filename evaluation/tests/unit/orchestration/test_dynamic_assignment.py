@@ -64,9 +64,7 @@ def _coordinator(
     }
     inputs.update(
         {
-            "assignment_algorithm": _frozen(
-                store, {"name": "dynamic-fixture", "version": "v1"}
-            ),
+            "assignment_algorithm": _frozen(store, {"name": "dynamic-fixture", "version": "v1"}),
             "seed_commitment": _frozen(store, sha256(seed).hexdigest()),
             "blocks": _frozen(
                 store, {"blocks": [{"block_id": "fixture", "ordered_input_hashes": list(hashes)}]}
@@ -137,9 +135,10 @@ def test_entire_sequence_is_assigned_once_before_first_episode_and_remains_opaqu
     first = authority.provision_next(sequence.id)
     evidence = ArtifactRef.from_bytes(b"first-terminal")
     first_terminal = _terminal(ledger, first.executor_specification.run_id, evidence)
-    assert coordinator.record_episode_terminal(
-        sequence.id, first.episode.episode_id, first_terminal
-    ) is None
+    assert (
+        coordinator.record_episode_terminal(sequence.id, first.episode.episode_id, first_terminal)
+        is None
+    )
     second = authority.provision_next(sequence.id)
 
     assert first.executor_specification.assignment_id == second.executor_specification.assignment_id
