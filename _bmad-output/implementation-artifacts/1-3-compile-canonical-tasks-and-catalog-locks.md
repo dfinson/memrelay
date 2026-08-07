@@ -1,6 +1,6 @@
 # Story 1.3: Compile Canonical Tasks and Catalog Locks
 
-Status: review
+Status: done
 
 ## Story
 
