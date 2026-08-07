@@ -17,6 +17,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
+from ...canonical import canonical_bytes
 from ...domain.entities import ArtifactLink, ArtifactRef, TelemetryObservation
 from ...domain.ids import AttemptId, RunId
 from ..fakes import InMemoryArtifactStore, InMemoryLedger, InMemoryTelemetry
@@ -277,6 +278,7 @@ class BaseWorkspaceProvider:
         self, ownership: Path, allocation_root: Path, attempt_id: AttemptId, attempt_root: Path
     ) -> None:
         self._assert_safe_authority_path(ownership, "workspace ownership record")
+        # A local, exclusive sidecar used only to block unsafe workspace reuse.
         payload = json.dumps(
             {"attempt_id": str(attempt_id), "attempt_root": str(attempt_root)},
             sort_keys=True,
@@ -348,6 +350,7 @@ class BaseWorkspaceProvider:
         self._assert_safe_authority_path(marker, "workspace quarantine record")
         if self._path_exists_or_reparse_point(marker):
             return
+        # A local quarantine sidecar can contain arbitrary OS error text and has no identity role.
         payload = json.dumps(
             {"attempt_id": str(handle.attempt_id), "error": error},
             sort_keys=True,
@@ -358,7 +361,7 @@ class BaseWorkspaceProvider:
         )
 
     def _record_evidence(self, handle: WorkspaceHandle, purpose: str) -> ArtifactRef:
-        payload = json.dumps(
+        payload = canonical_bytes(
             {
                 "attempt_id": str(handle.attempt_id),
                 "provider": handle.provider_name,
@@ -366,9 +369,7 @@ class BaseWorkspaceProvider:
                 "revision": handle.frozen_revision,
                 "source_content_sha256": handle.source_content_sha256,
             },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        )
         artifact = self.artifact_store.put_bytes(
             payload, media_type="application/json", classification="unpaid_conformance"
         )
@@ -385,7 +386,7 @@ class BaseWorkspaceProvider:
     def _record_cleanup_evidence(
         self, record: CleanupRecord, handle: WorkspaceHandle
     ) -> ArtifactRef:
-        payload = json.dumps(
+        payload = canonical_bytes(
             {
                 "attempt_id": str(record.attempt_id),
                 "provider": record.provider_name,
@@ -394,9 +395,7 @@ class BaseWorkspaceProvider:
                 "already_clean": record.already_clean,
                 "steps": record.steps,
             },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        )
         artifact = self.artifact_store.put_bytes(
             payload, media_type="application/json", classification="unpaid_conformance"
         )

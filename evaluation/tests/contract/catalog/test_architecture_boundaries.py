@@ -21,16 +21,33 @@ _FORBIDDEN_ROOTS = frozenset(
         "copilot",
     }
 )
+_NON_IDENTITY_JSON_SERIALIZERS = {
+    # These private, exclusive sidecars only control local workspace reuse and
+    # quarantine. They are never hashed, emitted as evidence, or compared across runs.
+    "adapters/workspace/base.py": frozenset({"_claim_ownership", "_mark_quarantine"}),
+}
+_VERBATIM_BYTE_DIGESTS = {
+    # The migration journal fingerprints exact SQL text. Re-encoding it as a
+    # JSON value would invalidate already-applied append-only migrations.
+    "ledger/schema.py": frozenset({"digest"}),
+}
 
 
 class _CatalogArchitectureVisitor(ast.NodeVisitor):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        non_identity_json_serializers: frozenset[str] = frozenset(),
+        verbatim_byte_digests: frozenset[str] = frozenset(),
+    ) -> None:
         self.findings: list[str] = []
         self.json_modules: set[str] = set()
         self.json_dumps: set[str] = set()
         self.import_modules: set[str] = set()
         self.network_modules: set[str] = set()
         self.network_calls: set[str] = set()
+        self._non_identity_json_serializers = non_identity_json_serializers
+        self._verbatim_byte_digests = verbatim_byte_digests
+        self._function_names: list[str] = []
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
@@ -75,7 +92,7 @@ class _CatalogArchitectureVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         if isinstance(node.func, ast.Name):
             if node.func.id in self.json_dumps:
-                self.findings.append("forbidden json.dumps call")
+                self._forbid_identity_json_serialization()
             if node.func.id in self.network_calls:
                 self.findings.append("forbidden network call")
             if node.func.id == "__import__" and _literal_module(node.args):
@@ -84,7 +101,7 @@ class _CatalogArchitectureVisitor(ast.NodeVisitor):
                 self._forbid_dynamic_module(_literal_module(node.args))
         elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
             if node.func.attr == "dumps" and node.func.value.id in self.json_modules:
-                self.findings.append("forbidden json.dumps call")
+                self._forbid_identity_json_serialization()
             if node.func.value.id in self.import_modules and node.func.attr == "import_module":
                 self._forbid_dynamic_module(_literal_module(node.args))
             if node.func.value.id in self.network_modules:
@@ -92,6 +109,7 @@ class _CatalogArchitectureVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._function_names.append(node.name)
         name = node.name.casefold()
         calls = tuple(item for item in ast.walk(node) if isinstance(item, ast.Call))
         uses_shared_canonicalizer = any(
@@ -111,13 +129,26 @@ class _CatalogArchitectureVisitor(ast.NodeVisitor):
         )
         if "canonical" in name and uses_manual_sorting:
             self.findings.append("competing manually sorted canonicalizer")
-        if "digest" in name and uses_sha256 and not uses_shared_canonicalizer:
+        if (
+            "digest" in name
+            and uses_sha256
+            and not uses_shared_canonicalizer
+            and node.name not in self._verbatim_byte_digests
+        ):
             self.findings.append("digest implementation bypasses shared canonicalizer")
         self.generic_visit(node)
+        self._function_names.pop()
 
     def _forbid_dynamic_module(self, module: str | None) -> None:
         if module is not None and module.split(".", 1)[0] in _FORBIDDEN_ROOTS:
             self.findings.append(f"forbidden dynamic import {module}")
+
+    def _forbid_identity_json_serialization(self) -> None:
+        if (
+            not self._function_names
+            or self._function_names[-1] not in self._non_identity_json_serializers
+        ):
+            self.findings.append("forbidden json.dumps call")
 
 
 def _literal_module(args: list[ast.expr]) -> str | None:
@@ -126,8 +157,15 @@ def _literal_module(args: list[ast.expr]) -> str | None:
     return None
 
 
-def _findings(source: str) -> list[str]:
-    visitor = _CatalogArchitectureVisitor()
+def _findings(
+    source: str,
+    non_identity_json_serializers: frozenset[str] = frozenset(),
+    verbatim_byte_digests: frozenset[str] = frozenset(),
+) -> list[str]:
+    visitor = _CatalogArchitectureVisitor(
+        non_identity_json_serializers,
+        verbatim_byte_digests,
+    )
     visitor.visit(ast.parse(source))
     return visitor.findings
 
@@ -164,9 +202,14 @@ def test_evaluator_has_one_shared_jcs_implementation_and_catalog_import_graph() 
             "competing manually sorted canonicalizer",
             "digest implementation bypasses shared canonicalizer",
         }
-        & set(_findings(source))
+        & set(
+            _findings(
+                source,
+                _NON_IDENTITY_JSON_SERIALIZERS.get(path, frozenset()),
+                _VERBATIM_BYTE_DIGESTS.get(path, frozenset()),
+            )
+        )
         for path, source in files.items()
-        if path == "canonical.py" or path.startswith("catalog/")
     )
     for path, source in files.items():
         if not path.startswith("catalog/"):
@@ -192,6 +235,20 @@ def test_evaluator_has_one_shared_jcs_implementation_and_catalog_import_graph() 
 def test_catalog_ast_and_import_graph_reject_sdk_network_and_serializer_evasion() -> None:
     for path in (SOURCE_ROOT / "catalog").glob("*.py"):
         assert _findings(path.read_text(encoding="utf-8")) == []
+
+
+def test_non_identity_json_exemption_cannot_cover_another_function() -> None:
+    source = """
+import json
+
+def _claim_ownership():
+    json.dumps({"local": True})
+
+def identity_payload():
+    json.dumps({"identity": True})
+"""
+
+    assert _findings(source, frozenset({"_claim_ownership"})) == ["forbidden json.dumps call"]
 
 
 @pytest.mark.parametrize(

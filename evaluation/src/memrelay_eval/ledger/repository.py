@@ -19,6 +19,7 @@ if os.name == "nt":
 else:
     import fcntl
 
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import (
     ArtifactLink,
     ArtifactRef,
@@ -60,7 +61,6 @@ from memrelay_eval.domain.intents import (
     RejectedIntentEvidence,
     RetryLineageIntent,
     RunTransitionIntent,
-    canonical_json_bytes,
     delivery_payload_digest,
 )
 from memrelay_eval.domain.policies import validate_run_transition
@@ -1345,7 +1345,7 @@ class SqliteLedger:
     def canonical_history(self) -> bytes:
         """Return a stable logical append stream suitable for reopen comparisons."""
 
-        return canonical_json_bytes(
+        return canonical_bytes(
             {
                 "events": [
                     {
@@ -1444,4 +1444,4 @@ def _safe_code(value: object) -> bool:
 
 
 def _direct_record_digest(kind: str, payload: dict[str, str]) -> str:
-    return sha256(canonical_json_bytes({"kind": kind, **payload})).hexdigest()
+    return sha256(canonical_bytes({"kind": kind, **payload})).hexdigest()

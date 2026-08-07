@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -10,7 +9,9 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from math import isfinite
 from types import MappingProxyType
-from typing import Any, ClassVar
+from typing import ClassVar
+
+from memrelay_eval.canonical import canonical_bytes
 
 from .entities import ArtifactLink, ArtifactRef, InclusionDecision
 from .ids import AssignmentId, AttemptId, ExperimentId, IntentId, ProtocolId, RunId
@@ -52,18 +53,6 @@ def _timestamp_payload(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         return f"invalid-naive:{value.isoformat(timespec='microseconds')}"
     return value.astimezone(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def canonical_json_bytes(value: Mapping[str, Any]) -> bytes:
-    """Return deterministic UTF-8 JSON for the deliberately small intent vocabulary."""
-
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    ).encode("utf-8")
 
 
 def _artifact_payload(value: ArtifactRef) -> dict[str, object]:
@@ -132,7 +121,7 @@ class LedgerIntent:
 
     @property
     def canonical_payload_digest(self) -> str:
-        return sha256(canonical_json_bytes(self.to_payload())).hexdigest()
+        return sha256(canonical_bytes(self.to_payload())).hexdigest()
 
     def to_payload(self) -> dict[str, object]:
         payload = self.metadata.to_payload()
@@ -432,7 +421,7 @@ def _rejection_payload_digest(intent: object, reason_code: str) -> str:
         "rejection_reason": reason_code,
         "metadata": _rejection_metadata_descriptor(metadata),
     }
-    return sha256(canonical_json_bytes(descriptor)).hexdigest()
+    return sha256(canonical_bytes(descriptor)).hexdigest()
 
 
 def _rejection_metadata_descriptor(metadata: object) -> dict[str, object]:

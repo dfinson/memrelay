@@ -4,11 +4,13 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, timezone
+from hashlib import sha256
 from multiprocessing import get_context
 from threading import Thread
 
 import pytest
 from memrelay_eval.adapters.fakes import InMemoryLedger, InMemoryTelemetry
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import (
     ArtifactLink,
     ArtifactRef,
@@ -131,6 +133,40 @@ def seed(ledger: SqliteLedger) -> tuple[ExperimentId, RunId, AttemptId]:
     )
     accepted(ledger.submit_intent(CreateAttemptIntent(metadata(), attempt_id, run_id)))
     return experiment_id, run_id, attempt_id
+
+
+def test_ledger_intent_and_history_digests_use_shared_canonical_bytes(tmp_path: object) -> None:
+    ledger = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    intent = CreateExperimentIntent(
+        metadata(safe_metadata={"score": 1.0}),
+        ExperimentId.new(),
+        ProtocolId.new(),
+    )
+    expected_intent_digest = sha256(canonical_bytes(intent.to_payload())).hexdigest()
+
+    result = accepted(ledger.submit_intent(intent))
+    assert result.canonical_payload_digest == expected_intent_digest
+
+    event = ledger.logical_history()
+    expected_history = canonical_bytes(
+        {
+            "events": [
+                {
+                    "sequence": item.sequence,
+                    "intent_id": str(item.intent_id),
+                    "payload_digest": item.canonical_payload_digest,
+                    "kind": item.kind.value,
+                    "occurred_at": item.occurred_at.isoformat(timespec="microseconds").replace(
+                        "+00:00", "Z"
+                    ),
+                }
+                for item in event
+            ],
+            "rejections": [],
+        }
+    )
+    assert ledger.canonical_history() == expected_history
+    ledger.close()
 
 
 def transition(
