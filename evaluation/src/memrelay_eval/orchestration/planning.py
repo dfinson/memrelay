@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import unicodedata
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -75,6 +76,29 @@ _REDACTED_TERMS = (
     "arm",
 )
 _SAFE_SCHEMA_KEYS = frozenset({"error_code", "exit_code"})
+# Detection-only skeleton for reviewed Latin lookalikes relevant to redaction terms.
+_REDACTION_CONFUSABLES = str.maketrans(
+    {
+        "\u03b1": "a",  # Greek small alpha
+        "\u0430": "a",  # Cyrillic small a
+        "\u03f2": "c",  # Greek small lunate sigma
+        "\u0441": "c",  # Cyrillic small es
+        "\u0435": "e",  # Cyrillic small ie
+        "\u0456": "i",  # Cyrillic small byelorussian-ukrainian i
+        "\u03b9": "i",  # Greek small iota
+        "\u043c": "m",  # Cyrillic small em
+        "\u03bf": "o",  # Greek small omicron
+        "\u043e": "o",  # Cyrillic small o
+        "\u03c1": "p",  # Greek small rho
+        "\u0440": "p",  # Cyrillic small er
+        "\u03c3": "s",  # Greek small sigma
+        "\u03c2": "s",  # Greek small final sigma
+        "\u0455": "s",  # Cyrillic small dze
+        "\u03c4": "t",  # Greek small tau
+        "\u0442": "t",  # Cyrillic small te
+        "\u0443": "y",  # Cyrillic small u
+    }
+)
 
 
 class PlanningError(DomainError):
@@ -208,9 +232,26 @@ def _scan_redacted_value(value: object) -> None:
 
 
 def _raise_if_redacted_text(text: str) -> None:
+    normalized = _redaction_match_text(text)
     for term in _REDACTED_TERMS:
-        if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text.casefold()):
+        if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", normalized):
             raise RedactionViolationError(term)
+
+
+def _redaction_match_text(text: str) -> str:
+    """Return a detection-only skeleton without changing emitted manifest bytes."""
+    normalized = unicodedata.normalize("NFKC", text)
+    visible = "".join(character for character in normalized if not _is_default_ignorable(character))
+    return visible.translate(_REDACTION_CONFUSABLES).casefold()
+
+
+def _is_default_ignorable(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        unicodedata.category(character) == "Cf"
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0xE0100 <= codepoint <= 0xE01EF
+    )
 
 
 def plan_offline(
