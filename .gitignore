@@ -9,6 +9,7 @@ dist/
 
 # Virtual environments
 .venv/
+.venv*/
 venv/
 env/
 
@@ -18,6 +19,7 @@ env/
 .mypy_cache/
 .coverage
 htmlcov/
+evaluation/.catalog-compile.lock
 
 # Local BMAD framework installation and generated skill boilerplate
 .agents/

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
@@ -13,6 +14,7 @@ from jsonschema import Draft202012Validator
 
 from memrelay_eval.domain.errors import DomainError
 
+from .canonical import canonical_bytes
 from .loader import CatalogDiagnostic, CatalogLoadError, LoadedCatalog, SourceLocation, load_catalog
 
 ChangeKind = Literal["none", "content", "additive", "breaking"]
@@ -62,6 +64,8 @@ class CatalogValidationResult:
     catalog: Mapping[str, Any]
     source_path: str
     semantic_json: str
+    semantic_source: Mapping[str, Any]
+    locations: Mapping[str, SourceLocation]
     change_kind: ChangeKind = "none"
 
 
@@ -212,9 +216,7 @@ def _semantic_diagnostics(loaded: LoadedCatalog) -> list[CatalogDiagnostic]:
 
 
 def _semantic_projection(catalog: Mapping[str, Any]) -> dict[str, Any]:
-    projection = json.loads(json.dumps(catalog, allow_nan=False))
-    projection.pop("catalog_version", None)
-    return projection
+    return deepcopy({key: value for key, value in catalog.items() if key != "catalog_version"})
 
 
 def _parse_version(value: object) -> tuple[int, int, int] | None:
@@ -353,17 +355,18 @@ def validate_catalog(
         raise CatalogValidationError(tuple(sorted(diagnostics, key=CatalogDiagnostic.sort_key)))
 
     projection = _semantic_projection(loaded.data)
-    semantic_json = json.dumps(
-        projection,
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+    semantic_json = canonical_bytes(projection).decode("utf-8")
     change_kind: ChangeKind = "none"
     if prior_lock is not None:
         policy_result = _version_diagnostic(loaded, prior_lock, projection)
         if isinstance(policy_result, CatalogDiagnostic):
             raise CatalogValidationError((policy_result,))
         change_kind = policy_result
-    return CatalogValidationResult(loaded.data, loaded.source_path, semantic_json, change_kind)
+    return CatalogValidationResult(
+        loaded.data,
+        loaded.source_path,
+        semantic_json,
+        projection,
+        loaded.locations,
+        change_kind,
+    )

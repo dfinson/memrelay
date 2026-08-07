@@ -413,6 +413,22 @@ def test_validation_is_no_network(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert validate_catalog(write_catalog(tmp_path, valid_catalog())).catalog["scenarios"]
 
 
+def test_semantic_projection_is_deeply_independent_from_authored_source(tmp_path: Path) -> None:
+    result = validate_catalog(write_catalog(tmp_path, valid_catalog()))
+    before = result.semantic_json
+    catalog = result.catalog
+    assert isinstance(catalog["references"], dict)
+    fixtures = catalog["references"]["fixtures"]
+    assert isinstance(fixtures, list)
+    assert isinstance(fixtures[0], dict)
+
+    fixtures[0]["source_path"] = "fixtures/mutated-after-validation.txt"
+    assert (
+        result.semantic_source["references"]["fixtures"][0]["source_path"] == "fixtures/example.txt"
+    )
+    assert result.semantic_json == before
+
+
 def test_cli_validates_without_compiling_or_writing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

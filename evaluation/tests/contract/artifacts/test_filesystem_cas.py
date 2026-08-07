@@ -73,6 +73,11 @@ def test_canonical_json_orders_non_bmp_keys_by_utf16_code_units() -> None:
     assert canonical.startswith('{"\U00010000"')
 
 
+def test_manifest_canonicalization_keeps_the_no_float_contract() -> None:
+    with pytest.raises(InvalidArtifactManifestError, match="does not permit floats"):
+        canonical_json_bytes({"non_schema_float": 1.5})
+
+
 def test_filesystem_store_fails_closed_for_tampered_blob(tmp_path) -> None:
     store = FilesystemArtifactStore(tmp_path)
     artifact = store.put_bytes(b"untampered", media_type="text/plain", classification="synthetic")

@@ -1,6 +1,6 @@
 # Story 1.3: Compile Canonical Tasks and Catalog Locks
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -33,23 +33,23 @@ So that every downstream plan is bound to byte-identical, hash-addressed inputs.
 
 ## Tasks / Subtasks
 
-- [ ] Implement the only identity canonicalizer (AC: 1, 2)
-  - [ ] Emit UTF-8 RFC 8785 bytes; reject non-finite numbers and unsupported values.
-  - [ ] Remove only the declared digest field from the identity projection, SHA-256 the canonical bytes, then attach the digest.
-  - [ ] Expose one importable API and add an architectural test forbidding competing canonicalization/hashing paths.
-- [ ] Implement deterministic catalog compilation (AC: 1)
-  - [ ] Validate before compile and project canonical task inputs without importing Inspect types.
-  - [ ] Emit opaque assignment inputs, fixture manifest inputs, traceability maps with source locations, and catalog lock.
-  - [ ] Sort only where the contract defines set semantics; preserve authored ordering where order is meaningful.
-  - [ ] Normalize source locations to stable catalog-root-relative coordinates; never place checkout roots, usernames, or host-specific separators in identity-bearing output.
-- [ ] Make output publication atomic and verifiable (AC: 1-3)
-  - [ ] Build in a same-filesystem sibling staging directory, verify all bytes/hashes, then publish the complete directory/set with replace semantics that are tested on Windows.
-  - [ ] On failure, retain the prior valid lock unchanged and leave no partial/valid-looking output.
-  - [ ] Recompute generated outputs in CI and fail on byte divergence or hand edits.
-- [ ] Emit per-command manifests on success, failure, and interruption (AC: 3)
-  - [ ] Include canonical input/output hashes, runtime-lock reference, protocol ID, typed terminal status, schema versions, and generator version.
-  - [ ] Label output `unpaid_conformance`; it is not enrollment or efficacy evidence.
-- [ ] Add determinism, independent-vector, tamper, architecture-boundary, and no-network tests (AC: 1-3)
+- [x] Implement the only identity canonicalizer (AC: 1, 2)
+  - [x] Emit UTF-8 RFC 8785 bytes; reject non-finite numbers and unsupported values.
+  - [x] Remove only the declared digest field from the identity projection, SHA-256 the canonical bytes, then attach the digest.
+  - [x] Expose one importable API and add an architectural test forbidding competing canonicalization/hashing paths.
+- [x] Implement deterministic catalog compilation (AC: 1)
+  - [x] Validate before compile and project canonical task inputs without importing Inspect types.
+  - [x] Emit opaque assignment inputs, fixture manifest inputs, traceability maps with source locations, and catalog lock.
+  - [x] Sort only where the contract defines set semantics; preserve authored ordering where order is meaningful.
+  - [x] Normalize source locations to stable catalog-root-relative coordinates; never place checkout roots, usernames, or host-specific separators in identity-bearing output.
+- [x] Make output publication atomic and verifiable (AC: 1-3)
+  - [x] Build in a same-filesystem sibling staging directory, verify all bytes/hashes, then publish the complete directory/set with replace semantics that are tested on Windows.
+  - [x] On failure, retain the prior valid lock unchanged and leave no partial/valid-looking output.
+  - [x] Recompute generated outputs in CI and fail on byte divergence or hand edits.
+- [x] Emit per-command manifests on success, failure, and interruption (AC: 3)
+  - [x] Include canonical input/output hashes, runtime-lock reference, protocol ID, typed terminal status, schema versions, and generator version.
+  - [x] Label output `unpaid_conformance`; it is not enrollment or efficacy evidence.
+- [x] Add determinism, independent-vector, tamper, architecture-boundary, and no-network tests (AC: 1-3)
 
 ## Developer Context
 
@@ -121,12 +121,52 @@ Identity is over bytes, not Python objects. RFC 8785/JCS differs from `json.dump
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- 2026-08-06T13:41:06-04:00 - Full merged evaluator suite: 424 passed under CPython 3.13.5 on native Windows and CPython 3.13.14 under isolated WSL validation after reconciling Story 7.3.
+- 2026-08-06T13:41:06-04:00 - Focused Story 1.3 canonical/compiler, crash-recovery, ownership-lock, architecture, CRLF portability, custom-output, receipt-durability, explicit-prior, and backup-integrity suite: 132 passed.
+- 2026-08-06T13:41:06-04:00 - `uv lock --check`, clean canonical regeneration byte comparison, root `ruff check .`, `ruff format --check .`, and `git diff --check`: passed.
+- 2026-08-06T13:41:06-04:00 - Product regressions with this worktree's `src` on `PYTHONPATH`: 49 passed.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Consolidated every evaluator identity projection behind the sole RFC 8785/JCS wrapper, exactly pinned to `rfc8785==0.1.4`.
+- Compiled validated catalog YAML to canonical tasks, opaque assignment inputs, fixture manifest inputs, catalog-root-relative traceability, and a digest-verified catalog lock.
+- Published the complete catalog root through journaled same-volume sibling staging with fsync boundaries, verified output hashes, native cross-process ownership locks, crash recovery, and rollback-safe Windows replacement.
+- Added redacted typed command manifests for successful, failed, and interrupted compiles, including recovery state; fixture content validation and eligibility remain explicitly not performed.
+- Added deterministic clean-process, RFC vector, Unicode/number boundary, digest omission, uppercase digest, tamper, AST/import-graph evasion, no-network, crash, concurrency, Windows-path, same-volume, and manifest contract coverage.
+- Added hermetic Python 3.13 evaluator conformance CI on Linux and Windows, including locked dependency installation and regeneration divergence checks.
+- Made catalog locks history-independent, moved change classification to command evidence, normalized checkout line endings for source hashes, and enforced exact custom output sets.
+- Hardened rollback, post-publish interruption receipts, catalog-root CWD refusal, retry bounds, and artifact-to-receipt fsync ordering.
+- Made semantic prior locks explicit, canonical, digest-verified command inputs; transaction backup integrity is now independent of version-policy history.
 
 ### File List
+
+- `evaluation/pyproject.toml`
+- `evaluation/uv.lock`
+- `evaluation/catalog/catalog-lock.json`
+- `evaluation/catalog/compile-manifest.json`
+- `evaluation/catalog/generated/tasks.json`
+- `evaluation/catalog/generated/assignment-inputs.json`
+- `evaluation/catalog/generated/fixture-manifest.json`
+- `evaluation/catalog/generated/traceability.json`
+- `evaluation/src/memrelay_eval/canonical.py`
+- `evaluation/src/memrelay_eval/catalog/__init__.py`
+- `evaluation/src/memrelay_eval/catalog/canonical.py`
+- `evaluation/src/memrelay_eval/catalog/compiler.py`
+- `evaluation/src/memrelay_eval/catalog/validation.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/tests/unit/catalog/test_canonical.py`
+- `evaluation/tests/contract/catalog/test_compiler_determinism.py`
+- `evaluation/tests/contract/catalog/test_generated_divergence.py`
+- `.github/workflows/ci.yml`
+- `.gitignore`
+- `evaluation/src/memrelay_eval/evidence/manifest.py`
+- `evaluation/src/memrelay_eval/orchestration/control.py`
+- `evaluation/src/memrelay_eval/adapters/copilot/catalog.py`
+- `evaluation/src/memrelay_eval/adapters/copilot/client.py`
+- `evaluation/tests/contract/artifacts/test_filesystem_cas.py`
+- `evaluation/tests/contract/catalog/test_architecture_boundaries.py`

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+from memrelay_eval.canonical import CanonicalizationError, canonical_bytes
 from memrelay_eval.domain.entities import ArtifactManifest
 from memrelay_eval.domain.errors import InvalidArtifactManifestError
 from memrelay_eval.domain.ids import (
@@ -44,14 +45,24 @@ _PRODUCER_KEYS = frozenset({"component", "version"})
 
 def canonical_json_bytes(value: object) -> bytes:
     """Return the sole evaluator JSON identity projection for JSON-safe records."""
-    _validate_json_value(value)
-    return json.dumps(
-        _canonicalize_json_value(value),
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=False,
-    ).encode("utf-8")
+    _reject_manifest_floats(value)
+    try:
+        return canonical_bytes(value)
+    except CanonicalizationError as error:
+        raise InvalidArtifactManifestError(
+            "canonical manifest JSON contains an unsupported value"
+        ) from error
+
+
+def _reject_manifest_floats(value: object) -> None:
+    if isinstance(value, float):
+        raise InvalidArtifactManifestError("canonical manifest JSON does not permit floats")
+    if isinstance(value, Mapping):
+        for child in value.values():
+            _reject_manifest_floats(child)
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            _reject_manifest_floats(child)
 
 
 def manifest_bytes(manifest: ArtifactManifest) -> bytes:
@@ -126,37 +137,6 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise InvalidArtifactManifestError(f"duplicate manifest key: {key}")
         result[key] = value
     return result
-
-
-def _validate_json_value(value: object) -> None:
-    if value is None or isinstance(value, (bool, str, int)):
-        return
-    if isinstance(value, float):
-        raise InvalidArtifactManifestError("canonical manifest JSON does not permit floats")
-    if isinstance(value, Mapping):
-        if any(not isinstance(key, str) for key in value):
-            raise InvalidArtifactManifestError(
-                "canonical manifest JSON object keys must be strings"
-            )
-        for child in value.values():
-            _validate_json_value(child)
-        return
-    if isinstance(value, (list, tuple)):
-        for child in value:
-            _validate_json_value(child)
-        return
-    raise InvalidArtifactManifestError("canonical manifest JSON contains an unsupported value")
-
-
-def _canonicalize_json_value(value: object) -> object:
-    if isinstance(value, Mapping):
-        return {
-            key: _canonicalize_json_value(value[key])
-            for key in sorted(value, key=lambda item: item.encode("utf-16be"))
-        }
-    if isinstance(value, (list, tuple)):
-        return [_canonicalize_json_value(item) for item in value]
-    return value
 
 
 def _mapping(value: object, name: str) -> Mapping[str, object]:
