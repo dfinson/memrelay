@@ -1,6 +1,10 @@
+---
+baseline_commit: 205d087f84db73485bc2cd06d0f606d43cdc2155
+---
+
 # Story 1.8: Produce an Offline Catalog-to-Manifest Dry Run
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -33,23 +37,23 @@ So that CI proves a usable study plan without paid calls or efficacy claims.
 
 ## Tasks / Subtasks
 
-- [ ] Compose an offline planning application path (AC: 1)
-  - [ ] Load and validate the synthetic catalog, verify fixtures/eligibility, compile, freeze fixture runtime/model/price inputs, and assign opaquely.
-  - [ ] Produce only a deterministic `planned` run manifest and referenced conformance artifacts.
-  - [ ] Distinguish planning assignment from lifecycle progression: the manifest may contain opaque precomputed assignment identities/commitments, but this dry run appends no real `assigned`, `provisioned`, `running`, or later transition.
-  - [ ] Inject fake Copilot, OpenAI, memrelay, artifact, ledger, and telemetry ports; install a network-deny guard.
-- [ ] Implement non-interactive planning/dry-run CLI commands (AC: 1, 2)
-  - [ ] Require explicit file arguments or safe local defaults; never prompt.
-  - [ ] Emit a command manifest for success, typed failure, keyboard interruption, and controlled cancellation.
-  - [ ] Make exit codes stable and machine-readable.
-- [ ] Enforce redaction and evidence labels (AC: 2, 3)
-  - [ ] Redact prohibited log fields and scan all emitted artifacts with canaries.
-  - [ ] Mark manifests `implementation_evidence` or `unpaid_conformance`; reject `study`, `included`, efficacy, safety, economics, or release-fitness labels.
-  - [ ] Ensure ordinary manifests expose opaque IDs only.
-- [ ] Add deterministic end-to-end and negative/fault tests (AC: 1-3)
-  - [ ] Repeat across clean processes/directories and compare canonical outputs.
-  - [ ] Fail if any socket/DNS/provider client is invoked or credential is present.
-  - [ ] Exercise invalid catalog, ineligible fixture, freeze failure, assignment failure, and interruption.
+- [x] Compose an offline planning application path (AC: 1)
+  - [x] Load and validate the synthetic catalog, verify fixtures/eligibility, compile, freeze fixture runtime/model/price inputs, and assign opaquely.
+  - [x] Produce only a deterministic `planned` run manifest and referenced conformance artifacts.
+  - [x] Distinguish planning assignment from lifecycle progression: the manifest may contain opaque precomputed assignment identities/commitments, but this dry run appends no real `assigned`, `provisioned`, `running`, or later transition.
+  - [x] Inject fake Copilot, OpenAI, memrelay, artifact, ledger, and telemetry ports; install a network-deny guard.
+- [x] Implement non-interactive planning/dry-run CLI commands (AC: 1, 2)
+  - [x] Require explicit file arguments or safe local defaults; never prompt.
+  - [x] Emit a command manifest for success, typed failure, keyboard interruption, and controlled cancellation.
+  - [x] Make exit codes stable and machine-readable.
+- [x] Enforce redaction and evidence labels (AC: 2, 3)
+  - [x] Redact prohibited log fields and scan all emitted artifacts with canaries.
+  - [x] Mark manifests `implementation_evidence` or `unpaid_conformance`; reject `study`, `included`, efficacy, safety, economics, or release-fitness labels.
+  - [x] Ensure ordinary manifests expose opaque IDs only.
+- [x] Add deterministic end-to-end and negative/fault tests (AC: 1-3)
+  - [x] Repeat across clean processes/directories and compare canonical outputs.
+  - [x] Fail if any socket/DNS/provider client is invoked or credential is present.
+  - [x] Exercise invalid catalog, ineligible fixture, freeze failure, assignment failure, and interruption.
 
 ## Developer Context
 
@@ -124,12 +128,16 @@ This is Epic 1's integration proof: catalog-to-planned-manifest only. It deliber
 
 ### Agent Model Used
 
-TBD by implementation agent
+Claude Sonnet 5 (bmad-orchestrator attended session)
 
 ### Debug Log References
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Story 1.8 implementation complete: offline planning pipeline, CLI command, tests
+- 44 new tests covering integration, fault, architecture, and CLI compliance
+- 771 evaluator tests pass (4 expected platform skips), 1305 product tests pass
 
 ### File List
+

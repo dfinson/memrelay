@@ -10,6 +10,7 @@ from memrelay_eval.cli.commands import (
     bootstrap,
     compile_authored_catalog,
     lock_models,
+    plan_offline_command,
     run_stage,
     show_effective_configuration,
     show_foundation_status,
@@ -107,6 +108,39 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional runtime lock referenced by name and hash only",
     )
     compile_catalog.set_defaults(handler=compile_authored_catalog)
+    plan_offline = subcommands.add_parser(
+        "plan-offline",
+        help="deterministic offline catalog-to-planned-run dry run with no network or credentials",
+    )
+    plan_offline.add_argument(
+        "--catalog",
+        default="catalog/catalog.yaml",
+        help="path to the authored YAML catalog",
+    )
+    plan_offline.add_argument(
+        "--output-dir",
+        default="catalog/generated",
+        help="directory for generated planning artifacts",
+    )
+    plan_offline.add_argument(
+        "--lock",
+        default=None,
+        help="catalog lock path (defaults to output-dir/catalog-lock.json)",
+    )
+    plan_offline.add_argument(
+        "--manifest",
+        default="catalog/plan-manifest.json",
+        help="path for the redacted command manifest",
+    )
+    plan_offline.add_argument(
+        "--prior-lock",
+        help="prior valid catalog lock for version validation",
+    )
+    plan_offline.add_argument(
+        "--runtime-lock",
+        help="optional runtime lock referenced by name and hash only",
+    )
+    plan_offline.set_defaults(handler=plan_offline_command)
     return parser
 
 

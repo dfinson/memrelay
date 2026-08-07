@@ -470,3 +470,45 @@ class InMemoryTelemetry:
             if isinstance(value, (bool, int, float)):
                 safe[str(key)] = value
         return safe
+
+
+class FakeCopilotPort:
+    """No-op Copilot port that raises on any actual SDK operation."""
+
+    provenance = "unpaid_conformance"
+    eligible_for_paid_or_study = False
+
+    def list_models(self) -> object:
+        raise RuntimeError("FakeCopilotPort: no real Copilot SDK calls during offline planning")
+
+    def run_session(self, session: object) -> object:
+        raise RuntimeError("FakeCopilotPort: no real Copilot SDK calls during offline planning")
+
+
+class FakeOpenAIPort:
+    """No-op OpenAI port that raises on any actual API operation."""
+
+    provenance = "unpaid_conformance"
+    eligible_for_paid_or_study = False
+
+    def create_completion(self, *args: object, **kwargs: object) -> object:
+        raise RuntimeError("FakeOpenAIPort: no real OpenAI calls during offline planning")
+
+    def create_embedding(self, *args: object, **kwargs: object) -> object:
+        raise RuntimeError("FakeOpenAIPort: no real OpenAI calls during offline planning")
+
+
+class FakeMemrelayPort:
+    """No-op memrelay port that raises on any daemon or engine operation."""
+
+    provenance = "unpaid_conformance"
+    eligible_for_paid_or_study = False
+
+    def note(self, *args: object, **kwargs: object) -> object:
+        raise RuntimeError("FakeMemrelayPort: no real memrelay calls during offline planning")
+
+    def search(self, *args: object, **kwargs: object) -> object:
+        raise RuntimeError("FakeMemrelayPort: no real memrelay calls during offline planning")
+
+    def health(self) -> object:
+        raise RuntimeError("FakeMemrelayPort: no real memrelay calls during offline planning")
