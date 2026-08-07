@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from memrelay_eval.canonical import attach_digest, canonical_bytes, canonical_digest
+from memrelay_eval.canonical import attach_digest, canonical_bytes, canonical_digest, verify_digest
 from memrelay_eval.domain.entities import (
     EffectiveConfigurationArtifact,
     EnrollmentPlan,
@@ -14,6 +15,7 @@ from memrelay_eval.domain.entities import (
 )
 from memrelay_eval.domain.environment import EnvironmentFingerprint, persist_environment_fingerprint
 from memrelay_eval.domain.errors import (
+    CatalogEligibilityBindingError,
     EnrollmentLineageError,
     FrozenInputMutationError,
     InvalidConfigurationError,
@@ -206,13 +208,16 @@ class AssignedEnrollmentPlans:
 
 
 def _validate_request(request: EnrollmentFreezeRequest, artifact_store: ArtifactStorePort) -> None:
-    for source in (
-        request.catalog,
-        request.protocol,
-        request.effective_configuration.to_frozen_input(),
-        request.native_model_catalog,
-    ):
-        artifact_store.open_verified(source.artifact)
+    source_documents = tuple(
+        _verified_frozen_document(source, artifact_store)
+        for source in (
+            request.catalog,
+            request.protocol,
+            request.effective_configuration.to_frozen_input(),
+            request.native_model_catalog,
+        )
+    )
+    catalog = source_documents[0]
     if not isinstance(request.seed_commitment, str) or len(request.seed_commitment) != 64:
         raise InvalidConfigurationError()
     if any(character not in "0123456789abcdef" for character in request.seed_commitment):
@@ -220,17 +225,11 @@ def _validate_request(request: EnrollmentFreezeRequest, artifact_store: Artifact
     if not request.ordered_inputs or not request.eligibility_dispositions:
         raise InvalidConfigurationError()
     require_same_environment_stratum(request.blocks, request.environment)
-    for disposition in request.eligibility_dispositions:
-        if not isinstance(disposition, Mapping):
-            raise InvalidConfigurationError()
-        require_eligible_disposition(disposition)
-        digest = disposition.get("digest")
-        if (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(character not in "0123456789abcdef" for character in digest)
-        ):
-            raise InvalidConfigurationError()
+    _verify_eligibility_bindings(
+        catalog,
+        request.ordered_inputs,
+        request.eligibility_dispositions,
+    )
     raw_values = (
         request.assignment_algorithm,
         request.blocks.to_document(),
@@ -276,9 +275,112 @@ def _reject_mutable_path_authority(value: object) -> None:
         for key, nested in value.items():
             if not isinstance(key, str):
                 raise InvalidConfigurationError()
-            if key == "path" or key.endswith("_path") or key.endswith("_root"):
+            normalized_key = key.casefold()
+            if (
+                normalized_key == "path"
+                or normalized_key.endswith("_path")
+                or normalized_key.endswith("_root")
+            ):
                 raise InvalidConfigurationError()
             _reject_mutable_path_authority(nested)
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for nested in value:
             _reject_mutable_path_authority(nested)
+
+
+def _verified_frozen_document(
+    source: FrozenArtifactInput, artifact_store: ArtifactStorePort
+) -> Mapping[str, object]:
+    raw = artifact_store.open_verified(source.artifact)
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code) from error
+    if (
+        not isinstance(document, Mapping)
+        or canonical_bytes(document) != raw
+        or not verify_digest(document)
+    ):
+        raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+    _reject_non_null_mutable_path_authority(document)
+    return document
+
+
+def _verify_eligibility_bindings(
+    catalog: Mapping[str, object],
+    ordered_inputs: Sequence[Mapping[str, object]],
+    bindings: Sequence[Mapping[str, object]],
+) -> None:
+    tasks = catalog.get("tasks")
+    if not isinstance(tasks, list):
+        raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+    catalog_dispositions: dict[str, Mapping[str, object]] = {}
+    for task in tasks:
+        if not isinstance(task, Mapping):
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        task_identity = task.get("digest")
+        disposition = task.get("eligibility_evaluation")
+        if (
+            not isinstance(task_identity, str)
+            or not isinstance(disposition, Mapping)
+            or not verify_digest(disposition)
+        ):
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        catalog_dispositions[task_identity] = disposition
+    selected = _selected_task_identities(ordered_inputs)
+    supplied: dict[str, Mapping[str, object]] = {}
+    for binding in bindings:
+        if not isinstance(binding, Mapping) or set(binding) != {
+            "task_identity",
+            "eligibility_evaluation",
+        }:
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        task_identity = binding.get("task_identity")
+        disposition = binding.get("eligibility_evaluation")
+        if not isinstance(task_identity, str) or not isinstance(disposition, Mapping):
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        if task_identity in supplied:
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        supplied[task_identity] = disposition
+    if set(supplied) != selected:
+        raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+    for task_identity in selected:
+        expected = catalog_dispositions.get(task_identity)
+        supplied_disposition = supplied[task_identity]
+        if (
+            expected is None
+            or canonical_bytes(expected) != canonical_bytes(supplied_disposition)
+            or not verify_digest(supplied_disposition)
+        ):
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        require_eligible_disposition(supplied_disposition)
+
+
+def _selected_task_identities(ordered_inputs: Sequence[Mapping[str, object]]) -> set[str]:
+    identities: set[str] = set()
+    for item in ordered_inputs:
+        if not isinstance(item, Mapping):
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        identity = item.get("task_identity")
+        if not isinstance(identity, str) or not identity or identity in identities:
+            raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+        identities.add(identity)
+    return identities
+
+
+def _reject_non_null_mutable_path_authority(value: object) -> None:
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+            normalized_key = key.casefold()
+            if nested is not None and (
+                normalized_key == "path"
+                or normalized_key.endswith("_path")
+                or normalized_key.endswith("_root")
+            ):
+                raise CatalogEligibilityBindingError(CatalogEligibilityBindingError.code)
+            _reject_non_null_mutable_path_authority(nested)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for nested in value:
+            _reject_non_null_mutable_path_authority(nested)

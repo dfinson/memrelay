@@ -98,6 +98,23 @@ def test_unknown_ambiguous_and_invalid_configuration_is_rejected(
         resolve_effective_configuration(**kwargs)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("path_key", ("Path", "PATH", "Workspace_Root", "ROOT_PATH"))
+@pytest.mark.parametrize("source", ("cli", "protocol_stage", "evaluator_file", "safe_defaults"))
+def test_mixed_case_mutable_paths_are_rejected_from_all_configuration_sources(
+    path_key: str, source: str
+) -> None:
+    sources: dict[str, object] = {
+        "cli": {},
+        "protocol_stage": {},
+        "evaluator_file": {},
+        "safe_defaults": {"stage": "conformance"},
+    }
+    sources[source] = {"endpoints": {path_key: "mutable"}}
+
+    with pytest.raises(InvalidConfigurationError):
+        resolve_effective_configuration(**sources)  # type: ignore[arg-type]
+
+
 def test_toml_configuration_and_cli_parser_use_explicit_sources(
     tmp_path, capsys: pytest.CaptureFixture[str]
 ) -> None:

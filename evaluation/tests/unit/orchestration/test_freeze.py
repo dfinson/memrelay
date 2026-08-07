@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import socket
+from collections.abc import Mapping
 from dataclasses import replace
 
 import pytest
@@ -10,10 +11,12 @@ from memrelay_eval.canonical import attach_digest, canonical_bytes
 from memrelay_eval.domain.entities import EnrollmentPlanLineage, FrozenArtifactInput
 from memrelay_eval.domain.environment import EnvironmentFingerprint
 from memrelay_eval.domain.errors import (
+    CatalogEligibilityBindingError,
     DomainError,
     EnrollmentLineageError,
     EnvironmentStratumChangedError,
     FrozenInputMutationError,
+    InvalidConfigurationError,
 )
 from memrelay_eval.domain.ids import AssignmentId, AttemptId, EnrollmentPlanId
 from memrelay_eval.orchestration.blocks import (
@@ -52,6 +55,52 @@ def _source_input(
     )
 
 
+def _eligibility_evaluation(
+    task_identity: str, *, disposition: str = "eligible"
+) -> dict[str, object]:
+    codes = [] if disposition == "eligible" else ["CANARY_CONTAMINATION"]
+    return attach_digest(
+        {
+            "schema_version": "1.0.0",
+            "catalog_id": "cat_" + "a" * 32,
+            "scenario_id": "scenario_" + task_identity[:32],
+            "disposition": disposition,
+            "codes": codes,
+            "evidence_refs": ["fixture_" + "b" * 32],
+            "reviewer_roles": ["evaluation-scientist"],
+            "scenario_data_classification": "synthetic",
+            "fixture_sha256": {},
+            "study_validity_ref": "studyvalidity_" + "c" * 32,
+            "study_validity_snapshot": {},
+            "unpaid_conformance": True,
+        }
+    )
+
+
+def _catalog_input(
+    store: InMemoryArtifactStore, evaluations: dict[str, Mapping[str, object]]
+) -> FrozenArtifactInput:
+    document = attach_digest(
+        {
+            "schema_version": "1.0.0",
+            "catalog_id": "cat_" + "a" * 32,
+            "tasks": [
+                {
+                    "digest": task_identity,
+                    "eligibility_evaluation": evaluation,
+                }
+                for task_identity, evaluation in evaluations.items()
+            ],
+        }
+    )
+    payload = canonical_bytes(document)
+    return FrozenArtifactInput(
+        store.put_bytes(payload, media_type="application/json", classification="synthetic"),
+        schema_version="1.0.0",
+        provenance="catalog_compiler",
+    )
+
+
 def _environment(*, power_mode: str = "ac") -> EnvironmentFingerprint:
     return EnvironmentFingerprint(
         os_name="Windows",
@@ -70,6 +119,10 @@ def _environment(*, power_mode: str = "ac") -> EnvironmentFingerprint:
 
 def _request(store: InMemoryArtifactStore, **changes: object) -> EnrollmentFreezeRequest:
     environment = _environment()
+    task_identities = ("a" * 64, "b" * 64)
+    evaluations = {
+        task_identity: _eligibility_evaluation(task_identity) for task_identity in task_identities
+    }
     config = persist_effective_configuration(
         resolve_effective_configuration(
             safe_defaults={
@@ -81,7 +134,7 @@ def _request(store: InMemoryArtifactStore, **changes: object) -> EnrollmentFreez
         store,
     )
     request = EnrollmentFreezeRequest(
-        catalog=_source_input(store, "catalog_lock", "catalog_compiler"),
+        catalog=_catalog_input(store, evaluations),
         protocol=_source_input(store, "protocol_lock", "protocol_author"),
         effective_configuration=config,
         environment=environment,
@@ -93,8 +146,8 @@ def _request(store: InMemoryArtifactStore, **changes: object) -> EnrollmentFreez
             [{"block_id": "block_0001", "run_order": ["input_0001", "input_0002"]}],
         ),
         ordered_inputs=(
-            {"input_id": "input_0001", "task_identity": "task_0001"},
-            {"input_id": "input_0002", "task_identity": "task_0002"},
+            {"input_id": "input_0001", "task_identity": task_identities[0]},
+            {"input_id": "input_0002", "task_identity": task_identities[1]},
         ),
         price_tables={
             "framework": {
@@ -102,7 +155,13 @@ def _request(store: InMemoryArtifactStore, **changes: object) -> EnrollmentFreez
                 "input_microusd_per_million": 400000,
             }
         },
-        eligibility_dispositions=({"disposition": "eligible", "digest": "b" * 64},),
+        eligibility_dispositions=tuple(
+            {
+                "task_identity": task_identity,
+                "eligibility_evaluation": evaluation,
+            }
+            for task_identity, evaluation in evaluations.items()
+        ),
     )
     return replace(request, **changes)
 
@@ -182,6 +241,64 @@ def test_fixture_model_catalog_and_price_table_freeze_without_network(
     assert plan.unpaid_conformance is True
     assert plan.inputs["native_model_catalog"].provenance == "fixture_catalog"
     assert plan.inputs["price_tables"].provenance == "fixture_or_observed_price_table"
+
+
+def test_eligibility_bindings_are_verified_against_catalog_task_identities() -> None:
+    store = InMemoryArtifactStore()
+    request = _request(store)
+
+    plan = freeze_enrollment_inputs(request, store)
+
+    assert plan.inputs["eligibility_dispositions"].provenance == "story_1_4_disposition"
+
+
+@pytest.mark.parametrize("mutation", ("digest", "disposition", "codes"))
+def test_forged_eligibility_binding_is_rejected(mutation: str) -> None:
+    store = InMemoryArtifactStore()
+    request = _request(store)
+    binding = dict(request.eligibility_dispositions[0])
+    evaluation = dict(binding["eligibility_evaluation"])
+    if mutation == "digest":
+        evaluation["digest"] = "0" * 64
+    elif mutation == "disposition":
+        evaluation["disposition"] = "rejected"
+    else:
+        evaluation["codes"] = ["CANARY_CONTAMINATION"]
+    binding["eligibility_evaluation"] = evaluation
+    forged_bindings = (binding, request.eligibility_dispositions[1])
+
+    with pytest.raises(CatalogEligibilityBindingError):
+        freeze_enrollment_inputs(replace(request, eligibility_dispositions=forged_bindings), store)
+
+
+def test_catalog_mismatch_or_tampered_catalog_digest_is_rejected() -> None:
+    store = InMemoryArtifactStore()
+    request = _request(store)
+    identities = [item["task_identity"] for item in request.ordered_inputs]
+    revised_catalog = _catalog_input(
+        store,
+        {
+            identities[0]: _eligibility_evaluation(identities[0], disposition="rejected"),
+            identities[1]: _eligibility_evaluation(identities[1]),
+        },
+    )
+
+    with pytest.raises(CatalogEligibilityBindingError):
+        freeze_enrollment_inputs(replace(request, catalog=revised_catalog), store)
+
+    tampered = attach_digest({"schema_version": "1.0.0", "catalog_id": "catalog", "tasks": []})
+    tampered["digest"] = "0" * 64
+    malformed_catalog = FrozenArtifactInput(
+        store.put_bytes(
+            canonical_bytes(tampered),
+            media_type="application/json",
+            classification="synthetic",
+        ),
+        schema_version="1.0.0",
+        provenance="catalog_compiler",
+    )
+    with pytest.raises(CatalogEligibilityBindingError):
+        freeze_enrollment_inputs(replace(request, catalog=malformed_catalog), store)
 
 
 @pytest.mark.parametrize(
@@ -286,4 +403,94 @@ def test_treatment_revealing_input_is_rejected_before_sealing() -> None:
     request = _request(store, assignment_algorithm={"treatment": "control"})
 
     with pytest.raises(DomainError):
+        freeze_enrollment_inputs(request, store)
+
+
+@pytest.mark.parametrize("path_key", ("Path", "PATH", "Workspace_Root", "ROOT_PATH"))
+@pytest.mark.parametrize(
+    "surface",
+    ("catalog", "protocol", "effective_configuration", "native_model_catalog"),
+)
+def test_mixed_case_mutable_paths_are_rejected_from_all_verified_frozen_artifacts(
+    path_key: str, surface: str
+) -> None:
+    store = InMemoryArtifactStore()
+    request = _request(store)
+    source = (
+        request.effective_configuration.to_frozen_input()
+        if surface == "effective_configuration"
+        else getattr(request, surface)
+    )
+    document = json.loads(store.open_verified(source.artifact))
+    document[path_key] = "mutable"
+    document = attach_digest(document)
+    replacement = FrozenArtifactInput(
+        store.put_bytes(
+            canonical_bytes(document),
+            media_type="application/json",
+            classification="synthetic",
+        ),
+        schema_version=source.schema_version,
+        provenance=source.provenance,
+    )
+    if surface == "effective_configuration":
+        request = replace(
+            request,
+            effective_configuration=replace(
+                request.effective_configuration, artifact=replacement.artifact
+            ),
+        )
+    else:
+        request = replace(request, **{surface: replacement})
+
+    with pytest.raises(CatalogEligibilityBindingError):
+        freeze_enrollment_inputs(request, store)
+
+
+@pytest.mark.parametrize("path_key", ("Path", "PATH", "Workspace_Root", "ROOT_PATH"))
+@pytest.mark.parametrize(
+    "surface",
+    (
+        "assignment_algorithm",
+        "blocks",
+        "ordered_inputs",
+        "price_tables",
+        "eligibility_dispositions",
+    ),
+)
+def test_mixed_case_mutable_paths_are_rejected_across_frozen_input_surfaces(
+    path_key: str, surface: str
+) -> None:
+    store = InMemoryArtifactStore()
+    request = _request(store)
+    if surface == "assignment_algorithm":
+        request = replace(request, assignment_algorithm={path_key: "mutable"})
+    elif surface == "blocks":
+        request = replace(
+            request,
+            blocks=build_environment_blocks(
+                request.environment, [{"block_id": "block_0001", path_key: "mutable"}]
+            ),
+        )
+    elif surface == "ordered_inputs":
+        request = replace(
+            request,
+            ordered_inputs=(
+                {**request.ordered_inputs[0], path_key: "mutable"},
+                request.ordered_inputs[1],
+            ),
+        )
+    elif surface == "price_tables":
+        request = replace(request, price_tables={path_key: "mutable"})
+    else:
+        binding = dict(request.eligibility_dispositions[0])
+        evaluation = dict(binding["eligibility_evaluation"])
+        evaluation[path_key] = "mutable"
+        binding["eligibility_evaluation"] = attach_digest(evaluation)
+        request = replace(
+            request,
+            eligibility_dispositions=(binding, request.eligibility_dispositions[1]),
+        )
+
+    with pytest.raises((CatalogEligibilityBindingError, InvalidConfigurationError)):
         freeze_enrollment_inputs(request, store)

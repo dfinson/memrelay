@@ -308,11 +308,12 @@ def _redacted_value(key: str, value: object) -> object:
 def _reject_mutable_path_values(value: object) -> None:
     if isinstance(value, Mapping):
         for key, nested in value.items():
+            normalized_key = key.casefold() if isinstance(key, str) else ""
             if (
                 not isinstance(key, str)
-                or key == "path"
-                or key.endswith("_path")
-                or key.endswith("_root")
+                or normalized_key == "path"
+                or normalized_key.endswith("_path")
+                or normalized_key.endswith("_root")
             ):
                 raise InvalidConfigurationError()
             _reject_mutable_path_values(nested)

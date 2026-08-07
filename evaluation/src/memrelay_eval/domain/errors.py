@@ -68,6 +68,12 @@ class IneligibleEnrollmentError(DomainError):
     code = "enrollment_disposition_not_eligible"
 
 
+class CatalogEligibilityBindingError(DomainError):
+    """An enrollment disposition is not the exact eligible record in its catalog."""
+
+    code = "catalog_eligibility_binding_invalid"
+
+
 class InvalidIdentifierError(DomainError):
     """An opaque identifier is malformed or contains prohibited information."""
 
