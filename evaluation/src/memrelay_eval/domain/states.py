@@ -17,6 +17,30 @@ class RunState(StrEnum):
     EXCLUDED = "excluded"
 
 
+class HistoryMode(StrEnum):
+    """The protocol-level history regime; these modes are never poolable."""
+
+    CONTROLLED = "controlled"
+    DYNAMIC = "dynamic"
+
+
+class EvaluationStratum(StrEnum):
+    """The independently identified product and direct-engine strata."""
+
+    PRODUCT = "product"
+    DIRECT_ENGINE = "direct_engine"
+
+
+class SequenceState(StrEnum):
+    """Append-only dynamic-sequence lifecycle states."""
+
+    ENROLLED = "enrolled"
+    PROVISIONED = "provisioned"
+    RUNNING = "running"
+    TERMINAL = "terminal"
+    CLEANED_UP = "cleaned_up"
+
+
 class AttemptTerminalKind(StrEnum):
     SUCCEEDED = "succeeded"
     AGENT_FAILED = "agent_failed"

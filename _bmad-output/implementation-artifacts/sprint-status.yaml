@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-05T12:50:11-04:00
-last_updated: 2026-08-07T17:28:00-04:00
+last_updated: 2026-08-07T18:30:51-04:00
 project: memrelay Evaluation Platform
 project_key: NOKEY
 tracking_system: file-system
@@ -68,7 +68,7 @@ development_status:
   2-6-run-the-shipped-daemon-and-mcp-product-stratum: ready-for-dev
   2-7-run-the-direct-engine-upper-bound-stratum: ready-for-dev
   2-8-restore-controlled-immutable-histories: ready-for-dev
-  2-9-execute-dynamic-histories-and-protocol-defined-arms: ready-for-dev
+  2-9-execute-dynamic-histories-and-protocol-defined-arms: review
   2-10-preserve-native-evidence-and-scan-secret-boundaries: ready-for-dev
   epic-2-retrospective: optional
 

@@ -238,3 +238,25 @@ class ExecutionAdapterError(DomainError):
         super().__init__(message)
         self.code = code
         self.evidence = evidence
+
+
+class DynamicHistoryViolationError(DomainError):
+    """A sequence attempted to cross a frozen dynamic-history boundary."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
+class UnsupportedArmError(DynamicHistoryViolationError):
+    """The frozen protocol does not define the assigned provisionable arm."""
+
+    def __init__(self) -> None:
+        super().__init__("unsupported_arm_before_exposure")
+
+
+class AnalysisBoundaryError(DynamicHistoryViolationError):
+    """An analysis requested ordinary pooling across distinct estimand identities."""
+
+    def __init__(self) -> None:
+        super().__init__("sequence_analysis_pooling_forbidden")

@@ -160,6 +160,11 @@ class ConcealedAssignmentService:
     def provisioning_authority(self) -> ProvisioningAuthority:
         return ProvisioningAuthority(self, self._capability)
 
+    @property
+    def assignment_plan_hash(self) -> str:
+        """Expose the sealed commitment without exposing allocation material."""
+        return self._plan.assignment_plan_hash
+
     def resolve_for_provisioning(
         self, assignment_id: AssignmentId, capability: object
     ) -> ProvisioningResolution:

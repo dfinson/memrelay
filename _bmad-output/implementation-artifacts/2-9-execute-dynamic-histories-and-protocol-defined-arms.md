@@ -104,12 +104,38 @@ Dynamic assignment is at whole-sequence granularity. Episode-level randomization
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- `py -3.13 -m pytest evaluation/tests -q` — 761 passed, 4 platform-limited skips
+- `py -3.13 -m pytest -q` — 1303 passed, 4 optional-cloud-adapter skips
+- `py -3.13 -m ruff check` for the modified evaluator sources and tests — passed
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added opaque sequence and episode identities, dynamic sequence/episode lineage, sequence terminal,
+  and evidence-backed cleanup records.
+- Added capability-limited dynamic provisioning: assignment resolution selects frozen protocol arms
+  only inside the authority boundary; executors receive arm-neutral specifications.
+- Added sequence-local graph, workspace, cache, output, and credential namespaces with cross-sequence
+  reuse refusal; sequence terminal and cleanup records append through the sole ledger authority.
+- Added total-policy sequence analysis identity checks that reject controlled/dynamic and
+  product/direct-engine pooling, plus dynamic allocation, isolation, terminal, cleanup, and
+  unsupported-arm tests.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/2-9-execute-dynamic-histories-and-protocol-defined-arms.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ids.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/domain/states.py`
+- `evaluation/src/memrelay_eval/orchestration/assignment.py`
+- `evaluation/src/memrelay_eval/orchestration/history.py`
+- `evaluation/tests/contract/history/test_sequence_isolation.py`
+- `evaluation/tests/unit/orchestration/test_dynamic_assignment.py`
+- `evaluation/tests/unit/test_regime_non_pooling.py`

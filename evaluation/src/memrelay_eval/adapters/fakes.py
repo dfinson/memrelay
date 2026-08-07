@@ -11,6 +11,8 @@ from memrelay_eval.domain.entities import (
     ArtifactManifest,
     ArtifactRef,
     AttemptTerminal,
+    DynamicSequenceCleanup,
+    DynamicSequenceTerminal,
     ExposureRecord,
     InclusionDecision,
     InternalRetryRecord,
@@ -104,6 +106,8 @@ class InMemoryLedger:
     def __init__(self) -> None:
         self._transitions: list[RunTransition] = []
         self._attempt_terminals: list[AttemptTerminal] = []
+        self._dynamic_sequence_terminals: list[DynamicSequenceTerminal] = []
+        self._dynamic_sequence_cleanup: list[DynamicSequenceCleanup] = []
         self._exposure_records: list[ExposureRecord] = []
         self._exposure_lock = Lock()
         self._internal_retries: list[InternalRetryRecord] = []
@@ -138,6 +142,22 @@ class InMemoryLedger:
             (item for item in self._attempt_terminals if item.attempt_id == attempt_id),
             None,
         )
+
+    def append_dynamic_sequence_terminal(self, terminal: DynamicSequenceTerminal) -> None:
+        if any(
+            item.sequence_id == terminal.sequence_id for item in self._dynamic_sequence_terminals
+        ):
+            raise AttemptTerminalAlreadyRecordedError("dynamic_sequence_terminal_already_recorded")
+        self._dynamic_sequence_terminals.append(terminal)
+
+    def append_dynamic_sequence_cleanup(self, cleanup: DynamicSequenceCleanup) -> None:
+        if any(item.sequence_id == cleanup.sequence_id for item in self._dynamic_sequence_cleanup):
+            raise AttemptTerminalAlreadyRecordedError("dynamic_sequence_cleanup_already_recorded")
+        if not any(
+            item.sequence_id == cleanup.sequence_id for item in self._dynamic_sequence_terminals
+        ):
+            raise ValueError("dynamic sequence cleanup requires an authoritative terminal")
+        self._dynamic_sequence_cleanup.append(cleanup)
 
     def append_exposure_record(self, record: ExposureRecord) -> None:
         with self._exposure_lock:
@@ -400,6 +420,14 @@ class InMemoryLedger:
     @property
     def attempt_terminals(self) -> tuple[AttemptTerminal, ...]:
         return tuple(self._attempt_terminals)
+
+    @property
+    def dynamic_sequence_terminals(self) -> tuple[DynamicSequenceTerminal, ...]:
+        return tuple(self._dynamic_sequence_terminals)
+
+    @property
+    def dynamic_sequence_cleanup(self) -> tuple[DynamicSequenceCleanup, ...]:
+        return tuple(self._dynamic_sequence_cleanup)
 
     @property
     def exposure_records(self) -> tuple[ExposureRecord, ...]:
