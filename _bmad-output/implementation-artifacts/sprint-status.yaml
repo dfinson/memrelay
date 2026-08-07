@@ -61,8 +61,8 @@ development_status:
 
   epic-2: in-progress
   2-1-lock-the-copilot-runtime-and-qualified-models: done
-  2-2-provision-isolated-workspace-providers: review
-  2-3-launch-disposable-credential-isolated-processes: ready-for-dev
+  2-2-provision-isolated-workspace-providers: done
+  2-3-launch-disposable-credential-isolated-processes: review
   2-4-execute-copilot-through-inspect-authority: ready-for-dev
   2-5-verify-agent-and-environment-parity: ready-for-dev
   2-6-run-the-shipped-daemon-and-mcp-product-stratum: ready-for-dev

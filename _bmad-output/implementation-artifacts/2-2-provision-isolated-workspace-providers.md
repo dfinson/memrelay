@@ -1,6 +1,6 @@
 # Story 2.2: Provision Isolated Workspace Providers
 
-Status: review
+Status: done
 
 ## Story
 
