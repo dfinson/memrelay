@@ -143,6 +143,46 @@ class TestRedactionEnforcement:
     def test_innocuous_substrings_pass(self) -> None:
         redaction_scan(b'{"status":"decoded successfully"}')
 
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            '{"note":"cred\u200bential store"}',
+            '{"note":"secr\u200cet value"}',
+            '{"note":"pro\u2060vider payload"}',
+            '{"note":"cred\ufe0fential store"}',
+        ),
+    )
+    def test_default_ignorables_cannot_split_prohibited_json_terms(self, payload: str) -> None:
+        with pytest.raises(RedactionViolationError):
+            redaction_scan(payload.encode("utf-8"))
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            "credential\u200d store",
+            "secr\ufeffet material",
+        ),
+    )
+    def test_default_ignorables_cannot_split_prohibited_plaintext_terms(self, payload: str) -> None:
+        with pytest.raises(RedactionViolationError):
+            redaction_scan(payload.encode("utf-8"))
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            '{"note":"cr\u0435dential store"}',
+            '{"note":"pr\u043evider payload"}',
+            '{"note":"s\u0435cret material"}',
+            '{"note":"us\u0435r identity"}',
+        ),
+    )
+    def test_confusable_prohibited_json_terms_fail_closed(self, payload: str) -> None:
+        with pytest.raises(RedactionViolationError):
+            redaction_scan(payload.encode("utf-8"))
+
+    def test_benign_non_ascii_text_passes_without_transliteration(self) -> None:
+        redaction_scan('{"note":"café Δ"}'.encode())
+
 
 class TestEvidenceLabels:
     """Only implementation/conformance labels are accepted."""
