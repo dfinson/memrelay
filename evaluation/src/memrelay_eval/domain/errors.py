@@ -120,3 +120,7 @@ class ProcessReuseError(ProcessLaunchError):
 
 class ProcessLimitError(ProcessLaunchError):
     """A bounded local process pool cannot admit another active attempt."""
+
+
+class ProcessWorkerBoundaryError(ProcessLaunchError):
+    """A process request conflicts with its authoritative attempt workspace boundary."""

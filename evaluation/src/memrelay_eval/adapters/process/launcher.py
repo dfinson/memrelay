@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
@@ -79,6 +79,7 @@ class LaunchedProcess:
     process: subprocess.Popen[bytes]
     start: ProcessStartRecord
     report: ProcessRunReport | None = None
+    finalization_lock: Lock = field(default_factory=Lock, repr=False)
 
 
 class DisposableProcessLauncher:
@@ -91,7 +92,8 @@ class DisposableProcessLauncher:
 
     @property
     def cleanup_records(self) -> tuple[ProcessCleanupRecord, ...]:
-        return tuple(self._cleanup_records)
+        with self._lock:
+            return tuple(self._cleanup_records)
 
     def start(self, request: ProcessLaunchRequest) -> LaunchedProcess:
         key = (request.attempt_id, request.role)
@@ -110,15 +112,16 @@ class DisposableProcessLauncher:
                 **_process_group_options(),
             )
         except OSError as error:
-            self._cleanup_records.append(
+            removed, socket_errors = remove_owned_sockets(request.socket_paths)
+            self._append_cleanup_record(
                 ProcessCleanupRecord(
                     request.attempt_id,
                     request.role,
                     "start_failed",
                     datetime.now(UTC),
                     False,
-                    0,
-                    (),
+                    removed,
+                    socket_errors,
                 )
             )
             raise ProcessLaunchError("process_start_failed") from error
@@ -157,37 +160,42 @@ class DisposableProcessLauncher:
         *,
         stop_process_tree: bool,
     ) -> ProcessRunReport:
-        if launched.report is not None:
-            return launched.report
-        if stop_process_tree:
-            process_tree_stopped, process_errors = terminate_process_tree(launched.process)
-        else:
-            process_tree_stopped, process_errors = False, ()
-        removed, socket_errors = remove_owned_sockets(launched.request.socket_paths)
-        now = datetime.now(UTC)
-        cleanup = ProcessCleanupRecord(
-            launched.request.attempt_id,
-            launched.request.role,
-            outcome,
-            now,
-            process_tree_stopped,
-            removed,
-            (*process_errors, *socket_errors),
-        )
-        self._cleanup_records.append(cleanup)
-        report = ProcessRunReport(
-            launched.start,
-            ProcessExitRecord(
+        with launched.finalization_lock:
+            if launched.report is not None:
+                return launched.report
+            if stop_process_tree:
+                process_tree_stopped, process_errors = terminate_process_tree(launched.process)
+            else:
+                process_tree_stopped, process_errors = False, ()
+            removed, socket_errors = remove_owned_sockets(launched.request.socket_paths)
+            now = datetime.now(UTC)
+            cleanup = ProcessCleanupRecord(
                 launched.request.attempt_id,
                 launched.request.role,
-                launched.process.returncode if returncode is None else returncode,
                 outcome,
                 now,
-            ),
-            cleanup,
-        )
-        launched.report = report
-        return report
+                process_tree_stopped,
+                removed,
+                (*process_errors, *socket_errors),
+            )
+            self._append_cleanup_record(cleanup)
+            report = ProcessRunReport(
+                launched.start,
+                ProcessExitRecord(
+                    launched.request.attempt_id,
+                    launched.request.role,
+                    launched.process.returncode if returncode is None else returncode,
+                    outcome,
+                    now,
+                ),
+                cleanup,
+            )
+            launched.report = report
+            return report
+
+    def _append_cleanup_record(self, record: ProcessCleanupRecord) -> None:
+        with self._lock:
+            self._cleanup_records.append(record)
 
 
 def _process_group_options() -> dict[str, object]:

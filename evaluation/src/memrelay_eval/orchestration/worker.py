@@ -16,6 +16,7 @@ from memrelay_eval.adapters.process.launcher import (
     ProcessRunReport,
 )
 from memrelay_eval.adapters.workspace.base import WorkspaceHandle
+from memrelay_eval.domain.errors import ProcessWorkerBoundaryError
 from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType
 
 from .limits import AttemptProcessLimiter
@@ -53,7 +54,11 @@ class DisposableAttemptWorker:
         credential_values: Mapping[str, str] | None = None,
     ) -> ProcessRunReport:
         if request.attempt_id != str(workspace.attempt_id):
-            raise ValueError("process request must use the workspace attempt ID")
+            raise ProcessWorkerBoundaryError("process_request_attempt_mismatch")
+        if request.cwd != workspace.workspace_root:
+            raise ProcessWorkerBoundaryError("process_request_workspace_mismatch")
+        if request.socket_paths not in ((), (workspace.socket_path,)):
+            raise ProcessWorkerBoundaryError("process_request_socket_mismatch")
         environment = build_process_environment(
             request.role,
             runtime_environment=workspace.environment,
