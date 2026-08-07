@@ -142,14 +142,17 @@ class ConcealedAssignmentService:
             existing = self._records.get(assignment.id)
             if existing is not None:
                 return existing.assignment
-            phase = int.from_bytes(
-                hmac.new(
-                    self._seed_material,
-                    block_id.encode("utf-8"),
-                    sha256,
-                ).digest()[:8],
-                "big",
-            ) % self._algorithm.slot_count
+            phase = (
+                int.from_bytes(
+                    hmac.new(
+                        self._seed_material,
+                        block_id.encode("utf-8"),
+                        sha256,
+                    ).digest()[:8],
+                    "big",
+                )
+                % self._algorithm.slot_count
+            )
             slot_index = (phase + position) % self._algorithm.slot_count
             self._records[assignment.id] = _PrivateAssignment(assignment, block_id, slot_index)
         return assignment

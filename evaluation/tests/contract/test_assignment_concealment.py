@@ -54,11 +54,7 @@ def _service() -> tuple[ConcealedAssignmentService, str]:
             "seed_commitment": _input(store, sha256(seed).hexdigest()),
             "blocks": _input(
                 store,
-                {
-                    "blocks": [
-                        {"block_id": "block_0001", "ordered_input_hashes": [input_hash]}
-                    ]
-                },
+                {"blocks": [{"block_id": "block_0001", "ordered_input_hashes": [input_hash]}]},
             ),
             "ordered_inputs": _input(store, [{"input_hash": input_hash}]),
         }

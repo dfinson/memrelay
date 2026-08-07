@@ -131,9 +131,12 @@ def test_assignment_seal_reproducibly_commits_every_frozen_input() -> None:
         "assignment_plan_hash",
     }.issubset(document)
     assert "treatment" not in json.dumps(document).casefold()
-    assert assignment.id == service.assign(
-        AssignmentRequest(assignment.experiment_id, assignment.run_id, hashes[0])
-    ).id
+    assert (
+        assignment.id
+        == service.assign(
+            AssignmentRequest(assignment.experiment_id, assignment.run_id, hashes[0])
+        ).id
+    )
 
 
 @pytest.mark.parametrize(
@@ -239,9 +242,12 @@ def test_seal_consumes_story_1_5_style_ordered_inputs_and_run_order_blocks() -> 
     service = ConcealedAssignmentService(sealed, store, seed_material, _registry())
 
     assert len(sealed.ordered_input_hashes) == len(input_ids)
-    assert service.assign(
-        AssignmentRequest(ExperimentId.new(), RunId.new(), sealed.ordered_input_hashes[0])
-    ).assignment_plan_hash == sealed.assignment_plan_hash
+    assert (
+        service.assign(
+            AssignmentRequest(ExperimentId.new(), RunId.new(), sealed.ordered_input_hashes[0])
+        ).assignment_plan_hash
+        == sealed.assignment_plan_hash
+    )
 
 
 def test_concurrent_duplicate_assignment_is_idempotent_and_deterministic() -> None:
