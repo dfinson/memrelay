@@ -43,6 +43,7 @@ def catalog_root(tmp_path: Path) -> Path:
     root = tmp_path / "catalog"
     root.mkdir(parents=True)
     shutil.copy2(SOURCE_CATALOG, root / "catalog.yaml")
+    shutil.copytree(SOURCE_CATALOG.parent / "fixtures", root / "fixtures")
     return root
 
 
@@ -1063,7 +1064,7 @@ def test_compile_uses_no_network_or_provider_credentials(
     verify_compiled_catalog(paths["output"], paths["lock"], catalog_path=paths["catalog"])
 
 
-def test_traceability_is_catalog_relative_and_defers_fixture_and_eligibility_gates(
+def test_traceability_is_catalog_relative_and_computes_fixture_and_eligibility_gates(
     tmp_path: Path,
 ) -> None:
     root = catalog_root(tmp_path)
@@ -1073,6 +1074,7 @@ def test_traceability_is_catalog_relative_and_defers_fixture_and_eligibility_gat
         (paths["output"] / "fixture-manifest.json").read_text(encoding="utf-8")
     )
     traceability = json.loads((paths["output"] / "traceability.json").read_text(encoding="utf-8"))
+    tasks = json.loads((paths["output"] / "tasks.json").read_text(encoding="utf-8"))
 
     record = traceability["traceability"][0]
     location_documents = [
@@ -1086,6 +1088,24 @@ def test_traceability_is_catalog_relative_and_defers_fixture_and_eligibility_gat
     ]
     assert all(location["path"] == "catalog.yaml" for location in location_documents)
     assert all("\\" not in location["path"] for location in location_documents)
-    assert fixture_manifest["fixture_content_validation"] == "not_performed"
-    assert record["fixture_content_validation"] == "not_performed"
-    assert record["eligibility_evaluation"] == "not_performed"
+
+    assert fixture_manifest["fixture_content_validation"] == {
+        "status": "verified",
+        "fixture_count": 1,
+    }
+    assert fixture_manifest["fixtures"][0]["fixture_content_validation"]["status"] == "verified"
+    assert (
+        fixture_manifest["fixtures"][0]["fixture_content_validation"]["resolved_sha256"]
+        == "5277786376473628800fc7df15b50a2d596714f457e5901e588174d63eed73f8"
+    )
+
+    task = tasks["tasks"][0]
+    assert task["fixture_validation"] == {
+        "status": "verified",
+        "fixture_ids": ["fixture_cccccccccccccccccccccccccccccccc"],
+    }
+    assert task["eligibility_evaluation"]["disposition"] == "eligible"
+    assert task["eligibility_evaluation"]["codes"] == []
+    assert record["fixture_content_validation"] == task["fixture_validation"]
+    assert record["eligibility_evaluation"] == task["eligibility_evaluation"]
+    assert any(reference["relation"] == "study_validity_ref" for reference in record["references"])

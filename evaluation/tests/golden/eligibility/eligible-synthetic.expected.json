@@ -1,0 +1,54 @@
+{
+  "catalog_id": "cat_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "codes": [],
+  "digest": "14536a3ff62955f9fefa7f7490d54c6462c381717666eaae94bf2bd930660b28",
+  "disposition": "eligible",
+  "evidence_refs": [
+    "fixture_cccccccccccccccccccccccccccccccc",
+    "studyvalidity_99999999999999999999999999999999"
+  ],
+  "fixture_sha256": {
+    "fixture_cccccccccccccccccccccccccccccccc": "5277786376473628800fc7df15b50a2d596714f457e5901e588174d63eed73f8"
+  },
+  "reviewer_roles": [
+    "evaluation-scientist"
+  ],
+  "scenario_data_classification": "synthetic",
+  "scenario_id": "scenario_55555555555555555555555555555555",
+  "schema_version": "1.0.0",
+  "study_validity_ref": "studyvalidity_99999999999999999999999999999999",
+  "study_validity_snapshot": {
+    "baseline_stability": {
+      "passes": 3,
+      "runs": 3
+    },
+    "contamination": {
+      "canary_hits": 0,
+      "canary_id": "canary_aaaaaaaabbbbbbbbccccccccdddddddd",
+      "cutoff_status": "post_cutoff"
+    },
+    "gold_stability": {
+      "passes": 3,
+      "runs": 3
+    },
+    "holdout": {
+      "overlap_detected": false,
+      "segment": "confirmatory"
+    },
+    "id": "studyvalidity_99999999999999999999999999999999",
+    "memory_necessity": {
+      "rationale": "The catalog scenario cannot be resolved without recalling prior catalog state across the session boundary.",
+      "reviewer_role": "evaluation-scientist",
+      "score": 4
+    },
+    "shortcut_audit": {
+      "reviewer_role": "evaluation-scientist",
+      "routes_examined": [
+        "Direct answer lookup from the scenario prompt text alone.",
+        "Pattern match against grader assertion wording."
+      ],
+      "unresolved_shortcuts": []
+    }
+  },
+  "unpaid_conformance": true
+}

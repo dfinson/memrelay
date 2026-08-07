@@ -45,6 +45,7 @@ _BREAKING_SCENARIO_FIELDS = frozenset(
         "network_policy",
         "resource_limits",
         "grader_ref",
+        "study_validity_ref",
     }
 )
 
@@ -210,6 +211,17 @@ def _semantic_diagnostics(loaded: LoadedCatalog) -> list[CatalogDiagnostic]:
                     "CATALOG_UNRESOLVED_REFERENCE",
                     f"grader_ref references undeclared graders identifier {grader!r}",
                     f"{prefix}/grader_ref",
+                )
+            )
+        study_validity = scenario.get("study_validity_ref")
+        if study_validity not in reference_sets.get("study_validity", set()):
+            diagnostics.append(
+                _diagnostic(
+                    loaded,
+                    "CATALOG_UNRESOLVED_REFERENCE",
+                    "study_validity_ref references undeclared study_validity "
+                    f"identifier {study_validity!r}",
+                    f"{prefix}/study_validity_ref",
                 )
             )
     return diagnostics

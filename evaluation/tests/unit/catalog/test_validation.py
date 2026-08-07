@@ -35,9 +35,35 @@ references:
   risks: ["{opaque("risk", "e")}"]
   gates: ["{opaque("gate", "f")}"]
   endpoints: ["{opaque("endpoint", "1")}"]
-  evidence: ["{opaque("evidence", "2")}"]
+  evidence:
+    - id: "{opaque("evidence", "2")}"
+      description: "Structured validation transcript"
+      capture_location: "generated/traceability.json"
   claims: ["{opaque("claim", "3")}"]
   graders: ["{opaque("grader", "4")}"]
+  study_validity:
+    - id: "studyvalidity_{"9" * 32}"
+      memory_necessity:
+        reviewer_role: "evaluation-scientist"
+        score: 4
+        rationale: "Requires recall across the session boundary"
+      shortcut_audit:
+        reviewer_role: "evaluation-scientist"
+        routes_examined: ["Direct answer lookup"]
+        unresolved_shortcuts: []
+      contamination:
+        canary_id: "canary_marker"
+        canary_hits: 0
+        cutoff_status: "post_cutoff"
+      holdout:
+        segment: "confirmatory"
+        overlap_detected: false
+      baseline_stability:
+        runs: 3
+        passes: 3
+      gold_stability:
+        runs: 3
+        passes: 3
 scenarios:
   - id: "{opaque("scenario", "5")}"
     title: "Verify synthetic catalog validation"
@@ -67,6 +93,7 @@ scenarios:
       wall_seconds: 30
       memory_mb: 256
     grader_ref: "{opaque("grader", "4")}"
+    study_validity_ref: "studyvalidity_{"9" * 32}"
 """
 
 
@@ -333,6 +360,7 @@ def test_non_scalar_mapping_keys_are_typed_yaml_diagnostics(tmp_path: Path) -> N
         ("expected_evidence", "evidence", opaque("evidence", "9")),
         ("claim_ids", "claims", opaque("claim", "9")),
         ("grader_ref", "graders", opaque("grader", "9")),
+        ("study_validity_ref", "study_validity", "studyvalidity_" + "8" * 32),
     ],
 )
 def test_every_reference_namespace_requires_closure(
@@ -347,12 +375,17 @@ def test_every_reference_namespace_requires_closure(
         "expected_evidence": opaque("evidence", "2"),
         "claim_ids": opaque("claim", "3"),
         "grader_ref": opaque("grader", "4"),
+        "study_validity_ref": "studyvalidity_" + "9" * 32,
     }[field]
     replacement = (
-        f'{field}: "{identifier}"' if field == "grader_ref" else f'{field}: ["{identifier}"]'
+        f'{field}: "{identifier}"'
+        if field in ("grader_ref", "study_validity_ref")
+        else f'{field}: ["{identifier}"]'
     )
     original_block = (
-        f'{field}: "{original}"' if field == "grader_ref" else f'{field}: ["{original}"]'
+        f'{field}: "{original}"'
+        if field in ("grader_ref", "study_validity_ref")
+        else f'{field}: ["{original}"]'
     )
     content = valid_catalog().replace(original_block, replacement)
 
@@ -391,6 +424,7 @@ def test_every_reference_namespace_requires_closure(
             "    resource_limits:\n      wall_seconds: 30\n      memory_mb: 256\n",
         ),
         ("grader_ref", f'    grader_ref: "{opaque("grader", "4")}"\n'),
+        ("study_validity_ref", f'    study_validity_ref: "studyvalidity_{"9" * 32}"\n'),
     ],
 )
 def test_every_required_scenario_field_is_enforced_by_schema(
@@ -521,6 +555,7 @@ def test_version_policy_requires_exact_semantic_increment(tmp_path: Path) -> Non
     network_policy: "deny"
     resource_limits: {{wall_seconds: 30, memory_mb: 256}}
     grader_ref: "{opaque("grader", "4")}"
+    study_validity_ref: "studyvalidity_{"9" * 32}"
 """,
     ).replace('catalog_version: "1.0.1"', 'catalog_version: "1.1.0"')
     assert (

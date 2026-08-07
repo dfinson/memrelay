@@ -7,7 +7,7 @@ references:
   fixtures:
     - id: "fixture_cccccccccccccccccccccccccccccccc"
       source_path: "fixtures/catalog-validation.txt"
-      sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      sha256: "5277786376473628800fc7df15b50a2d596714f457e5901e588174d63eed73f8"
       media_type: "text/plain"
       license: "CC0-1.0"
       provenance: "synthetic"
@@ -22,11 +22,38 @@ references:
   endpoints:
     - "endpoint_11111111111111111111111111111111"
   evidence:
-    - "evidence_22222222222222222222222222222222"
+    - id: "evidence_22222222222222222222222222222222"
+      description: "Structured validation transcript captured from the compile-catalog run."
+      capture_location: "evaluation/catalog/generated/traceability.json"
   claims:
     - "claim_33333333333333333333333333333333"
   graders:
     - "grader_44444444444444444444444444444444"
+  study_validity:
+    - id: "studyvalidity_99999999999999999999999999999999"
+      memory_necessity:
+        reviewer_role: "evaluation-scientist"
+        score: 4
+        rationale: "The catalog scenario cannot be resolved without recalling prior catalog state across the session boundary."
+      shortcut_audit:
+        reviewer_role: "evaluation-scientist"
+        routes_examined:
+          - "Direct answer lookup from the scenario prompt text alone."
+          - "Pattern match against grader assertion wording."
+        unresolved_shortcuts: []
+      contamination:
+        canary_id: "canary_aaaaaaaabbbbbbbbccccccccdddddddd"
+        canary_hits: 0
+        cutoff_status: "post_cutoff"
+      holdout:
+        segment: "confirmatory"
+        overlap_detected: false
+      baseline_stability:
+        runs: 3
+        passes: 3
+      gold_stability:
+        runs: 3
+        passes: 3
 scenarios:
   - id: "scenario_55555555555555555555555555555555"
     title: "Validate the executable catalog"
@@ -64,3 +91,4 @@ scenarios:
       wall_seconds: 30
       memory_mb: 256
     grader_ref: "grader_44444444444444444444444444444444"
+    study_validity_ref: "studyvalidity_99999999999999999999999999999999"

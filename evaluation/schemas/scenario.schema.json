@@ -19,16 +19,107 @@
     "references": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["protocols", "fixtures", "risks", "gates", "endpoints", "evidence", "claims", "graders"],
+      "required": ["protocols", "fixtures", "risks", "gates", "endpoints", "evidence", "claims", "graders", "study_validity"],
       "properties": {
         "protocols": {"$ref": "#/$defs/idList"},
         "fixtures": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/fixture"}},
         "risks": {"$ref": "#/$defs/idList"},
         "gates": {"$ref": "#/$defs/idList"},
         "endpoints": {"$ref": "#/$defs/idList"},
-        "evidence": {"$ref": "#/$defs/idList"},
+        "evidence": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/evidenceDefinition"}},
         "claims": {"$ref": "#/$defs/idList"},
-        "graders": {"$ref": "#/$defs/idList"}
+        "graders": {"$ref": "#/$defs/idList"},
+        "study_validity": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/studyValidity"}}
+      }
+    },
+    "evidenceDefinition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "capture_location"],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaque"},
+        "description": {"type": "string", "minLength": 1},
+        "capture_location": {"type": "string", "minLength": 1}
+      }
+    },
+    "studyValidity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "memory_necessity",
+        "shortcut_audit",
+        "contamination",
+        "holdout",
+        "baseline_stability",
+        "gold_stability"
+      ],
+      "properties": {
+        "id": {"$ref": "#/$defs/opaque"},
+        "memory_necessity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reviewer_role", "score", "rationale"],
+          "properties": {
+            "reviewer_role": {"type": "string", "minLength": 1},
+            "score": {"type": "integer", "minimum": 0, "maximum": 4},
+            "rationale": {"type": "string", "minLength": 1}
+          }
+        },
+        "shortcut_audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reviewer_role", "routes_examined", "unresolved_shortcuts"],
+          "properties": {
+            "reviewer_role": {"type": "string", "minLength": 1},
+            "routes_examined": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "unresolved_shortcuts": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "contamination": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["canary_id", "canary_hits", "cutoff_status"],
+          "properties": {
+            "canary_id": {"type": "string", "minLength": 1},
+            "canary_hits": {"type": "integer", "minimum": 0},
+            "cutoff_status": {"enum": ["post_cutoff", "access_controlled", "unavailable"]}
+          }
+        },
+        "holdout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["segment", "overlap_detected"],
+          "properties": {
+            "segment": {"enum": ["development", "pilot", "confirmatory"]},
+            "overlap_detected": {"type": "boolean"}
+          }
+        },
+        "baseline_stability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runs", "passes"],
+          "properties": {
+            "runs": {"type": "integer", "minimum": 3, "maximum": 10},
+            "passes": {"type": "integer", "minimum": 0, "maximum": 10}
+          }
+        },
+        "gold_stability": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["runs", "passes"],
+          "properties": {
+            "runs": {"type": "integer", "minimum": 3, "maximum": 10},
+            "passes": {"type": "integer", "minimum": 0, "maximum": 10}
+          }
+        }
       }
     },
     "fixture": {
@@ -69,7 +160,7 @@
     "scenario": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "title", "protocol_ids", "priority", "owner", "preconditions", "fixture_refs", "injected_conditions", "procedure", "expected_evidence", "pass_criteria", "allowed_retries", "risk_ids", "gate_ids", "endpoint_ids", "claim_ids", "data_classification", "network_policy", "resource_limits", "grader_ref"],
+      "required": ["id", "title", "protocol_ids", "priority", "owner", "preconditions", "fixture_refs", "injected_conditions", "procedure", "expected_evidence", "pass_criteria", "allowed_retries", "risk_ids", "gate_ids", "endpoint_ids", "claim_ids", "data_classification", "network_policy", "resource_limits", "grader_ref", "study_validity_ref"],
       "properties": {
         "id": {"type": "string", "pattern": "^scenario_[a-f0-9]{32}$"},
         "title": {"type": "string", "minLength": 1},
@@ -98,7 +189,8 @@
             "memory_mb": {"type": "integer", "minimum": 1}
           }
         },
-        "grader_ref": {"$ref": "#/$defs/opaque"}
+        "grader_ref": {"$ref": "#/$defs/opaque"},
+        "study_validity_ref": {"$ref": "#/$defs/opaque"}
       }
     }
   }
