@@ -15,7 +15,7 @@ _PROHIBITED_ASSIGNMENT_MODULES = frozenset(
 def _module_for_path(path: Path, source_root: Path) -> str:
     relative = path.relative_to(source_root).with_suffix("")
     parts = ("memrelay_eval", *relative.parts)
-    return ".".join(parts[:-1] if path.name != "__init__.py" else parts)
+    return ".".join(parts[:-1])
 
 
 def _resolve_from_module(node: ast.ImportFrom, current_package: str) -> str:
@@ -131,6 +131,14 @@ def _assignment_boundary_violations(source_root: Path) -> list[str]:
             "catalog/mutation.py",
         ),
         (
+            "from ..orchestration.assignment import ConcealedAssignmentService",
+            "catalog/__init__.py",
+        ),
+        (
+            "from ..orchestration import assignment as concealed_assignment",
+            "catalog/__init__.py",
+        ),
+        (
             "from memrelay_eval.orchestration import (\n    assignment as concealed_assignment,\n)",
             "catalog/mutation.py",
         ),
@@ -159,6 +167,26 @@ def test_assignment_boundary_detects_planted_import_bypasses(
     target.write_text(source, encoding="utf-8")
 
     assert _assignment_boundary_violations(source_root) == [path]
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_package"),
+    (
+        ("catalog/mutation.py", "memrelay_eval.catalog"),
+        ("catalog/__init__.py", "memrelay_eval.catalog"),
+        ("catalog/nested/mutation.py", "memrelay_eval.catalog.nested"),
+        ("catalog/nested/__init__.py", "memrelay_eval.catalog.nested"),
+    ),
+)
+def test_assignment_boundary_resolves_regular_modules_and_package_initializers(
+    tmp_path: Path, path: str, expected_package: str
+) -> None:
+    source_root = tmp_path / "memrelay_eval"
+    target = source_root / path
+    target.parent.mkdir(parents=True)
+    target.write_text("", encoding="utf-8")
+
+    assert _module_for_path(target, source_root) == expected_package
 
 
 def test_catalog_scoring_and_cli_cannot_import_provisioning_assignment_resolution() -> None:
