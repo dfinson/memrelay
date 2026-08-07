@@ -35,8 +35,9 @@ def isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture
 def clean_output_dir(tmp_path: Path) -> Path:
     """Provide a fresh output directory for each test."""
-    output = tmp_path / "generated"
-    output.mkdir()
+    del tmp_path
+    output = CATALOG_PATH.parent / "generated"
+    output.mkdir(parents=True, exist_ok=True)
     return output
 
 
@@ -89,11 +90,14 @@ class TestOfflinePlanningEndToEnd:
             manifest_path=manifest_path,
         )
         # Run again in a fresh directory
-        output2 = clean_output_dir.parent / "generated2"
-        output2.mkdir()
+        catalog_root2 = clean_output_dir.parent.parent / "catalog2"
+        shutil.copytree(CATALOG_PATH.parent, catalog_root2)
+        catalog_path2 = catalog_root2 / "catalog.yaml"
+        output2 = catalog_root2 / "generated"
+        output2.mkdir(exist_ok=True)
         manifest_path2 = output2 / "plan-manifest.json"
         result2 = plan_offline(
-            catalog_path=CATALOG_PATH,
+            catalog_path=catalog_path2,
             output_dir=output2,
             manifest_path=manifest_path2,
         )
