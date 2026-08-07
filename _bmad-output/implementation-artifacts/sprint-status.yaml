@@ -63,7 +63,7 @@ development_status:
   2-1-lock-the-copilot-runtime-and-qualified-models: done
   2-2-provision-isolated-workspace-providers: done
   2-3-launch-disposable-credential-isolated-processes: done
-  2-4-execute-copilot-through-inspect-authority: review
+  2-4-execute-copilot-through-inspect-authority: done
   2-5-verify-agent-and-environment-parity: ready-for-dev
   2-6-run-the-shipped-daemon-and-mcp-product-stratum: ready-for-dev
   2-7-run-the-direct-engine-upper-bound-stratum: ready-for-dev
