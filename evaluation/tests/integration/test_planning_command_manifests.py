@@ -6,6 +6,7 @@ Validates AC-2: non-interactive, typed terminal status, exit codes, manifest com
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,6 +14,15 @@ import pytest
 from memrelay_eval.cli.main import main
 
 CATALOG_PATH = Path(__file__).parents[2] / "catalog" / "catalog.yaml"
+
+
+@pytest.fixture(autouse=True)
+def isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run planning against a copied catalog so tests never alter repository inputs."""
+    source_catalog = CATALOG_PATH
+    catalog_root = tmp_path / "catalog"
+    shutil.copytree(source_catalog.parent, catalog_root)
+    monkeypatch.setitem(globals(), "CATALOG_PATH", catalog_root / "catalog.yaml")
 
 
 class TestPlanOfflineCLI:
