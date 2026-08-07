@@ -83,6 +83,11 @@ class TestOfflinePlanningEndToEnd:
 
     def test_manifest_is_deterministic(self, clean_output_dir: Path) -> None:
         """Same inputs produce byte-identical manifests."""
+        catalog_root2 = clean_output_dir.parent.parent / "catalog2"
+        shutil.copytree(CATALOG_PATH.parent, catalog_root2)
+        catalog_path2 = catalog_root2 / "catalog.yaml"
+        output2 = catalog_root2 / "generated"
+        output2.mkdir(exist_ok=True)
         manifest_path = clean_output_dir / "plan-manifest.json"
         result1 = plan_offline(
             catalog_path=CATALOG_PATH,
@@ -90,11 +95,6 @@ class TestOfflinePlanningEndToEnd:
             manifest_path=manifest_path,
         )
         # Run again in a fresh directory
-        catalog_root2 = clean_output_dir.parent.parent / "catalog2"
-        shutil.copytree(CATALOG_PATH.parent, catalog_root2)
-        catalog_path2 = catalog_root2 / "catalog.yaml"
-        output2 = catalog_root2 / "generated"
-        output2.mkdir(exist_ok=True)
         manifest_path2 = output2 / "plan-manifest.json"
         result2 = plan_offline(
             catalog_path=catalog_path2,
