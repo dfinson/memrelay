@@ -20,6 +20,7 @@ from .ids import (
     EndpointId,
     EnrollmentPlanId,
     EnvironmentStratumId,
+    EpisodeId,
     EvidenceId,
     ExperimentId,
     HistoryId,
@@ -28,17 +29,21 @@ from .ids import (
     RetentionPolicyId,
     RunId,
     ScenarioId,
+    SequenceId,
     TaskId,
 )
 from .policies import validate_run_transition
 from .states import (
     ArtifactScope,
     AttemptTerminalKind,
+    EvaluationStratum,
     ExposureClassification,
     ExposurePhase,
+    HistoryMode,
     InclusionStatus,
     InternalRetrySubsystem,
     RunState,
+    SequenceState,
 )
 
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -60,6 +65,88 @@ class Experiment:
 class Protocol:
     id: ProtocolId
     allows_pre_exposure_infrastructure_retry: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicSequence:
+    """Public, arm-neutral record for a wholly assigned dynamic history."""
+
+    id: SequenceId
+    experiment_id: ExperimentId
+    assignment_id: AssignmentId
+    assignment_plan_hash: str
+    episode_ids: tuple[EpisodeId, ...]
+    history_mode: HistoryMode
+    stratum: EvaluationStratum
+    allocation_seed_commitment: str
+
+    def __post_init__(self) -> None:
+        if self.history_mode is not HistoryMode.DYNAMIC:
+            raise InvalidArtifactManifestError("dynamic sequence must use dynamic history mode")
+        if not _SHA256.fullmatch(self.assignment_plan_hash) or not _SHA256.fullmatch(
+            self.allocation_seed_commitment
+        ):
+            raise InvalidArtifactManifestError("dynamic sequence commitments must be SHA-256")
+        if not self.episode_ids or len(set(self.episode_ids)) != len(self.episode_ids):
+            raise InvalidArtifactManifestError(
+                "dynamic sequence episode order must be unique and non-empty"
+            )
+        object.__setattr__(self, "episode_ids", tuple(self.episode_ids))
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicEpisode:
+    """Arm-neutral episode lineage; its predecessors are immutable terminal attempts."""
+
+    sequence_id: SequenceId
+    episode_id: EpisodeId
+    ordinal: int
+    prior_terminal_attempt_ids: tuple[AttemptId, ...]
+
+    def __post_init__(self) -> None:
+        if self.ordinal < 0:
+            raise InvalidArtifactManifestError("episode ordinal must not be negative")
+        if len(set(self.prior_terminal_attempt_ids)) != len(self.prior_terminal_attempt_ids):
+            raise InvalidArtifactManifestError("episode prior terminal lineage must not duplicate")
+        object.__setattr__(
+            self, "prior_terminal_attempt_ids", tuple(self.prior_terminal_attempt_ids)
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicSequenceTerminal:
+    """The deterministic terminal projection retained for a complete sequence."""
+
+    sequence_id: SequenceId
+    state: SequenceState
+    terminal_attempt_ids: tuple[AttemptId, ...]
+    evidence_refs: tuple[ArtifactRef, ...]
+
+    def __post_init__(self) -> None:
+        if self.state is not SequenceState.TERMINAL:
+            raise InvalidAttemptTerminalError("sequence terminal must use terminal state")
+        if not self.terminal_attempt_ids:
+            raise InvalidAttemptTerminalError(
+                "sequence terminal requires attempted episode lineage"
+            )
+        object.__setattr__(self, "terminal_attempt_ids", tuple(self.terminal_attempt_ids))
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+
+@dataclass(frozen=True, slots=True)
+class DynamicSequenceCleanup:
+    """Typed, append-only cleanup completion after a sequence terminal."""
+
+    sequence_id: SequenceId
+    state: SequenceState
+    evidence_refs: tuple[ArtifactRef, ...]
+
+    def __post_init__(self) -> None:
+        if self.state is not SequenceState.CLEANED_UP:
+            raise InvalidAttemptTerminalError("sequence cleanup must use cleaned_up state")
+        if not self.evidence_refs:
+            raise InvalidAttemptTerminalError("sequence cleanup requires evidence")
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
 
 
 @dataclass(frozen=True, slots=True)

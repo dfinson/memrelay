@@ -61,6 +61,18 @@ class HistoryId(OpaqueId):
     prefix = "history"
 
 
+class SequenceId(OpaqueId):
+    """Opaque identity for the unit assigned in a dynamic-history protocol."""
+
+    prefix = "sequence"
+
+
+class EpisodeId(OpaqueId):
+    """Opaque identity for one ordered member of a dynamic sequence."""
+
+    prefix = "episode"
+
+
 class AssignmentId(OpaqueId):
     prefix = "assignment"
 
