@@ -105,6 +105,19 @@ class WorkspaceHandle:
             "XDG_CONFIG_HOME": str(self.config_root),
         }
 
+    def parity_layout(self) -> dict[str, object]:
+        """Project fixed workspace topology without persisting attempt-specific paths."""
+        return {
+            "provider": self.provider_name,
+            "roots": [
+                str(root.relative_to(self.attempt_root)).replace("\\", "/")
+                for root in self.mutable_roots
+            ],
+            "private_git": self.private_git_dir is not None,
+            "frozen_revision": self.frozen_revision,
+            "source_content_sha256": self.source_content_sha256,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSnapshot:

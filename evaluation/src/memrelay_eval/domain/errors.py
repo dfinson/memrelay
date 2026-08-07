@@ -62,6 +62,15 @@ class EnvironmentStratumChangedError(DomainError):
     code = "environment_stratum_changed"
 
 
+class AgentParityMismatchError(DomainError):
+    """A paired attempt differs outside its declared intervention delta."""
+
+    def __init__(self, code: str, fields: tuple[str, ...]) -> None:
+        self.code = code
+        self.fields = fields
+        super().__init__(code.replace("_", " "))
+
+
 class IneligibleEnrollmentError(DomainError):
     """A Story 1.4 disposition does not permit enrollment."""
 

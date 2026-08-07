@@ -31,3 +31,19 @@ freeze persists canonical artifact identities for the effective configuration,
 environment stratum, catalog, model catalog, assignment inputs, ordered inputs,
 blocks, and price tables. Fixture-backed stores remain unpaid-conformance evidence
 and cannot authorize study inclusion.
+
+## Paired agent and environment parity
+
+Before either paired attempt receives a task, the evaluator canonicalizes a
+prompt-free parity record. It binds the official SDK/runtime and model locks,
+model capabilities and controls, exact prompt-component hashes, tool schemas,
+permissions, network policy, limits, workspace topology, built-in memory and
+cross-session store settings, retry policy, effective configuration, and the
+host environment stratum.
+
+Only opaque, protocol-bound content and access deltas may differ. Any other
+mismatch is persisted as typed pre-exposure evidence, appends an immutable
+pre-exposure infrastructure terminal record, and prevents the Inspect
+scheduler from delivering a task or starting inference. Environment
+fingerprints are linked to protocols and cannot be aggregated across strata
+without an explicit separate stratum.

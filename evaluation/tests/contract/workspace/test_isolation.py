@@ -84,6 +84,22 @@ def test_providers_provision_identical_isolated_attempt_layout(
     assert handle.telemetry_identity.startswith("telemetry_")
     assert str(handle.attempt_id) not in handle.telemetry_identity
     assert not any(label in str(handle.attempt_root).lower() for label in ("arm", "treatment"))
+    parity_layout = handle.parity_layout()
+    assert parity_layout["provider"] == handle.provider_name
+    assert str(handle.attempt_root) not in str(parity_layout)
+    assert parity_layout["roots"] == [
+        "workspace",
+        "agent-session",
+        "cache",
+        "staging",
+        "telemetry",
+        "memrelay-home",
+        "graph",
+        "spool",
+        "socket",
+        "config",
+        "private-git",
+    ]
     assert (handle.workspace_root / "README.md").read_text(encoding="utf-8") == "frozen source\n"
     assert _git(handle.workspace_root, "rev-parse", "HEAD") == revision
 
