@@ -12,19 +12,31 @@ Output is labeled ``implementation_evidence`` or ``unpaid_conformance`` only.
 
 from __future__ import annotations
 
+import json
+import re
 import socket
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
 
-from memrelay_eval.adapters.fakes import InMemoryArtifactStore, InMemoryLedger
+from memrelay_eval.adapters.fakes import (
+    FakeCopilotPort,
+    FakeMemrelayPort,
+    FakeOpenAIPort,
+    InMemoryArtifactStore,
+    InMemoryLedger,
+    InMemoryTelemetry,
+)
 from memrelay_eval.canonical import attach_digest, canonical_bytes, canonical_digest
 from memrelay_eval.catalog.compiler import (
+    _write_bytes_durable,
     compile_catalog_command,
 )
+from memrelay_eval.domain.entities import TelemetryObservation
 from memrelay_eval.domain.errors import DomainError
 from memrelay_eval.domain.ids import ExperimentId, ProtocolId, RunId
 from memrelay_eval.domain.states import RunState
@@ -62,6 +74,7 @@ _REDACTED_TERMS = (
     "treatment",
     "arm",
 )
+_SAFE_SCHEMA_KEYS = frozenset({"error_code", "exit_code"})
 
 
 class PlanningError(DomainError):
@@ -111,6 +124,29 @@ class PlanningResult:
     error_message: str | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class OfflinePlanningPorts:
+    """All unpaid ports composed into an offline planning execution."""
+
+    copilot: FakeCopilotPort
+    openai: FakeOpenAIPort
+    memrelay: FakeMemrelayPort
+    artifacts: InMemoryArtifactStore
+    ledger: InMemoryLedger
+    telemetry: InMemoryTelemetry
+
+    @classmethod
+    def fake(cls) -> OfflinePlanningPorts:
+        return cls(
+            copilot=FakeCopilotPort(),
+            openai=FakeOpenAIPort(),
+            memrelay=FakeMemrelayPort(),
+            artifacts=InMemoryArtifactStore(),
+            ledger=InMemoryLedger(),
+            telemetry=InMemoryTelemetry(),
+        )
+
+
 @contextmanager
 def network_deny_guard() -> Iterator[None]:
     """Block all socket and DNS operations for the duration of the context."""
@@ -140,17 +176,40 @@ def network_deny_guard() -> Iterator[None]:
 
 def validate_evidence_label(label: str) -> str:
     """Accept only implementation/conformance labels; reject prohibited ones."""
-    if label in _PROHIBITED_LABELS:
+    if label.strip().casefold() in _PROHIBITED_LABELS:
         raise EvidenceLabelError(label)
     return label
 
 
 def redaction_scan(data: bytes, *, context: str = "") -> None:
-    """Raise if emitted bytes contain any prohibited term as a distinct token."""
-    lower = data.decode("utf-8", errors="replace").lower()
+    """Raise if emitted text carries a prohibited term without false schema matches."""
+    del context
+    text = data.decode("utf-8", errors="replace")
+    try:
+        document = json.loads(text)
+    except json.JSONDecodeError:
+        _raise_if_redacted_text(text)
+        return
+    _scan_redacted_value(document)
+
+
+def _scan_redacted_value(value: object) -> None:
+    if isinstance(value, str):
+        _raise_if_redacted_text(value)
+    elif isinstance(value, list):
+        for item in value:
+            _scan_redacted_value(item)
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key)
+            if key_text not in _SAFE_SCHEMA_KEYS:
+                _raise_if_redacted_text(key_text)
+            _scan_redacted_value(item)
+
+
+def _raise_if_redacted_text(text: str) -> None:
     for term in _REDACTED_TERMS:
-        # Check for the term as a JSON key or standalone word boundary
-        if f'"{term}"' in lower or f"_{term}_" in lower:
+        if re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text.casefold()):
             raise RedactionViolationError(term)
 
 
@@ -164,6 +223,7 @@ def plan_offline(
     runtime_lock: Path | None = None,
     seed: bytes | None = None,
     evidence_classification: str = "unpaid_conformance",
+    ports: OfflinePlanningPorts | None = None,
 ) -> PlanningResult:
     """Execute the full offline planning pipeline under a network-deny guard.
 
@@ -176,10 +236,15 @@ def plan_offline(
     if seed is None:
         seed = b"offline-planning-deterministic-seed-v1"
     seed_commitment = sha256(seed).hexdigest()
+    ports = ports or OfflinePlanningPorts.fake()
+    planned_manifest_path = output_dir / "planned-run-manifest.json"
+    prior_planned_manifest = (
+        planned_manifest_path.read_bytes() if planned_manifest_path.is_file() else None
+    )
 
     with network_deny_guard():
         try:
-            return _execute_planning_pipeline(
+            result = _execute_planning_pipeline(
                 catalog_path=catalog_path,
                 output_dir=output_dir,
                 manifest_path=manifest_path,
@@ -189,22 +254,33 @@ def plan_offline(
                 seed=seed,
                 seed_commitment=seed_commitment,
                 evidence_classification=evidence_classification,
+                ports=ports,
             )
         except KeyboardInterrupt:
-            return PlanningResult(
+            _restore_prior_planned_manifest(planned_manifest_path, prior_planned_manifest)
+            result = PlanningResult(
                 terminal_status="interrupted",
                 exit_code=130,
                 evidence_classification=evidence_classification,
                 error_code="keyboard_interrupt",
             )
         except PlanningError as error:
-            return PlanningResult(
+            _restore_prior_planned_manifest(planned_manifest_path, prior_planned_manifest)
+            result = PlanningResult(
                 terminal_status="failed",
                 exit_code=3,
                 evidence_classification=evidence_classification,
                 error_code=error.code,
                 error_message=str(error),
             )
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_bytes_durable(manifest_path, plan_offline_to_command_manifest(result))
+    return result
+
+
+def _restore_prior_planned_manifest(path: Path, prior_bytes: bytes | None) -> None:
+    if prior_bytes is not None:
+        _write_bytes_durable(path, prior_bytes)
 
 
 def _is_child(path: Path, parent: Path) -> bool:
@@ -227,28 +303,33 @@ def _execute_planning_pipeline(
     seed: bytes,
     seed_commitment: str,
     evidence_classification: str,
+    ports: OfflinePlanningPorts,
 ) -> PlanningResult:
     """Internal pipeline; all exceptions propagate to plan_offline."""
 
     # Phase 1: Compile the catalog
-    # The compiler requires catalog, output_dir, lock, and manifest to be
-    # direct children of one catalog root. Resolve relative to catalog parent.
+    # The compiler requires its output and lock to remain under the catalog root.
     catalog_root = catalog_path.parent
-    effective_output_dir = (
-        output_dir if _is_child(output_dir, catalog_root) else (catalog_root / "generated")
-    )
-    effective_lock_path = lock_path or (catalog_root / "catalog-lock.json")
+    if not _is_child(output_dir, catalog_root):
+        raise PlanningError("invalid_output_dir_layout")
+    effective_lock_path = lock_path or catalog_root / "catalog-lock.json"
     if not _is_child(effective_lock_path, catalog_root):
-        effective_lock_path = catalog_root / "catalog-lock.json"
-    effective_manifest_path = (
-        manifest_path
-        if _is_child(manifest_path, catalog_root)
-        else (catalog_root / "plan-compile-manifest.json")
-    )
-    effective_output_dir.mkdir(parents=True, exist_ok=True)
+        raise PlanningError("invalid_lock_path_layout")
+    effective_manifest_path = catalog_root / "plan-compile-manifest.json"
+    planned_manifest_path = output_dir / "planned-run-manifest.json"
+    reserved_paths = {
+        catalog_path.resolve(),
+        effective_lock_path.resolve(),
+        effective_manifest_path.resolve(),
+        planned_manifest_path.resolve(),
+    }
+    if manifest_path.resolve() in reserved_paths:
+        raise PlanningError("command_manifest_path_conflict")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _validate_offline_ports(ports)
     compile_result = compile_catalog_command(
         catalog_path,
-        output_dir=effective_output_dir,
+        output_dir=output_dir,
         lock_path=effective_lock_path,
         manifest_path=effective_manifest_path,
         prior_lock=prior_lock,
@@ -277,9 +358,9 @@ def _execute_planning_pipeline(
     for key, value in compilation.output_sha256.items():
         input_hashes[f"compiled_{key}"] = value
 
-    # Phase 3: Construct fake ports
-    artifact_store = InMemoryArtifactStore()
-    ledger = InMemoryLedger()
+    # Phase 3: Use the injected fake ports; none can reach a real provider.
+    artifact_store = ports.artifacts
+    ledger = ports.ledger
 
     # Phase 4: Create assignment infrastructure
     algorithm = FixtureBalancedBlockAlgorithm(
@@ -330,6 +411,13 @@ def _execute_planning_pipeline(
     )
     if ledger.history(run_id):
         raise PlanningError("unexpected_lifecycle_transition")
+    ports.telemetry.emit(
+        TelemetryObservation(
+            "offline_planning_composed",
+            datetime(1970, 1, 1, tzinfo=UTC),
+            {"unpaid_conformance": True},
+        )
+    )
 
     planned_manifest_document = attach_digest(
         {
@@ -364,11 +452,8 @@ def _execute_planning_pipeline(
         "assignment_plan": assignment_plan_hash,
     }
 
-    # Write the planned manifest to the user-specified output directory
-    user_output_dir = output_dir
-    user_output_dir.mkdir(parents=True, exist_ok=True)
-    plan_manifest_path = user_output_dir / "planned-run-manifest.json"
-    plan_manifest_path.write_bytes(planned_manifest_bytes)
+    # Publish the planned-run manifest through the compiler's durable atomic path.
+    _write_bytes_durable(planned_manifest_path, planned_manifest_bytes)
 
     return PlanningResult(
         terminal_status="succeeded",
@@ -382,6 +467,25 @@ def _execute_planning_pipeline(
         manifest_ref=manifest_sha256,
         evidence_classification=evidence_classification,
     )
+
+
+def _validate_offline_ports(ports: OfflinePlanningPorts) -> None:
+    if not isinstance(ports.copilot, FakeCopilotPort):
+        raise PlanningError("offline_copilot_port_required")
+    if not isinstance(ports.openai, FakeOpenAIPort):
+        raise PlanningError("offline_openai_port_required")
+    if not isinstance(ports.memrelay, FakeMemrelayPort):
+        raise PlanningError("offline_memrelay_port_required")
+    for port in (
+        ports.copilot,
+        ports.openai,
+        ports.memrelay,
+        ports.artifacts,
+        ports.ledger,
+        ports.telemetry,
+    ):
+        if port.provenance != "unpaid_conformance" or port.eligible_for_paid_or_study:
+            raise PlanningError("offline_port_provenance_required")
 
 
 def plan_offline_to_command_manifest(result: PlanningResult) -> bytes:

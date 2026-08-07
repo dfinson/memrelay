@@ -25,6 +25,12 @@ def isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(globals(), "CATALOG_PATH", catalog_root / "catalog.yaml")
 
 
+def planning_output_dir() -> Path:
+    output_dir = CATALOG_PATH.parent / "generated"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
 class TestPlanOfflineCLI:
     """Test the plan-offline CLI command end-to-end."""
 
@@ -36,8 +42,7 @@ class TestPlanOfflineCLI:
         assert "plan-offline" in output
 
     def test_successful_exit_code_zero(self, tmp_path: Path) -> None:
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir()
         manifest = tmp_path / "manifest.json"
         exit_code = main(
             [
@@ -51,12 +56,13 @@ class TestPlanOfflineCLI:
             ]
         )
         assert exit_code == 0
+        document = json.loads(manifest.read_text())
+        assert document["terminal_status"] == "succeeded"
 
     def test_stdout_is_valid_command_manifest(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir()
         manifest = tmp_path / "manifest.json"
         main(
             [
@@ -77,14 +83,14 @@ class TestPlanOfflineCLI:
         assert "input_hashes" in document
         assert "output_hashes" in document
         assert "digest" in document
+        assert json.loads(manifest.read_text()) == document
 
     def test_invalid_catalog_returns_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
         bad_catalog = tmp_path / "bad.yaml"
         bad_catalog.write_text("not: valid: catalog: syntax: [")
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir()
         manifest = tmp_path / "manifest.json"
         exit_code = main(
             [
@@ -105,8 +111,7 @@ class TestPlanOfflineCLI:
     def test_nonexistent_catalog_returns_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir()
         manifest = tmp_path / "manifest.json"
         exit_code = main(
             [
@@ -123,8 +128,7 @@ class TestPlanOfflineCLI:
 
     def test_never_prompts_for_input(self, tmp_path: Path) -> None:
         """Verify the command never calls input() or reads stdin interactively."""
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir()
         manifest = tmp_path / "manifest.json"
         with patch("builtins.input", side_effect=AssertionError("must not prompt")):
             exit_code = main(

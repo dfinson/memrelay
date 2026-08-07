@@ -120,17 +120,17 @@ def build_parser() -> argparse.ArgumentParser:
     plan_offline.add_argument(
         "--output-dir",
         default="catalog/generated",
-        help="directory for generated planning artifacts",
+        help="generated planning directory under the catalog root",
     )
     plan_offline.add_argument(
         "--lock",
         default=None,
-        help="catalog lock path (defaults to output-dir/catalog-lock.json)",
+        help="catalog lock path under the catalog root (defaults to catalog-lock.json)",
     )
     plan_offline.add_argument(
         "--manifest",
         default="catalog/plan-manifest.json",
-        help="path for the redacted command manifest",
+        help="path for the atomically written redacted command manifest",
     )
     plan_offline.add_argument(
         "--prior-lock",

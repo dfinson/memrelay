@@ -23,6 +23,7 @@ from memrelay_eval.adapters.fakes import (
 from memrelay_eval.orchestration.planning import (
     _PROHIBITED_LABELS,
     EvidenceLabelError,
+    OfflinePlanningPorts,
     plan_offline,
     plan_offline_to_command_manifest,
     redaction_scan,
@@ -41,6 +42,12 @@ def isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(globals(), "CATALOG_PATH", catalog_root / "catalog.yaml")
 
 
+def planning_output_dir(name: str = "generated") -> Path:
+    output_dir = CATALOG_PATH.parent / name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
 class TestNoNetworkArchitecture:
     """AD-22: CI and dry run make zero Copilot/OpenAI calls."""
 
@@ -54,8 +61,7 @@ class TestNoNetworkArchitecture:
             return original_socket(*args, **kwargs)
 
         with patch.object(socket, "socket", tracking_socket):
-            output_dir = tmp_path / "gen"
-            output_dir.mkdir()
+            output_dir = planning_output_dir("network")
             plan_offline(
                 catalog_path=CATALOG_PATH,
                 output_dir=output_dir,
@@ -86,10 +92,15 @@ class TestDeterminism:
     def test_repeated_runs_identical(self, tmp_path: Path) -> None:
         results = []
         for i in range(3):
-            output_dir = tmp_path / f"run{i}"
-            output_dir.mkdir()
+            catalog_path = CATALOG_PATH
+            if i:
+                catalog_root = tmp_path / f"catalog-{i}"
+                shutil.copytree(CATALOG_PATH.parent, catalog_root)
+                catalog_path = catalog_root / "catalog.yaml"
+            output_dir = catalog_path.parent / "generated"
+            output_dir.mkdir(parents=True, exist_ok=True)
             result = plan_offline(
-                catalog_path=CATALOG_PATH,
+                catalog_path=catalog_path,
                 output_dir=output_dir,
                 manifest_path=output_dir / "manifest.json",
             )
@@ -101,16 +112,14 @@ class TestDeterminism:
             assert r.output_hashes == results[0].output_hashes
 
     def test_changed_seed_changes_assignment_hash(self, tmp_path: Path) -> None:
-        output1 = tmp_path / "run1"
-        output1.mkdir()
+        output1 = planning_output_dir("run1")
         r1 = plan_offline(
             catalog_path=CATALOG_PATH,
             output_dir=output1,
             manifest_path=output1 / "m.json",
             seed=b"seed-alpha",
         )
-        output2 = tmp_path / "run2"
-        output2.mkdir()
+        output2 = planning_output_dir("run2")
         r2 = plan_offline(
             catalog_path=CATALOG_PATH,
             output_dir=output2,
@@ -125,8 +134,7 @@ class TestRedactionArchitecture:
     """AC-2: Redact prohibited log fields and scan emitted artifacts."""
 
     def test_manifest_contains_no_redacted_terms(self, tmp_path: Path) -> None:
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir("redaction")
         result = plan_offline(
             catalog_path=CATALOG_PATH,
             output_dir=output_dir,
@@ -150,8 +158,7 @@ class TestEvidenceLabelArchitecture:
                 validate_evidence_label(label)
 
     def test_output_manifest_uses_unpaid_conformance(self, tmp_path: Path) -> None:
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir("evidence")
         result = plan_offline(
             catalog_path=CATALOG_PATH,
             output_dir=output_dir,
@@ -176,8 +183,7 @@ class TestCredentialIsolation:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test-canary-12345")
         monkeypatch.setenv("GITHUB_TOKEN", "ghp_canary_token_67890")
         monkeypatch.setenv("COPILOT_TOKEN", "gho_canary_99999")
-        output_dir = tmp_path / "gen"
-        output_dir.mkdir()
+        output_dir = planning_output_dir("credentials")
         plan_offline(
             catalog_path=CATALOG_PATH,
             output_dir=output_dir,
@@ -219,3 +225,14 @@ class TestFakeAdapterConformance:
         port = FakeMemrelayPort()
         assert port.provenance == "unpaid_conformance"
         assert port.eligible_for_paid_or_study is False
+
+    def test_planning_composes_fake_ports(self, tmp_path: Path) -> None:
+        ports = OfflinePlanningPorts.fake()
+        result = plan_offline(
+            catalog_path=CATALOG_PATH,
+            output_dir=planning_output_dir("ports"),
+            manifest_path=tmp_path / "command-manifest.json",
+            ports=ports,
+        )
+        assert result.terminal_status == "succeeded"
+        assert len(ports.telemetry.observations) == 1
