@@ -7,6 +7,7 @@ Validates AC-2: input/output hashes, runtime lock, protocol ID, typed terminal s
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 from pathlib import Path
 
@@ -20,6 +21,15 @@ from memrelay_eval.orchestration.planning import (
 )
 
 CATALOG_PATH = Path(__file__).parents[2] / "catalog" / "catalog.yaml"
+
+
+@pytest.fixture(autouse=True)
+def isolated_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run planning against a copied catalog so tests never alter repository inputs."""
+    source_catalog = CATALOG_PATH
+    catalog_root = tmp_path / "catalog"
+    shutil.copytree(source_catalog.parent, catalog_root)
+    monkeypatch.setitem(globals(), "CATALOG_PATH", catalog_root / "catalog.yaml")
 
 
 @pytest.fixture
