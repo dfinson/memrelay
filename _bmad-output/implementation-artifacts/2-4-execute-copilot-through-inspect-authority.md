@@ -1,6 +1,6 @@
 # Story 2.4: Execute Copilot Through Inspect Authority
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -35,18 +35,18 @@ So that execution limits and truth remain native without an alternate inference 
 
 ## Tasks / Subtasks
 
-- [ ] Implement the pinned official Inspect custom-agent adapter (AC: 1)
-  - [ ] Verify the exact `0.3.252` API and use `@agent`; use documented `agent_bridge()` only if that release requires it.
-  - [ ] Add a hard audit that no Inspect model/provider object or request is created.
-- [ ] Implement direct official Copilot SDK session translation (AC: 1, 2)
-  - [ ] Pass exact locked model ID/capabilities/reasoning/context, tools, permissions, limits, and cancellation.
-  - [ ] Return domain-owned terminal, event, patch, usage, and failure references; preserve partial evidence.
-- [ ] Preserve and compare native authorities (AC: 2, 3)
-  - [ ] Retain `.eval`, Inspect native JSON, and SDK terminal/event artifacts independently.
-  - [ ] Treat Inspect as execution authority; require SDK corroboration; block every disagreement.
-- [ ] Route lifecycle/telemetry via fake domain ports and enforce study-ineligibility (AC: 4)
-- [ ] Gate every live adapter-conformance invocation behind explicit operator action and a frozen positive integer session/call, Copilot-credit, token, active-time, and wall-time envelope; refuse absent caps and stop before overage.
-- [ ] Add cancellation, timeout, crash, hidden-retry, authority-conflict, and no-provider tests (AC: 1-4)
+- [x] Implement the pinned official Inspect custom-agent adapter (AC: 1)
+  - [x] Verify the exact `0.3.252` API and use `@agent`; use documented `agent_bridge()` only if that release requires it.
+  - [x] Add a hard audit that no Inspect model/provider object or request is created.
+- [x] Implement direct official Copilot SDK session translation (AC: 1, 2)
+  - [x] Pass exact locked model ID/capabilities/reasoning/context, tools, permissions, limits, and cancellation.
+  - [x] Return domain-owned terminal, event, patch, usage, and failure references; preserve partial evidence.
+- [x] Preserve and compare native authorities (AC: 2, 3)
+  - [x] Retain `.eval`, Inspect native JSON, and SDK terminal/event artifacts independently.
+  - [x] Treat Inspect as execution authority; require SDK corroboration; block every disagreement.
+- [x] Route lifecycle/telemetry via fake domain ports and enforce study-ineligibility (AC: 4)
+- [x] Gate every live adapter-conformance invocation behind explicit operator action and a frozen positive integer session/call, Copilot-credit, token, active-time, and wall-time envelope; refuse absent caps and stop before overage.
+- [x] Add cancellation, timeout, crash, hidden-retry, authority-conflict, and no-provider tests (AC: 1-4)
 
 ## Developer Context
 
@@ -110,12 +110,26 @@ Inspect owns scheduling, limits, `.eval`, JSON export, and execution truth. It d
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added an Inspect 0.3.252 custom-agent boundary that calls only the official Copilot SDK 1.0.8 session runtime.
+- Preserved immutable `.eval`, Inspect JSON, and native SDK terminal evidence independently; conflicts now append evidence-incomplete terminal records and block reconciliation.
+- Kept CI fully fake and unpaid, using existing fake artifact, ledger, and telemetry ports and Python 3.13 contract and fault coverage.
 
 ### File List
+
+- evaluation/pyproject.toml
+- evaluation/uv.lock
+- evaluation/src/memrelay_eval/adapters/inspect/__init__.py
+- evaluation/src/memrelay_eval/adapters/inspect/agent.py
+- evaluation/src/memrelay_eval/adapters/inspect/task.py
+- evaluation/src/memrelay_eval/adapters/inspect/export.py
+- evaluation/src/memrelay_eval/adapters/copilot/session.py
+- evaluation/src/memrelay_eval/orchestration/inspect.py
+- evaluation/src/memrelay_eval/domain/errors.py
+- evaluation/tests/contract/inspect/test_inspect_copilot_contract.py
+- evaluation/tests/fault/test_inspect_execution_terminal_paths.py
