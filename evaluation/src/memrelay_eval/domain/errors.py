@@ -223,3 +223,18 @@ class DurableConformanceRequiredError(DomainError):
     """A durable execution gate lacks qualified ledger and telemetry adapters."""
 
     code = "durable_conformance_required"
+
+
+class ExecutionEvidenceConflictError(DomainError):
+    """Required native execution records disagree or are incomplete."""
+
+    code = "execution_evidence_conflict"
+
+
+class ExecutionAdapterError(DomainError):
+    """The Inspect-to-SDK adapter returned a typed terminal failure."""
+
+    def __init__(self, code: str, message: str, evidence: tuple[object, ...] = ()) -> None:
+        super().__init__(message)
+        self.code = code
+        self.evidence = evidence

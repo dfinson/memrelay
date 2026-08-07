@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import time
 from collections.abc import Awaitable, Callable, Sequence
@@ -9,6 +10,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from memrelay_eval.adapters.copilot.catalog import eligible_models
+from memrelay_eval.adapters.inspect.task import (
+    InspectTaskRequest,
+    LiveConformanceEnvelope,
+    NativeTerminalRecord,
+)
 from memrelay_eval.domain.entities import (
     ModelQualification,
     NativeModel,
@@ -131,6 +137,123 @@ def _official_client() -> Any:
         raise ConformancePauseError(
             "sdk_unavailable", "github-copilot-sdk 1.0.8 is required for live qualification"
         ) from exc
+
+
+class CopilotSdkSessionRuntime:
+    """Direct one-shot official SDK sessions for an Inspect custom agent."""
+
+    def __init__(
+        self,
+        client_factory: Callable[[], object] | None = None,
+        *,
+        live_envelope: LiveConformanceEnvelope | None = None,
+    ) -> None:
+        self._client_factory = client_factory or _official_client
+        self._live_envelope = live_envelope
+        self._native_factory = client_factory is None
+        self._consumed = False
+
+    async def execute(self, task: InspectTaskRequest) -> NativeTerminalRecord:
+        if self._native_factory:
+            if self._live_envelope is None:
+                raise ConformancePauseError(
+                    "live_conformance_not_authorized",
+                    "real Copilot SDK execution requires an explicit finite conformance envelope",
+                )
+            if self._consumed:
+                raise ConformancePauseError(
+                    "live_session_limit_reached",
+                    "a disposable native runtime may execute only one session",
+                )
+            if (
+                task.limits.token_limit > self._live_envelope.token_limit
+                or task.limits.active_seconds > self._live_envelope.active_seconds_limit
+                or task.limits.wall_seconds > self._live_envelope.wall_seconds_limit
+            ):
+                raise ConformancePauseError(
+                    "live_conformance_cap_exceeded",
+                    "task limits exceed the explicit live conformance envelope",
+                )
+            self._consumed = True
+        client = self._client_factory()
+        start = getattr(client, "start", None)
+        stop = getattr(client, "stop", None)
+        create_session = getattr(client, "create_session", None)
+        if not callable(start) or not callable(stop) or not callable(create_session):
+            raise ConformancePauseError(
+                "sdk_session_unsupported", "official SDK session API is unavailable"
+            )
+        await start()
+        session: object | None = None
+        try:
+            options: dict[str, object] = {
+                "model": task.model_id,
+                "tools": list(task.tools),
+                "permissions": list(task.permissions),
+            }
+            if task.reasoning_effort != "unavailable":
+                options["reasoning_effort"] = task.reasoning_effort
+            if task.context_tier != "unavailable":
+                options["context_tier"] = task.context_tier
+            session = await create_session(**options)
+            send_and_wait = getattr(session, "send_and_wait", None)
+            if not callable(send_and_wait):
+                raise ConformancePauseError(
+                    "sdk_send_unsupported", "official SDK session cannot send tasks"
+                )
+            event = await send_and_wait(task.prompt, timeout=task.limits.wall_seconds)
+            return _terminal_record(event)
+        except asyncio.CancelledError:
+            await _cancel_session(session)
+            return NativeTerminalRecord("cancelled", (), (), {}, "cancelled")
+        except TimeoutError:
+            await _cancel_session(session)
+            return NativeTerminalRecord("timed_out", (), (), {}, "timeout")
+        finally:
+            await _disconnect_session(session)
+            await stop()
+
+
+async def _cancel_session(session: object | None) -> None:
+    if session is None:
+        return
+    cancel = getattr(session, "cancel", None)
+    if callable(cancel):
+        result = cancel()
+        if hasattr(result, "__await__"):
+            await result
+
+
+async def _disconnect_session(session: object | None) -> None:
+    if session is None:
+        return
+    disconnect = getattr(session, "disconnect", None)
+    if callable(disconnect):
+        result = disconnect()
+        if hasattr(result, "__await__"):
+            await result
+
+
+def _terminal_record(event: object) -> NativeTerminalRecord:
+    data = event.to_dict() if hasattr(event, "to_dict") else {}
+    if not isinstance(data, dict):
+        data = {}
+    status = data.get("status", "succeeded")
+    state = status if status in {"succeeded", "failed", "cancelled", "timed_out"} else "failed"
+    refs = data.get("event_references", ())
+    patches = data.get("patch_references", ())
+    usage = data.get("usage", {})
+    return NativeTerminalRecord(
+        state,
+        tuple(item for item in refs if isinstance(item, str)) if isinstance(refs, list) else (),
+        tuple(item for item in patches if isinstance(item, str))
+        if isinstance(patches, list)
+        else (),
+        usage if isinstance(usage, dict) else {},
+        data.get("failure_code")
+        if isinstance(data.get("failure_code"), str)
+        else ("native_failed" if state == "failed" else None),
+    )
 
 
 def _event_contains_answer(event: object, expected: str) -> bool:

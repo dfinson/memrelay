@@ -1,6 +1,6 @@
 # Story 2.3: Launch Disposable Credential-Isolated Processes
 
-Status: review
+Status: done
 
 ## Story
 
@@ -32,17 +32,17 @@ So that process boundaries cannot leak provider credentials or state across atte
 
 ## Tasks / Subtasks
 
-- [ ] Define process roles and explicit environment allowlists (AC: 1)
-  - [ ] Start from a minimal baseline rather than filtering an inherited full environment.
-  - [ ] Bind each credential reference to exactly one role and reject unknown/key-bearing variables.
-- [ ] Implement disposable local launcher and bounded supervision (AC: 1, 3)
-  - [ ] Give each child attempt-local cwd, roots, telemetry identity, stdio policy, timeout, and process-group/job ownership.
-  - [ ] Capture typed start/exit/cancel/timeout/cleanup records without secret values.
-- [ ] Implement canary-based boundary conformance (AC: 2)
-  - [ ] Probe every process role and every prohibited credential-domain crossing.
-  - [ ] Store only canary ID/location/verdict; never echo a real or synthetic secret value.
-- [ ] Implement idempotent process/socket cleanup and nonreuse (AC: 3)
-- [ ] Add Windows/POSIX, inheritance, crash-tree, timeout, and cancellation tests (AC: 1-3)
+- [x] Define process roles and explicit environment allowlists (AC: 1)
+  - [x] Start from a minimal baseline rather than filtering an inherited full environment.
+  - [x] Bind each credential reference to exactly one role and reject unknown/key-bearing variables.
+- [x] Implement disposable local launcher and bounded supervision (AC: 1, 3)
+  - [x] Give each child attempt-local cwd, roots, telemetry identity, stdio policy, timeout, and process-group/job ownership.
+  - [x] Capture typed start/exit/cancel/timeout/cleanup records without secret values.
+- [x] Implement canary-based boundary conformance (AC: 2)
+  - [x] Probe every process role and every prohibited credential-domain crossing.
+  - [x] Store only canary ID/location/verdict; never echo a real or synthetic secret value.
+- [x] Implement idempotent process/socket cleanup and nonreuse (AC: 3)
+- [x] Add Windows/POSIX, inheritance, crash-tree, timeout, and cancellation tests (AC: 1-3)
 
 ## Developer Context
 

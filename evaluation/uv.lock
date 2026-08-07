@@ -701,7 +701,7 @@ future-adapters = [
 requires-dist = [
     { name = "duckdb", marker = "extra == 'future-adapters'", specifier = "==1.5.5" },
     { name = "github-copilot-sdk", specifier = "==1.0.8" },
-    { name = "inspect-ai", marker = "extra == 'future-adapters'", specifier = "==0.3.252" },
+    { name = "inspect-ai", specifier = "==0.3.252" },
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'future-adapters'", specifier = "==0.1.53" },
     { name = "openinference-semantic-conventions", marker = "extra == 'future-adapters'", specifier = "==0.1.31" },

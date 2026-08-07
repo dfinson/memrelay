@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
     "github-copilot-sdk==1.0.8",
+    "inspect-ai==0.3.252",
     "jsonschema==4.26.0",
     "PyYAML==6.0.3",
     "rfc8785==0.1.4",
@@ -15,7 +16,6 @@ dependencies = [
 dev = ["pytest>=8,<10"]
 future-adapters = [
     "duckdb==1.5.5",
-    "inspect-ai==0.3.252",
     "openinference-instrumentation-openai==0.1.53",
     "openinference-semantic-conventions==0.1.31",
     "opentelemetry-exporter-otlp==1.44.0",
