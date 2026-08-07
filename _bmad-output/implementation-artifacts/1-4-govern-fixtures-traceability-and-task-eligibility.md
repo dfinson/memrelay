@@ -1,6 +1,6 @@
 # Story 1.4: Govern Fixtures, Traceability, and Task Eligibility
 
-Status: review
+Status: done
 
 ## Story
 
