@@ -12,7 +12,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-
 from memrelay_eval.adapters.fakes import (
     FakeCopilotPort,
     FakeMemrelayPort,
@@ -21,12 +20,8 @@ from memrelay_eval.adapters.fakes import (
     InMemoryLedger,
 )
 from memrelay_eval.orchestration.planning import (
-    EvidenceLabelError,
-    NetworkDenyError,
-    PlanningResult,
     _PROHIBITED_LABELS,
-    _REDACTED_TERMS,
-    network_deny_guard,
+    EvidenceLabelError,
     plan_offline,
     plan_offline_to_command_manifest,
     redaction_scan,
@@ -127,7 +122,7 @@ class TestRedactionArchitecture:
             output_dir=output_dir,
             manifest_path=tmp_path / "manifest.json",
         )
-        manifest_bytes = plan_offline_to_command_manifest(result)
+        redaction_scan(plan_offline_to_command_manifest(result))
         # If we get here without RedactionViolationError, the scan passed
         planned_path = output_dir / "planned-run-manifest.json"
         if planned_path.exists():
@@ -214,4 +209,3 @@ class TestFakeAdapterConformance:
         port = FakeMemrelayPort()
         assert port.provenance == "unpaid_conformance"
         assert port.eligible_for_paid_or_study is False
-

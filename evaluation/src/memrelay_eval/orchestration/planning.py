@@ -12,20 +12,17 @@ Output is labeled ``implementation_evidence`` or ``unpaid_conformance`` only.
 
 from __future__ import annotations
 
-import json
 import socket
-import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Iterator, Literal
+from typing import Any, Literal
 
 from memrelay_eval.adapters.fakes import InMemoryArtifactStore, InMemoryLedger
 from memrelay_eval.canonical import attach_digest, canonical_bytes, canonical_digest
 from memrelay_eval.catalog.compiler import (
-    CompileCommandResult,
     compile_catalog_command,
 )
 from memrelay_eval.domain.errors import DomainError
@@ -33,24 +30,24 @@ from memrelay_eval.domain.ids import ExperimentId, ProtocolId, RunId
 from memrelay_eval.domain.states import RunState
 from memrelay_eval.orchestration.assignment import (
     AssignmentAlgorithmRegistry,
-    AssignmentRequest,
-    ConcealedAssignmentService,
     FixtureBalancedBlockAlgorithm,
 )
 
 PlanTerminalStatus = Literal["succeeded", "failed", "interrupted", "cancelled"]
 
 # Evidence labels that are never permitted on planning output.
-_PROHIBITED_LABELS = frozenset({
-    "study",
-    "included",
-    "efficacy",
-    "safety",
-    "economics",
-    "release_fitness",
-    "product_efficacy",
-    "release_gate",
-})
+_PROHIBITED_LABELS = frozenset(
+    {
+        "study",
+        "included",
+        "efficacy",
+        "safety",
+        "economics",
+        "release_fitness",
+        "product_efficacy",
+        "release_gate",
+    }
+)
 
 # Terms that must not appear in emitted manifests or logs.
 _REDACTED_TERMS = (
@@ -218,6 +215,7 @@ def _is_child(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
 
+
 def _execute_planning_pipeline(
     *,
     catalog_path: Path,
@@ -236,11 +234,17 @@ def _execute_planning_pipeline(
     # The compiler requires catalog, output_dir, lock, and manifest to be
     # direct children of one catalog root. Resolve relative to catalog parent.
     catalog_root = catalog_path.parent
-    effective_output_dir = output_dir if _is_child(output_dir, catalog_root) else (catalog_root / "generated")
+    effective_output_dir = (
+        output_dir if _is_child(output_dir, catalog_root) else (catalog_root / "generated")
+    )
     effective_lock_path = lock_path or (catalog_root / "catalog-lock.json")
     if not _is_child(effective_lock_path, catalog_root):
         effective_lock_path = catalog_root / "catalog-lock.json"
-    effective_manifest_path = manifest_path if _is_child(manifest_path, catalog_root) else (catalog_root / "plan-compile-manifest.json")
+    effective_manifest_path = (
+        manifest_path
+        if _is_child(manifest_path, catalog_root)
+        else (catalog_root / "plan-compile-manifest.json")
+    )
     effective_output_dir.mkdir(parents=True, exist_ok=True)
     compile_result = compile_catalog_command(
         catalog_path,
@@ -284,15 +288,14 @@ def _execute_planning_pipeline(
         slot_count=2,
     )
     registry = AssignmentAlgorithmRegistry([algorithm])
+    algorithm = registry.require(algorithm.name, algorithm.version)
 
     # Build a minimal assignment plan document
-    protocol_id = (
-        compilation.protocol_ids[0]
-        if compilation.protocol_ids
-        else ProtocolId.new()
-    )
+    protocol_id = compilation.protocol_ids[0] if compilation.protocol_ids else ProtocolId.new()
     experiment_id = ExperimentId.from_digest(
-        canonical_digest({"catalog_hash": compilation.catalog_input_sha256, "protocol": str(protocol_id)})
+        canonical_digest(
+            {"catalog_hash": compilation.catalog_input_sha256, "protocol": str(protocol_id)}
+        )
     )
 
     # Store the assignment plan as an artifact
@@ -317,33 +320,37 @@ def _execute_planning_pipeline(
 
     # Phase 5: Produce planned-run manifest (deterministic)
     run_id = RunId.from_digest(
-        canonical_digest({
-            "experiment_id": str(experiment_id),
-            "assignment_plan_hash": assignment_plan_hash,
-            "catalog_input": compilation.catalog_input_sha256,
-        })
+        canonical_digest(
+            {
+                "experiment_id": str(experiment_id),
+                "assignment_plan_hash": assignment_plan_hash,
+                "catalog_input": compilation.catalog_input_sha256,
+            }
+        )
     )
+    if ledger.history(run_id):
+        raise PlanningError("unexpected_lifecycle_transition")
 
-    planned_manifest_document = attach_digest({
-        "schema_version": "1.0.0",
-        "artifact_type": "planned_run_manifest",
-        "evidence_classification": evidence_classification,
-        "terminal_state": RunState.PLANNED.value,
-        "experiment_id": str(experiment_id),
-        "protocol_id": str(protocol_id),
-        "run_id": str(run_id),
-        "assignment_plan_hash": assignment_plan_hash,
-        "seed_commitment": seed_commitment,
-        "input_hashes": dict(sorted(input_hashes.items())),
-        "runtime_lock": (
-            dict(compilation.runtime_lock) if compilation.runtime_lock else None
-        ),
-        "compilation_result": {
-            "change_kind": compilation.change_kind,
-            "recovery_status": compilation.recovery_status,
-            "protocol_ids": list(compilation.protocol_ids),
-        },
-    })
+    planned_manifest_document = attach_digest(
+        {
+            "schema_version": "1.0.0",
+            "artifact_type": "planned_run_manifest",
+            "evidence_classification": evidence_classification,
+            "terminal_state": RunState.PLANNED.value,
+            "experiment_id": str(experiment_id),
+            "protocol_id": str(protocol_id),
+            "run_id": str(run_id),
+            "assignment_plan_hash": assignment_plan_hash,
+            "seed_commitment": seed_commitment,
+            "input_hashes": dict(sorted(input_hashes.items())),
+            "runtime_lock": (dict(compilation.runtime_lock) if compilation.runtime_lock else None),
+            "compilation_result": {
+                "change_kind": compilation.change_kind,
+                "recovery_status": compilation.recovery_status,
+                "protocol_ids": list(compilation.protocol_ids),
+            },
+        }
+    )
 
     planned_manifest_bytes = canonical_bytes(planned_manifest_document)
 
@@ -379,20 +386,21 @@ def _execute_planning_pipeline(
 
 def plan_offline_to_command_manifest(result: PlanningResult) -> bytes:
     """Serialize a PlanningResult as a redacted, typed command manifest."""
-    document = attach_digest({
-        "schema_version": "1.0.0",
-        "command": "plan-offline",
-        "terminal_status": result.terminal_status,
-        "exit_code": result.exit_code,
-        "evidence_classification": result.evidence_classification,
-        "input_hashes": dict(result.input_hashes),
-        "output_hashes": dict(result.output_hashes),
-        "runtime_lock_ref": result.runtime_lock_ref,
-        "protocol_id": result.protocol_id,
-        "manifest_ref": result.manifest_ref,
-        "error_code": result.error_code,
-    })
+    document = attach_digest(
+        {
+            "schema_version": "1.0.0",
+            "command": "plan-offline",
+            "terminal_status": result.terminal_status,
+            "exit_code": result.exit_code,
+            "evidence_classification": result.evidence_classification,
+            "input_hashes": dict(result.input_hashes),
+            "output_hashes": dict(result.output_hashes),
+            "runtime_lock_ref": result.runtime_lock_ref,
+            "protocol_id": result.protocol_id,
+            "manifest_ref": result.manifest_ref,
+            "error_code": result.error_code,
+        }
+    )
     manifest_bytes = canonical_bytes(document)
     redaction_scan(manifest_bytes, context="command_manifest")
     return manifest_bytes
-

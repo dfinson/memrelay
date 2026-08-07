@@ -198,7 +198,6 @@ def _split_credential_reference(value: str) -> tuple[str, str]:
 def plan_offline_command(args: Namespace) -> int:
     """Run the deterministic offline catalog-to-planned-run dry run."""
     from memrelay_eval.orchestration.planning import (
-        PlanningError,
         plan_offline,
         plan_offline_to_command_manifest,
     )
@@ -207,8 +206,14 @@ def plan_offline_command(args: Namespace) -> int:
     output_dir = Path(args.output_dir)
     manifest_path = Path(args.manifest)
     lock_path = Path(args.lock) if args.lock else None
-    prior_lock_path = _optional_path(args.prior_lock) if hasattr(args, "prior_lock") and args.prior_lock else None
-    runtime_lock_path = _optional_path(args.runtime_lock) if hasattr(args, "runtime_lock") and args.runtime_lock else None
+    prior_lock_path = (
+        _optional_path(args.prior_lock) if hasattr(args, "prior_lock") and args.prior_lock else None
+    )
+    runtime_lock_path = (
+        _optional_path(args.runtime_lock)
+        if hasattr(args, "runtime_lock") and args.runtime_lock
+        else None
+    )
 
     try:
         result = plan_offline(
@@ -220,7 +225,13 @@ def plan_offline_command(args: Namespace) -> int:
             runtime_lock=runtime_lock_path,
         )
     except KeyboardInterrupt:
-        from memrelay_eval.orchestration.planning import PlanningResult, plan_offline_to_command_manifest as to_manifest
+        from memrelay_eval.orchestration.planning import (
+            PlanningResult,
+        )
+        from memrelay_eval.orchestration.planning import (
+            plan_offline_to_command_manifest as to_manifest,
+        )
+
         result_interrupted = PlanningResult(
             terminal_status="interrupted",
             exit_code=130,
