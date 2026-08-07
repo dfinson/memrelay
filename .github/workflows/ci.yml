@@ -190,8 +190,6 @@ jobs:
 
       - name: Enforce precision@k baseline
         run: python tests/eval/generate_baseline.py --check
-<<<<<<< HEAD
-
   evaluator-conformance:
     name: evaluator conformance (${{ matrix.os }}, py3.13)
     runs-on: ${{ matrix.os }}
@@ -245,5 +243,3 @@ jobs:
           uv run pytest
           uv run memrelay-eval compile-catalog
           git diff --exit-code -- catalog
-=======
->>>>>>> de1e337 (fix: reconcile durable ledger retry authority)
