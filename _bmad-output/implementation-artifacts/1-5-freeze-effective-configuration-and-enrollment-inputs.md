@@ -1,6 +1,6 @@
 # Story 1.5: Freeze Effective Configuration and Enrollment Inputs
 
-Status: review
+Status: done
 
 ## Story
 

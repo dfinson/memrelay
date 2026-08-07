@@ -1,6 +1,10 @@
+---
+baseline_commit: dd225bc41c6b90e6afb0199bb4d5144b71922c38
+---
+
 # Story 1.6: Conceal Assignment and Record Exposure
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -38,23 +42,23 @@ So that operators, graders, and ordinary artifacts cannot infer treatment.
 
 ## Tasks / Subtasks
 
-- [ ] Implement deterministic concealed assignment over frozen inputs (AC: 1)
-  - [ ] Consume only sealed algorithm version, seed commitment, block definitions, and ordered hashes.
-  - [ ] Produce opaque assignment identity/plan hash and an access-separated resolution record.
-  - [ ] Verify balance/block invariants without exposing arm labels in ordinary results.
-  - [ ] Keep seed material and resolution records in the access-separated authority; ordinary artifacts retain only the frozen commitment and opaque IDs.
-- [ ] Implement provisioning-only resolution authority (AC: 2)
-  - [ ] Use capability/narrow interface enforcement, not a public entity field.
-  - [ ] Ensure attempt specs, logs, exports, scoring views, exceptions, and telemetry are treatment-neutral.
-  - [ ] Deny resolution from catalog, scoring, CLI display, and ordinary manifest code paths.
-- [ ] Implement exposure evidence and conservative classifier (AC: 3)
-  - [ ] Record assignment resolution, memory provisioning, task delivery, first inference, treatment access/retrieval, first monotonic exposure time, and evidence refs.
-  - [ ] Classify any missing/contradictory/ambiguous evidence as exposed.
-  - [ ] Keep wall-clock timestamps for audit and monotonic timestamps for ordering/duration.
-- [ ] Route unpaid lifecycle/telemetry through domain ports (AC: 4)
-  - [ ] Emit deterministic fake records labeled unpaid conformance.
-  - [ ] Enforce a hard eligibility barrier pending durable SQLite/Collector conformance.
-- [ ] Add concealment, leakage, determinism, authorization, and exposure-boundary tests (AC: 1-4)
+- [x] Implement deterministic concealed assignment over frozen inputs (AC: 1)
+  - [x] Consume only sealed algorithm version, seed commitment, block definitions, and ordered hashes.
+  - [x] Produce opaque assignment identity/plan hash and an access-separated resolution record.
+  - [x] Verify balance/block invariants without exposing arm labels in ordinary results.
+  - [x] Keep seed material and resolution records in the access-separated authority; ordinary artifacts retain only the frozen commitment and opaque IDs.
+- [x] Implement provisioning-only resolution authority (AC: 2)
+  - [x] Use capability/narrow interface enforcement, not a public entity field.
+  - [x] Ensure attempt specs, logs, exports, scoring views, exceptions, and telemetry are treatment-neutral.
+  - [x] Deny resolution from catalog, scoring, CLI display, and ordinary manifest code paths.
+- [x] Implement exposure evidence and conservative classifier (AC: 3)
+  - [x] Record assignment resolution, memory provisioning, task delivery, first inference, treatment access/retrieval, first monotonic exposure time, and evidence refs.
+  - [x] Classify any missing/contradictory/ambiguous evidence as exposed.
+  - [x] Keep wall-clock timestamps for audit and monotonic timestamps for ordering/duration.
+- [x] Route unpaid lifecycle/telemetry through domain ports (AC: 4)
+  - [x] Emit deterministic fake records labeled unpaid conformance.
+  - [x] Enforce a hard eligibility barrier pending durable SQLite/Collector conformance.
+- [x] Add concealment, leakage, determinism, authorization, and exposure-boundary tests (AC: 1-4)
 
 ## Developer Context
 
@@ -124,12 +128,32 @@ Assignment concealment is causal policy. Ordinary manifests may link opaque IDs 
 
 ### Agent Model Used
 
-TBD by implementation agent
+GitHub Copilot CLI
 
 ### Debug Log References
+
+`py -3.13 -m pytest evaluation/tests` with this worktree's `evaluation/src` and `src` prepended to `PYTHONPATH` completed with 712 passed and 4 platform-specific skips.
+
+`py -3.12 -m pytest tests` with this worktree's `src` and `evaluation/src` prepended to `PYTHONPATH` completed with 1305 passed and 2 optional-backend skips.
+
+`py -3.13 -m ruff check evaluation/src evaluation/tests src tests` completed successfully.
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Sealed deterministic assignment plans from every Story 1.5 frozen input, including the registered algorithm/version, seed commitment, block artifact, ordered input hashes, and assignment-plan hash.
+- Added opaque assignments and a provisioning capability boundary. Ordinary manifests expose only opaque identities and hashes; no assignment resolution or seed material is serialized.
+- Added evidence-backed exposure classification for resolution, memory provision, task delivery, inference, and access. Missing, malformed, duplicate, or contradictory evidence is exposed, with the first valid monotonic exposure value retained.
+- Added append-only deterministic fake exposure records through `LedgerPort` and `TelemetryPort`, while durable execution remains blocked until later adapter conformance.
+- Added unit, contract, fault, architecture, mutation, redaction, authorization, inference, no-network, and concurrent-race coverage.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/domain/{assignment.py,entities.py,errors.py,ports.py,states.py}`
+- `evaluation/src/memrelay_eval/orchestration/{assignment.py,exposure.py}`
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
+- `evaluation/tests/{architecture/test_assignment_concealment_boundary.py,contract/test_assignment_concealment.py,fault/test_assignment_exposure_faults.py,unit/orchestration/test_assignment.py,unit/orchestration/test_exposure.py}`
+
+### Change Log
+
+- 2026-08-07: Implemented concealed assignment and exposure evidence controls for Story 1.6.

@@ -38,6 +38,16 @@ class ExposureClassification(StrEnum):
     CONTRADICTORY = "contradictory"
 
 
+class ExposurePhase(StrEnum):
+    """The five evidence-backed boundaries that determine attempt exposure."""
+
+    ASSIGNMENT_RESOLUTION = "assignment_resolution"
+    MEMORY_PROVISION = "memory_provision"
+    TASK_DELIVERY = "task_delivery"
+    INFERENCE = "inference"
+    ACCESS = "access"
+
+
 class RetryRequestPurpose(StrEnum):
     RETRY_FAILURE = "retry_failure"
     BEST_OF_N = "best_of_n"
