@@ -4,8 +4,10 @@ from .otel import (
     CollectorArchive,
     CollectorLifecycle,
     OtelTelemetry,
+    TelemetryBootstrapVerification,
     persist_collector_verification,
     verify_collector_archive,
+    verify_telemetry_bootstrap,
 )
 from .reconcile import (
     TelemetryReconciliation,
@@ -18,6 +20,7 @@ from .semantics import (
     REQUIRED_SPAN_CLASSES,
     TELEMETRY_SCHEMA_VERSION,
     SpanClass,
+    TelemetryAttemptEmitter,
     TelemetryContext,
     TelemetrySpan,
 )
@@ -31,6 +34,8 @@ __all__ = [
     "SpanClass",
     "TELEMETRY_SCHEMA_VERSION",
     "TelemetryContext",
+    "TelemetryAttemptEmitter",
+    "TelemetryBootstrapVerification",
     "TelemetryReconciliation",
     "TelemetrySpan",
     "persist_collector_verification",
@@ -38,4 +43,5 @@ __all__ = [
     "reconcile_telemetry",
     "telemetry_evidence_bytes",
     "verify_collector_archive",
+    "verify_telemetry_bootstrap",
 ]

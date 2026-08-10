@@ -5,9 +5,10 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from types import MappingProxyType
 
 from memrelay_eval.canonical import CanonicalizationError, canonical_bytes
@@ -40,7 +41,7 @@ _SAFE_ATTRIBUTE_NAMES = frozenset(
         "actual_count",
     }
 )
-_GENAI_FIELDS = {
+GENAI_DEVELOPMENT_FIELD_MAP = {
     "gen_ai.operation.name": "memrelay.eval.genai.operation",
     "gen_ai.request.model": "memrelay.eval.genai.request_model",
     "gen_ai.response.model": "memrelay.eval.genai.response_model",
@@ -216,6 +217,55 @@ class TelemetrySpan:
         }
 
 
+class TelemetryAttemptEmitter:
+    """One deterministic, attempt-scoped producer for owned boundary spans."""
+
+    def __init__(self, context: TelemetryContext, sink: object) -> None:
+        self.context = context
+        self._sink = sink
+        self._spans: list[TelemetrySpan] = []
+
+    @property
+    def spans(self) -> tuple[TelemetrySpan, ...]:
+        return tuple(self._spans)
+
+    @property
+    def expected_classes(self) -> frozenset[SpanClass]:
+        return frozenset(span.span_class for span in self._spans)
+
+    def record(
+        self,
+        span_class: SpanClass,
+        *,
+        started_at: datetime,
+        ended_at: datetime,
+        attributes: Mapping[str, object] | None = None,
+        failure_code: str | None = None,
+        links: Sequence[SpanLink] = (),
+    ) -> TelemetrySpan:
+        context = self.context
+        if failure_code is not None:
+            context = replace(context, failure_code=failure_code)
+        span_id = sha256(
+            f"{context.attempt_id}:{span_class.value}:{len(self._spans)}".encode("ascii")
+        ).hexdigest()[:32]
+        span = TelemetrySpan(
+            span_id=f"span-{span_id}",
+            span_class=span_class,
+            context=context,
+            started_at=started_at,
+            ended_at=ended_at,
+            attributes=attributes or {},
+            links=links,
+        )
+        emit_span = getattr(self._sink, "emit_span", None)
+        if not callable(emit_span):
+            raise TelemetryConformanceError("telemetry_span_sink_unsupported")
+        emit_span(span)
+        self._spans.append(span)
+        return span
+
+
 def _validate_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
     if not isinstance(attributes, Mapping):
         raise TelemetryConformanceError("invalid_telemetry_attributes")
@@ -245,9 +295,9 @@ def map_genai_development_fields(fields: Mapping[str, object]) -> dict[str, obje
         raise TelemetryConformanceError("invalid_genai_fields")
     mapped: dict[str, object] = {"memrelay.eval.genai_map_version": GENAI_MAP_VERSION}
     for key, value in fields.items():
-        if key not in _GENAI_FIELDS:
+        if key not in GENAI_DEVELOPMENT_FIELD_MAP:
             raise TelemetryConformanceError("unknown_genai_development_field")
-        target = _GENAI_FIELDS[key]
+        target = GENAI_DEVELOPMENT_FIELD_MAP[key]
         if target.endswith("tokens"):
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise TelemetryConformanceError("invalid_genai_development_value", (key,))

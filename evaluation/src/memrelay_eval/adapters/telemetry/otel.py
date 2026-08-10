@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import os
 import subprocess
 import tarfile
@@ -12,16 +13,31 @@ from hashlib import sha256
 from pathlib import Path
 from threading import Lock
 
-from memrelay_eval.canonical import canonical_bytes
+import yaml
+
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.entities import ArtifactRef
 from memrelay_eval.domain.errors import TelemetryConformanceError
 from memrelay_eval.domain.ports import ArtifactStorePort
 
-from .semantics import TelemetrySpan
+from .semantics import (
+    GENAI_DEVELOPMENT_FIELD_MAP,
+    GENAI_MAP_VERSION,
+    TELEMETRY_SCHEMA_VERSION,
+    TelemetrySpan,
+)
 
 COLLECTOR_VERSION = "0.158.0"
 COLLECTOR_ARCHIVE_NAME = "otelcol-contrib_0.158.0_windows_amd64.tar.gz"
 COLLECTOR_ARCHIVE_SHA256 = "4314abde3c8acc67af58bb8d7611aa991fd80abe4a412695167f956d9fff3005"
+_REQUIRED_DISTRIBUTIONS = {
+    "opentelemetry-api": "1.44.0",
+    "opentelemetry-sdk": "1.44.0",
+    "opentelemetry-exporter-otlp": "1.44.0",
+    "openinference-semantic-conventions": "0.1.31",
+}
+_CONDITIONAL_OPENAI_INSTRUMENTATION = "openinference-instrumentation-openai"
+_CONDITIONAL_OPENAI_INSTRUMENTATION_VERSION = "0.1.53"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,7 +50,7 @@ class CollectorArchive:
 def verify_collector_archive(path: Path) -> CollectorArchive:
     """Accept only the frozen Windows archive and retain no permissive fallback."""
 
-    if path.name != COLLECTOR_ARCHIVE_NAME or not path.is_file():
+    if path.name != COLLECTOR_ARCHIVE_NAME or path.is_symlink() or not path.is_file():
         raise TelemetryConformanceError("collector_archive_missing_or_mismatched")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     if digest != COLLECTOR_ARCHIVE_SHA256:
@@ -58,6 +74,124 @@ def persist_collector_verification(
         media_type="application/json",
         classification="collector_verification",
     )
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryBootstrapVerification:
+    """Value-safe proof required before a runtime bootstrap can succeed."""
+
+    collector: CollectorArchive
+    collector_config_sha256: str
+    semantic_map_sha256: str
+    dependency_versions: dict[str, str]
+    evidence: ArtifactRef
+
+
+def verify_telemetry_bootstrap(
+    store: ArtifactStorePort,
+    *,
+    archive_path: Path,
+    collector_config_path: Path,
+    semantic_map_path: Path,
+    version_provider: Callable[[str], str] = importlib.metadata.version,
+    archive_verifier: Callable[[Path], CollectorArchive] = verify_collector_archive,
+) -> TelemetryBootstrapVerification:
+    """Fail closed on telemetry substrate drift and retain its immutable CAS evidence."""
+
+    collector = archive_verifier(archive_path)
+    config = _read_yaml_mapping(collector_config_path, "collector_config")
+    semantic_map = _read_yaml_mapping(semantic_map_path, "semantic_map")
+    _require_collector_config(config)
+    _require_semantic_map(semantic_map)
+    versions: dict[str, str] = {}
+    for distribution, expected in _REQUIRED_DISTRIBUTIONS.items():
+        try:
+            actual = version_provider(distribution)
+        except importlib.metadata.PackageNotFoundError as error:
+            raise TelemetryConformanceError(
+                "telemetry_dependency_missing", (distribution,)
+            ) from error
+        if actual != expected:
+            raise TelemetryConformanceError(
+                "telemetry_dependency_version_mismatch", (distribution,)
+            )
+        versions[distribution] = actual
+    try:
+        conditional_version = version_provider(_CONDITIONAL_OPENAI_INSTRUMENTATION)
+    except importlib.metadata.PackageNotFoundError:
+        conditional_version = None
+    if conditional_version is not None:
+        if conditional_version != _CONDITIONAL_OPENAI_INSTRUMENTATION_VERSION:
+            raise TelemetryConformanceError(
+                "telemetry_dependency_version_mismatch",
+                (_CONDITIONAL_OPENAI_INSTRUMENTATION,),
+            )
+        versions[_CONDITIONAL_OPENAI_INSTRUMENTATION] = conditional_version
+    config_sha256 = canonical_digest(config)
+    semantic_map_sha256 = canonical_digest(semantic_map)
+    evidence = store.put_bytes(
+        canonical_bytes(
+            {
+                "schema_version": TELEMETRY_SCHEMA_VERSION,
+                "collector_version": collector.version,
+                "collector_archive_sha256": collector.sha256,
+                "collector_config_sha256": config_sha256,
+                "semantic_map_sha256": semantic_map_sha256,
+                "dependency_versions": dict(sorted(versions.items())),
+            }
+        ),
+        media_type="application/json",
+        classification="telemetry_bootstrap_verification",
+    )
+    return TelemetryBootstrapVerification(
+        collector=collector,
+        collector_config_sha256=config_sha256,
+        semantic_map_sha256=semantic_map_sha256,
+        dependency_versions=versions,
+        evidence=evidence,
+    )
+
+
+def _read_yaml_mapping(path: Path, field: str) -> dict[str, object]:
+    if path.is_symlink() or not path.is_file():
+        raise TelemetryConformanceError("telemetry_configuration_missing_or_unsafe", (field,))
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise TelemetryConformanceError("telemetry_configuration_invalid", (field,)) from error
+    if not isinstance(loaded, dict):
+        raise TelemetryConformanceError("telemetry_configuration_invalid", (field,))
+    return loaded
+
+
+def _require_collector_config(config: dict[str, object]) -> None:
+    expected = {
+        "receivers": {"otlp": {"protocols": {"grpc": {}, "http": {}}}},
+        "processors": {"batch": {}},
+        "exporters": {"file": {"path": "${env:MEMRELAY_EVAL_OTLP_EXPORT_PATH}"}},
+        "service": {
+            "pipelines": {
+                "traces": {
+                    "receivers": ["otlp"],
+                    "processors": ["batch"],
+                    "exporters": ["file"],
+                }
+            }
+        },
+    }
+    if config != expected:
+        raise TelemetryConformanceError("collector_configuration_mismatch")
+
+
+def _require_semantic_map(semantic_map: dict[str, object]) -> None:
+    expected = {
+        "schema_version": TELEMETRY_SCHEMA_VERSION,
+        "genai_map_version": GENAI_MAP_VERSION,
+        "source": "otel-genai-development",
+        "mapping": GENAI_DEVELOPMENT_FIELD_MAP,
+    }
+    if semantic_map != expected:
+        raise TelemetryConformanceError("semantic_map_configuration_mismatch")
 
 
 def extract_verified_collector(archive: CollectorArchive, destination: Path) -> Path:

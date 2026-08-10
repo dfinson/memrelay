@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
@@ -10,7 +10,7 @@ from memrelay_eval.domain.entities import ArtifactRef
 from memrelay_eval.domain.errors import TelemetryConformanceError
 from memrelay_eval.domain.ports import ArtifactStorePort
 
-from .semantics import REQUIRED_SPAN_CLASSES, TELEMETRY_SCHEMA_VERSION, TelemetrySpan
+from .semantics import REQUIRED_SPAN_CLASSES, TELEMETRY_SCHEMA_VERSION, SpanClass, TelemetrySpan
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +45,7 @@ def reconcile_telemetry(
     spans: Sequence[TelemetrySpan],
     *,
     expected_order: Sequence[str] = (),
+    expected_classes: Collection[SpanClass] | None = None,
     partial_success: bool = False,
     collector_shutdown_verified: bool = False,
 ) -> TelemetryReconciliation:
@@ -71,9 +72,12 @@ def reconcile_telemetry(
     raw_ids = tuple(span.span_id for span in raw)
     canonical = tuple(sorted(by_id.values(), key=lambda item: item.span_id))
     classes = {span.span_class for span in canonical}
-    missing_classes = tuple(
-        sorted(item.value for item in REQUIRED_SPAN_CLASSES.difference(classes))
+    required_classes = (
+        REQUIRED_SPAN_CLASSES if expected_classes is None else frozenset(expected_classes)
     )
+    if not required_classes.issubset(REQUIRED_SPAN_CLASSES):
+        raise TelemetryConformanceError("unknown_expected_span_class")
+    missing_classes = tuple(sorted(item.value for item in required_classes.difference(classes)))
     if missing_classes:
         failure_codes.add("TEL-DROP")
     if partial_success:
@@ -86,6 +90,7 @@ def reconcile_telemetry(
     projection = {
         "schema_version": TELEMETRY_SCHEMA_VERSION,
         "spans": [span.to_record() for span in canonical],
+        "expected_classes": sorted(item.value for item in required_classes),
         "missing_classes": list(missing_classes),
     }
     return TelemetryReconciliation(

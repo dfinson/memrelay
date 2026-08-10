@@ -12,6 +12,7 @@ from memrelay_eval.adapters.memrelay.engine import (
     DirectEngineAttempt,
     UnpaidEngineRuntime,
 )
+from memrelay_eval.adapters.telemetry.semantics import SpanClass, TelemetryContext
 from memrelay_eval.domain.engine import (
     DirectEngineExecutionMode,
     DirectEngineIsolation,
@@ -95,6 +96,7 @@ class FaultingEngine:
 def _attempt(tmp_path: Path, graph_name: str = "graph.db") -> DirectEngineAttempt:
     assignment_id = AssignmentId.new()
     run_id = RunId.new()
+    attempt_id = AttemptId.new()
     runtime_id = RuntimeId.new()
     authority = StratumAuthority(
         EvaluationStratum.DIRECT_ENGINE,
@@ -112,7 +114,7 @@ def _attempt(tmp_path: Path, graph_name: str = "graph.db") -> DirectEngineAttemp
     )
     home = tmp_path / "engine"
     return DirectEngineAttempt(
-        AttemptId.new(),
+        attempt_id,
         run_id,
         assignment_id,
         authority,
@@ -122,6 +124,21 @@ def _attempt(tmp_path: Path, graph_name: str = "graph.db") -> DirectEngineAttemp
         "namespace",
         note_content="fact",
         search_query="fact",
+        telemetry_context=TelemetryContext(
+            experiment_id="exp_" + "1" * 32,
+            protocol_id=str(authority.protocol_id),
+            run_id=str(run_id),
+            attempt_id=str(attempt_id),
+            scenario_id="scenario_" + "2" * 32,
+            stratum_id="direct_engine",
+            history_mode="controlled",
+            provider="framework_internal_openai",
+            credential_domain="openai_api",
+            cost_source="openai_api_metered",
+            evidence_class="native_evidence",
+            exposure_state="unexposed",
+            environment_fingerprint_sha256="a" * 64,
+        ),
     )
 
 
@@ -171,6 +188,12 @@ def test_fault_retains_partial_evidence_closes_and_does_not_invent_terminal(
     assert not ledger.eligible_for_paid_or_study
     assert not telemetry.eligible_for_paid_or_study
     assert not store.eligible_for_paid_or_study
+    assert {span.span_class for span in telemetry.semantic_spans} >= {
+        SpanClass.ARTIFACT_PERSISTENCE,
+        SpanClass.DAEMON_DISPATCH,
+        SpanClass.FRAMEWORK_EXTRACTION,
+        SpanClass.MEMORY_WRITE,
+    }
 
 
 def test_graph_claim_is_unique_and_product_graph_is_rejected(tmp_path: Path) -> None:

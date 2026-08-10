@@ -132,6 +132,8 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - Added fail-closed raw-order reconciliation for dropped, duplicate, out-of-order, partial-success, shutdown, and conflicting telemetry without selecting a favorable source.
 - Preserved raw telemetry as CAS evidence only, kept the ledger outside telemetry persistence, and extended the unpaid deterministic fake with prevalidated semantic spans.
 - Added schema, secret-boundary, malformed/version/class, concurrency/replay, lifecycle timeout, and reconciliation contract/fault coverage.
+- Remediation: bootstrap now validates the pinned local Collector archive, installed semantic packages, Collector YAML, and semantic-map YAML before runtime bootstrap, preserving value-safe CAS verification evidence.
+- Remediation: Inspect control emits and reconciles its authority-derived control, Copilot, export, artifact, and evidence classes; direct-engine emits its owning framework, daemon, memory, artifact, and cleanup classes. Absent executable owners remain excluded from per-attempt expected classes.
 
 ### File List
 
@@ -139,3 +141,4 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - `evaluation/{pyproject.toml,uv.lock,collector/{collector.yaml,semantic-map.yaml},schemas/telemetry-evidence.schema.json}`
 - `evaluation/src/memrelay_eval/{adapters/fakes.py,adapters/telemetry/{__init__,otel,reconcile,semantics}.py,domain/errors.py}`
 - `evaluation/tests/{contract/telemetry/test_semantics.py,fault/telemetry/{test_collector_lifecycle,test_reconciliation}.py}`
+- `evaluation/tests/{integration/telemetry/test_bootstrap.py,fault/test_inspect_execution_terminal_paths.py,integration/test_engine_stratum_fake.py}`
