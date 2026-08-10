@@ -69,3 +69,23 @@ def test_preflight_detects_normalized_credential_leaks(variable: str) -> None:
             agent_environment=agent,
             mcp_environment=mcp,
         )
+
+
+@pytest.mark.parametrize(
+    "variable",
+    ("openai_api_key", "OpenAI_Base_Url", "ＯＰＥＮＡＩ＿ＡＰＩ＿ＫＥＹ", "OPENAI_TOKEN"),
+)
+def test_preflight_detects_normalized_credential_leaks_in_mcp_environment(
+    variable: str,
+) -> None:
+    daemon, agent, mcp = build_framework_process_environments()
+    mcp[variable] = "synthetic-canary"
+    with pytest.raises(ConformancePauseError):
+        verify_framework_preflight(
+            llm_strategy="byo-key",
+            framework_model="gpt-4.1-mini-2025-04-14",
+            openai_base_url=EXPECTED_OPENAI_BASE_URL,
+            daemon_environment=daemon,
+            agent_environment=agent,
+            mcp_environment=mcp,
+        )

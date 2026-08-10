@@ -124,6 +124,21 @@ def test_provision_uses_shipped_foreground_serve_and_live_health(tmp_path: Path)
     assert launcher.cancelled
 
 
+def test_collect_state_rejects_missing_observation_path(tmp_path: Path) -> None:
+    treatment = MemrelayProductTreatment(
+        artifact_store=InMemoryArtifactStore(),
+        launcher=_Launcher(),  # type: ignore[arg-type]
+        health_client_factory=lambda _: _LiveHealthClient(),
+    )
+    handle = asyncio.run(treatment.provision(_request(tmp_path)))
+    handle.paths.observation_path.unlink()
+
+    with pytest.raises(ConformancePauseError, match="canonical observation artifact"):
+        asyncio.run(treatment.collect_state(handle))
+
+    asyncio.run(treatment.close(handle))
+
+
 def test_preflight_failure_does_not_launch_a_process(tmp_path: Path) -> None:
     launcher = _Launcher()
     treatment = MemrelayProductTreatment(

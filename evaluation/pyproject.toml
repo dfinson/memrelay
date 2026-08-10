@@ -8,6 +8,7 @@ dependencies = [
     "github-copilot-sdk==1.0.8",
     "inspect-ai==0.3.252",
     "jsonschema==4.26.0",
+    "memrelay",
     "PyYAML==6.0.3",
     "rfc8785==0.1.4",
 ]
@@ -35,6 +36,9 @@ packages = ["src/memrelay_eval"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "schemas" = "memrelay_eval/schemas"
+
+[tool.uv.sources]
+memrelay = { path = "..", editable = false }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
