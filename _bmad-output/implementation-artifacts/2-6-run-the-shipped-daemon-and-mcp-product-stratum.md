@@ -1,6 +1,6 @@
 # Story 2.6: Run the Shipped Daemon and MCP Product Stratum
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -118,12 +118,26 @@ This story evaluates the actual user-facing product path: shipped daemon plus sh
 
 ### Agent Model Used
 
-TBD by implementation agent
+OpenAI coding agent
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added product-stratum controls for the shipped tool contract, framework preflight, and opaque product identity chain.
+- Added a shipped daemon and MCP harness that uses the real daemon server, the shipped FastMCP surface, and canonical evidence persistence.
+- Added unit and integration coverage for tool visibility, daemon-only credential boundaries, preflight rejection, zero-result classification, and shipped product round-trips.
+- Verified the evaluator suite, product suite, lockfile check, Ruff check, and Ruff format check.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/adapters/memrelay/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/memrelay/controls.py`
+- `evaluation/src/memrelay_eval/adapters/memrelay/product.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/ids.py`
+- `evaluation/src/memrelay_eval/domain/policies.py`
+- `tests/integration/test_memrelay_product_treatment.py`
+- `tests/unit/test_memrelay_product_controls.py`
+- `_bmad-output/implementation-artifacts/2-6-run-the-shipped-daemon-and-mcp-product-stratum.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`

@@ -117,6 +117,18 @@ class CostEntryId(OpaqueId):
     prefix = "cost"
 
 
+class AnalysisId(OpaqueId):
+    prefix = "analysis"
+
+
+class ReportId(OpaqueId):
+    prefix = "report"
+
+
+class StratumId(OpaqueId):
+    prefix = "stratum"
+
+
 class InclusionId(OpaqueId):
     prefix = "inclusion"
 

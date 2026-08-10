@@ -10,13 +10,14 @@ from .errors import (
     InvalidLifecycleTransitionError,
     SecretConfigurationError,
 )
-from .states import AttemptTerminalKind, RunState
+from .states import AttemptTerminalKind, EvaluationStratum, RunState
 
 if TYPE_CHECKING:
     from .entities import (
         AttemptTerminal,
         ExposureDecision,
         FreshIsolationAttestation,
+        ProductIdentityChain,
         Protocol,
     )
 
@@ -80,6 +81,28 @@ def require_eligible_disposition(disposition: Mapping[str, object]) -> None:
     """Honor a precomputed Story 1.4 disposition without reimplementing its policy."""
     if disposition.get("disposition") != "eligible":
         raise IneligibleEnrollmentError(IneligibleEnrollmentError.code)
+
+
+def require_same_evaluation_stratum(strata: Sequence[EvaluationStratum]) -> EvaluationStratum:
+    """Reject pooled analysis across distinct treatment strata."""
+    if not strata:
+        raise ValueError("evaluation stratum is required")
+    first = strata[0]
+    if any(stratum is not first for stratum in strata[1:]):
+        raise ValueError("evaluation stratum pooling is forbidden")
+    return first
+
+
+def require_same_product_identity_chain(
+    chains: Sequence[ProductIdentityChain],
+) -> ProductIdentityChain:
+    """Reject pooled product or engine identity chains without a stratified operation."""
+    if not chains:
+        raise ValueError("product identity chain is required")
+    first = chains[0]
+    if any(chain != first for chain in chains[1:]):
+        raise ValueError("product identity pooling is forbidden")
+    return first
 
 
 def _walk_treatment_neutral(value: object) -> None:
