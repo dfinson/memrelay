@@ -111,6 +111,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes bubblewrap
 
+      - name: Smoke the restricted production grader (Linux)
+        if: runner.os == 'Linux'
+        run: uv run --locked pytest tests/unit/scoring/test_deterministic_grader.py::test_network_namespace_blocks_listener_and_host_escapes
+
       - name: Run evaluator contract, fault, and ownership tests
         run: uv run --locked pytest
   first-run-smoke:

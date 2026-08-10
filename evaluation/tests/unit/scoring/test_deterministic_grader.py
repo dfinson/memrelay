@@ -374,7 +374,7 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
     host_sentinel = tmp_path / "host-sentinel.txt"
     host_sentinel.write_text("must not be readable", encoding="utf-8")
     script = (
-        "import json, os, socket, subprocess, sys\n"
+        "import json, os, pathlib, socket, subprocess, sys\n"
         f"port={port}\n"
         f"host_sentinel={str(host_sentinel)!r}\n"
         "def denied(operation):\n"
@@ -398,8 +398,11 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "nsenter=subprocess.run(['nsenter','--net=/proc/1/ns/net','true'], "
         "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0\n"
         "host_file=not os.path.exists(host_sentinel)\n"
+        "input_readable=pathlib.Path(sys.argv[2], 'app.py').read_text() == 'answer = 2\\n'\n"
+        "input_immutable=not os.access(sys.argv[2], os.W_OK)\n"
+        "unprivileged=os.geteuid() == 65534\n"
         "assert direct and connect_ex and child and ipv6 and dns and sudo and nsenter and "
-        "host_file\n"
+        "host_file and input_readable and input_immutable and unprivileged\n"
         "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
         "'hidden_tests':True,'continuous_score':1.0,'objective_components':{'network':1.0}},"
         "sort_keys=True,separators=(',',':')))\n"
