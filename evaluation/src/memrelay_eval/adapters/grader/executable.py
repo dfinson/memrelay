@@ -127,12 +127,13 @@ class CredentialFreeExecutableGrader:
             )
             environment = _minimal_grader_environment(root)
             try:
-                _require_network_sandbox()
+                sandbox_kind = _require_network_sandbox(snapshot_root, environment)
                 completed = _run_python_in_network_sandbox(
                     command,
                     cwd=snapshot_root,
                     environment=environment,
                     timeout_seconds=self._timeout_seconds,
+                    kind=sandbox_kind,
                 )
             except NetworkSandboxUnavailableError:
                 return self._unavailable_result(
@@ -449,10 +450,10 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
 
 
 def _network_sandbox_command(
-    command: tuple[str, ...], *, cwd: Path | None = None
+    command: tuple[str, ...], *, cwd: Path | None = None, kind: str | None = None
 ) -> tuple[str, ...]:
     """Use the preflight-proven OS sandbox authority for this Linux host."""
-    kind = _network_sandbox_kind()
+    kind = kind or _network_sandbox_kind()
     if kind in {"bubblewrap", "sudo_bubblewrap"}:
         assert cwd is not None
         bubblewrap = shutil.which("bwrap")
@@ -525,9 +526,14 @@ def _network_sandbox_command(
 
 
 def _run_python_in_network_sandbox(
-    command: tuple[str, ...], *, cwd: Path, environment: Mapping[str, str], timeout_seconds: float
+    command: tuple[str, ...],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+    kind: str,
 ) -> subprocess.CompletedProcess[bytes]:
-    sandboxed = _network_sandbox_command(command, cwd=cwd)
+    sandboxed = _network_sandbox_command(command, cwd=cwd, kind=kind)
     try:
         return subprocess.run(
             sandboxed,
@@ -549,10 +555,27 @@ def _run_python_in_network_sandbox(
         raise NetworkSandboxUnavailableError() from error
 
 
-def _require_network_sandbox() -> None:
-    """Prove the host can create an isolated network namespace before grading begins."""
-    if _network_sandbox_kind() is None:
+def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
+    """Select only an authority that can execute the complete restricted profile."""
+    if sys.platform != "linux":
         raise NetworkSandboxUnavailableError()
+    probe = (str(Path(sys.executable).resolve()), "-c", "pass")
+    for kind in ("sudo_bubblewrap", "bubblewrap", "unshare"):
+        try:
+            completed = subprocess.run(
+                _network_sandbox_command(probe, cwd=cwd, kind=kind),
+                cwd=cwd,
+                env=dict(environment),
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError, NetworkSandboxUnavailableError):
+            continue
+        if completed.returncode == 0:
+            return kind
+    raise NetworkSandboxUnavailableError()
 
 
 @functools.lru_cache(maxsize=1)
