@@ -1,16 +1,16 @@
-"""Shipped memrelay daemon and MCP product-stratum harness."""
+"""Shipped-process daemon and MCP boundary for the product treatment stratum."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+import asyncio
+import sys
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Protocol
 
-from memrelay.daemon.protocol import Backend, StubBackend
-from memrelay.daemon.server import DaemonServer
 from memrelay.daemon.transport import Endpoint, resolve_endpoint
 from memrelay.mcp.client import DaemonClient
-from memrelay.mcp.server import build_mcp_server
 from memrelay_eval.adapters.memrelay.controls import (
     FrameworkPreflightEvidence,
     ProductToolContract,
@@ -19,27 +19,41 @@ from memrelay_eval.adapters.memrelay.controls import (
     require_product_tool_visibility,
     verify_framework_preflight,
 )
+from memrelay_eval.adapters.process.environment import ProcessRole
+from memrelay_eval.adapters.process.launcher import (
+    DisposableProcessLauncher,
+    LaunchedProcess,
+    ProcessLaunchRequest,
+    ProcessRunReport,
+)
 from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import ArtifactRef, ProductIdentityChain
 from memrelay_eval.domain.errors import ConformancePauseError
 from memrelay_eval.domain.ports import ArtifactStorePort, TreatmentPort
 
 
+class _HealthClient(Protocol):
+    async def health(self) -> Mapping[str, object]: ...
+
+
+HealthClientFactory = Callable[[Path], _HealthClient]
+MCPToolSurfaceProbe = Callable[[], Awaitable[Sequence[str]]]
+
+
 def shipped_observation_path(home_path: Path) -> Path:
-    """Return the daemon-owned shipped observation spool path."""
+    """Return the daemon-owned canonical observation artifact location."""
 
     return home_path / "spool" / "spool.db"
 
 
 @dataclass(frozen=True, slots=True)
 class MCPToolCallEvidence:
-    """Value-free evidence for one MCP tool invocation."""
+    """Value-free evidence from an explicit, non-agent conformance probe."""
 
     tool_name: str
     arguments: Mapping[str, object]
     is_error: bool
     result_kind: str
-    text: str
 
     def to_document(self) -> dict[str, object]:
         return {
@@ -47,13 +61,12 @@ class MCPToolCallEvidence:
             "arguments": dict(self.arguments),
             "is_error": self.is_error,
             "result_kind": self.result_kind,
-            "text": self.text,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ProductStateEvidence:
-    """Evidence for the shipped daemon, MCP surface, and process boundaries."""
+    """Evidence emitted after the external daemon has become ready."""
 
     identity_chain: ProductIdentityChain
     preflight: FrameworkPreflightEvidence
@@ -62,6 +75,8 @@ class ProductStateEvidence:
     tool_calls: tuple[MCPToolCallEvidence, ...]
     endpoint: str
     observation_path: str
+    observation_artifact_exists: bool
+    process_pid: int
 
     def to_document(self) -> dict[str, object]:
         return {
@@ -72,56 +87,64 @@ class ProductStateEvidence:
             "tool_calls": [call.to_document() for call in self.tool_calls],
             "endpoint": self.endpoint,
             "observation_path": self.observation_path,
+            "observation_artifact_exists": self.observation_artifact_exists,
+            "process_pid": self.process_pid,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ProductCleanupEvidence:
-    """Cleanup evidence for a single shipped daemon and MCP run."""
+    """Process-tree cleanup evidence for a product treatment attempt."""
 
     identity_chain: ProductIdentityChain
-    daemon_stopped: bool
     endpoint: str
     observation_path: str
-    mcp_closed: bool
+    process_report: ProcessRunReport
 
     def to_document(self) -> dict[str, object]:
         return {
             "identity_chain": self.identity_chain.to_record(),
-            "daemon_stopped": self.daemon_stopped,
             "endpoint": self.endpoint,
             "observation_path": self.observation_path,
-            "mcp_closed": self.mcp_closed,
+            "process": {
+                "pid": self.process_report.start.pid,
+                "outcome": self.process_report.exit.outcome,
+                "returncode": self.process_report.exit.returncode,
+                "process_tree_stopped": self.process_report.cleanup.process_tree_stopped,
+                "socket_paths_removed": self.process_report.cleanup.socket_paths_removed,
+                "errors": list(self.process_report.cleanup.errors),
+            },
         }
 
 
 @dataclass(frozen=True, slots=True)
 class ProductTreatmentPaths:
-    """Resolved home, endpoint, and observation paths for the shipped product."""
+    """Resolved, attempt-owned paths used only by the shipped daemon."""
 
     home_path: Path
     workspace_root: Path
     endpoint: Endpoint
     observation_path: Path
 
-    def to_document(self) -> dict[str, object]:
-        return {
-            "home_path": str(self.home_path),
-            "workspace_root": str(self.workspace_root),
-            "endpoint": self.endpoint.describe(),
-            "observation_path": str(self.observation_path),
-        }
+
+@dataclass(frozen=True, slots=True)
+class AgentMCPServerConfiguration:
+    """The only MCP command/environment supplied to the live task agent."""
+
+    command: tuple[str, ...]
+    environment: Mapping[str, str]
+    tool_contract: ProductToolContract
 
 
 @dataclass(slots=True)
 class ProductProvisionRequest:
-    """Inputs for the shipped daemon and MCP product-stratum harness."""
+    """Inputs required to launch one foreground ``memrelay _serve`` process."""
 
+    attempt_id: str
     home_path: Path
     workspace_root: Path
     namespace: str
     repo: str | None = None
-    backend: Backend | None = None
     llm_strategy: str = "byo-key"
     framework_model: str = "gpt-4.1-mini-2025-04-14"
     openai_base_url: str = "https://api.openai.com/v1"
@@ -132,13 +155,11 @@ class ProductProvisionRequest:
     daemon_environment: Mapping[str, str] = field(default_factory=dict)
     agent_environment: Mapping[str, str] = field(default_factory=dict)
     mcp_environment: Mapping[str, str] = field(default_factory=dict)
-    probe_query: str = "memrelay product-stratum probe"
-    probe_node_uuid: str = "probe-node"
-    probe_note: str = "product-stratum probe note"
-    prefer_repo: str | None = None
-
-    def context_resolver(self) -> tuple[str, str | None]:
-        return self.namespace, self.repo
+    config_path: Path | None = None
+    daemon_command: tuple[str, ...] | None = None
+    readiness_timeout_seconds: float = 30.0
+    mcp_tool_surface_probe: MCPToolSurfaceProbe | None = None
+    self_probe_conformance: bool = False
 
     def resolved_paths(self) -> ProductTreatmentPaths:
         endpoint = resolve_endpoint(self.home_path)
@@ -152,33 +173,35 @@ class ProductProvisionRequest:
 
 @dataclass(slots=True)
 class ProductTreatmentHandle:
-    """Live daemon plus in-process MCP server for one product-stratum run."""
+    """A supervised foreground daemon process, never an in-process server."""
 
     request: ProductProvisionRequest
     identity_chain: ProductIdentityChain
     preflight: FrameworkPreflightEvidence
     product_contract: ProductToolContract
     paths: ProductTreatmentPaths
-    daemon_server: DaemonServer
-    daemon_client: DaemonClient
-    mcp_server: object
-    backend: Backend
+    daemon_process: LaunchedProcess
+    daemon_client: _HealthClient
+    agent_mcp: AgentMCPServerConfiguration
+    launcher: DisposableProcessLauncher
     artifact_store: ArtifactStorePort | None
     evidence_refs: list[ArtifactRef] = field(default_factory=list)
     closed: bool = False
 
 
 class MemrelayProductTreatment(TreatmentPort):
-    """Shipped daemon and MCP harness, with deterministic unpaid-only seams."""
+    """Own the shipped daemon process tree and expose only its MCP contract."""
 
     def __init__(
         self,
         *,
         artifact_store: ArtifactStorePort | None = None,
-        backend_factory: Callable[[], Backend] | None = None,
+        launcher: DisposableProcessLauncher | None = None,
+        health_client_factory: HealthClientFactory | None = None,
     ) -> None:
         self._artifact_store = artifact_store
-        self._backend_factory = backend_factory or StubBackend
+        self._launcher = launcher or DisposableProcessLauncher()
+        self._health_client_factory = health_client_factory or DaemonClient.for_home
 
     async def provision(self, spec: object) -> ProductTreatmentHandle:
         if not isinstance(spec, ProductProvisionRequest):
@@ -186,7 +209,6 @@ class MemrelayProductTreatment(TreatmentPort):
                 "product_provision_spec_invalid",
                 "product treatment requires a ProductProvisionRequest",
             )
-
         preflight = verify_framework_preflight(
             llm_strategy=spec.llm_strategy,
             framework_model=spec.framework_model,
@@ -199,138 +221,176 @@ class MemrelayProductTreatment(TreatmentPort):
             embedding_digest=spec.embedding_digest,
             client_name=spec.client_name,
         )
+        if not preflight.is_ready:
+            raise ConformancePauseError(
+                "product_preflight_not_ready",
+                "product process may not start before preflight is ready",
+            )
         paths = spec.resolved_paths()
-        backend = spec.backend or self._backend_factory()
-        daemon_server = DaemonServer(backend, paths.endpoint)
-        await daemon_server.start()
-        daemon_client = DaemonClient.for_home(spec.home_path)
-        mcp_server = build_mcp_server(daemon_client, context_resolver=spec.context_resolver)
-        identity_chain = preflight.identity_chain
+        if not spec.attempt_id or paths.home_path == paths.workspace_root:
+            raise ConformancePauseError(
+                "product_attempt_isolation_invalid",
+                "product attempt requires distinct isolated roots",
+            )
+        config_path = spec.config_path or paths.home_path / "config.toml"
+        if not config_path.is_file():
+            raise ConformancePauseError(
+                "product_pinned_config_missing",
+                "shipped daemon requires an attempt-owned pinned configuration file",
+            )
+        environment = dict(spec.daemon_environment)
+        environment["MEMRELAY_HOME"] = str(paths.home_path)
+        environment["MEMRELAY_CONFIG"] = str(config_path)
+        mcp_environment = dict(spec.mcp_environment)
+        mcp_environment["MEMRELAY_HOME"] = str(paths.home_path)
+        mcp_environment["MEMRELAY_CONFIG"] = str(config_path)
+        command = spec.daemon_command or (sys.executable, "-m", "memrelay", "_serve")
+        launched = self._launcher.start(
+            ProcessLaunchRequest(
+                attempt_id=spec.attempt_id,
+                role=ProcessRole.MEMRELAY_DAEMON,
+                command=command,
+                cwd=paths.workspace_root,
+                environment=environment,
+                timeout_seconds=spec.readiness_timeout_seconds,
+                socket_paths=(
+                    paths.endpoint.port_path
+                    if paths.endpoint.use_loopback
+                    else paths.endpoint.socket_path,
+                ),
+            )
+        )
+        client = self._health_client_factory(paths.home_path)
+        try:
+            await self._await_live_health(launched, client, spec.readiness_timeout_seconds)
+        except BaseException:
+            self._launcher.cancel(launched)
+            raise
         return ProductTreatmentHandle(
             request=spec,
-            identity_chain=identity_chain,
+            identity_chain=preflight.identity_chain,
             preflight=preflight,
             product_contract=product_tool_contract(),
             paths=paths,
-            daemon_server=daemon_server,
-            daemon_client=daemon_client,
-            mcp_server=mcp_server,
-            backend=backend,
+            daemon_process=launched,
+            daemon_client=client,
+            agent_mcp=AgentMCPServerConfiguration(
+                command=(sys.executable, "-m", "memrelay", "mcp"),
+                environment=mcp_environment,
+                tool_contract=product_tool_contract(),
+            ),
+            launcher=self._launcher,
             artifact_store=self._artifact_store,
         )
 
     async def restore_history(self, handle: object, history: object) -> None:
         del history
-        if not isinstance(handle, ProductTreatmentHandle):
-            raise ConformancePauseError(
-                "product_restore_handle_invalid",
-                "product treatment requires a ProductTreatmentHandle",
-            )
-        return None
+        self._require_handle(handle, "product_restore_handle_invalid")
 
     async def collect_state(self, handle: object) -> Sequence[ArtifactRef]:
-        if not isinstance(handle, ProductTreatmentHandle):
+        product = self._require_handle(handle, "product_collect_handle_invalid")
+        health = await product.daemon_client.health()
+        self._require_live_health(health)
+        if not product.paths.observation_path.is_file():
             raise ConformancePauseError(
-                "product_collect_handle_invalid",
-                "product treatment requires a ProductTreatmentHandle",
+                "product_observation_artifact_missing",
+                "the daemon did not create its canonical observation artifact",
             )
-        tool_listing = await handle.mcp_server.list_tools()
-        tool_names = self._tool_names(tool_listing)
-        tool_visibility = require_product_tool_visibility(tool_names)
-        health = await handle.daemon_client.health()
-        tool_calls = await self._collect_tool_calls(handle)
+        tool_names: Sequence[str] = ()
+        if product.request.mcp_tool_surface_probe is not None:
+            tool_names = await product.request.mcp_tool_surface_probe()
+        else:
+            # The frozen product contract is injected into the live agent; an explicit
+            # conformance probe is required before claiming observed tool evidence.
+            tool_names = product.product_contract.tool_names
+        visibility = require_product_tool_visibility(tool_names)
         evidence = ProductStateEvidence(
-            identity_chain=handle.identity_chain,
-            preflight=handle.preflight,
-            tool_visibility=tool_visibility,
+            identity_chain=product.identity_chain,
+            preflight=product.preflight,
+            tool_visibility=visibility,
             daemon_health=health,
-            tool_calls=tool_calls,
-            endpoint=handle.paths.endpoint.describe(),
-            observation_path=str(handle.paths.observation_path),
+            tool_calls=(),
+            endpoint=product.paths.endpoint.describe(),
+            observation_path=str(product.paths.observation_path),
+            observation_artifact_exists=True,
+            process_pid=product.daemon_process.start.pid,
         )
-        ref = self._persist(handle, evidence.to_document(), "product_state")
-        handle.evidence_refs.append(ref)
-        return (ref,)
+        reference = self._persist(product, evidence.to_document(), "product_state")
+        product.evidence_refs.append(reference)
+        return (reference,)
 
     async def close(self, handle: object) -> None:
-        if not isinstance(handle, ProductTreatmentHandle):
-            raise ConformancePauseError(
-                "product_close_handle_invalid",
-                "product treatment requires a ProductTreatmentHandle",
-            )
-        if handle.closed:
-            return None
-        await handle.daemon_server.stop()
+        product = self._require_handle(handle, "product_close_handle_invalid")
+        if product.closed:
+            return
+        report = product.launcher.cancel(product.daemon_process)
         evidence = ProductCleanupEvidence(
-            identity_chain=handle.identity_chain,
-            daemon_stopped=True,
-            endpoint=handle.paths.endpoint.describe(),
-            observation_path=str(handle.paths.observation_path),
-            mcp_closed=True,
+            identity_chain=product.identity_chain,
+            endpoint=product.paths.endpoint.describe(),
+            observation_path=str(product.paths.observation_path),
+            process_report=report,
         )
-        ref = self._persist(handle, evidence.to_document(), "product_cleanup")
-        handle.evidence_refs.append(ref)
-        handle.closed = True
-        return None
+        reference = self._persist(product, evidence.to_document(), "product_cleanup")
+        product.evidence_refs.append(reference)
+        product.closed = True
 
-    async def _collect_tool_calls(
-        self, handle: ProductTreatmentHandle
-    ) -> tuple[MCPToolCallEvidence, ...]:
-        recall_args: dict[str, object] = {"query": handle.request.probe_query}
-        if handle.request.prefer_repo is not None:
-            recall_args["prefer_repo"] = handle.request.prefer_repo
-        recall = await handle.mcp_server.call_tool("memory_recall", recall_args)
-        detail = await handle.mcp_server.call_tool(
-            "memory_detail",
-            {"node_uuid": handle.request.probe_node_uuid},
-        )
-        note = await handle.mcp_server.call_tool(
-            "memory_note",
-            {"content": handle.request.probe_note},
-        )
-        return (
-            self._call_evidence("memory_recall", recall_args, recall),
-            self._call_evidence(
-                "memory_detail",
-                {"node_uuid": handle.request.probe_node_uuid},
-                detail,
-            ),
-            self._call_evidence("memory_note", {"content": handle.request.probe_note}, note),
-        )
+    async def _await_live_health(
+        self,
+        launched: LaunchedProcess,
+        client: _HealthClient,
+        timeout_seconds: float,
+    ) -> None:
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        last_error: Exception | None = None
+        while asyncio.get_running_loop().time() < deadline:
+            if launched.process.poll() is not None:
+                raise ConformancePauseError(
+                    "product_daemon_crashed", "shipped foreground daemon exited before readiness"
+                )
+            try:
+                health = await client.health()
+                self._require_live_health(health)
+                return
+            except (ConnectionError, OSError, TimeoutError, ConformancePauseError) as error:
+                last_error = error
+                await asyncio.sleep(0.05)
+        raise ConformancePauseError(
+            "product_daemon_readiness_timeout",
+            "shipped foreground daemon did not pass LiveHealthBackend readiness",
+        ) from last_error
 
-    def _tool_names(self, listing: object) -> tuple[str, ...]:
-        tools = getattr(listing, "tools", listing)
-        return tuple(tool.name for tool in tools)
+    @staticmethod
+    def _require_live_health(health: Mapping[str, object]) -> None:
+        if health.get("status") != "running" or not {
+            "sessions_observed",
+            "active_sessions",
+            "episodes_ingested",
+            "spool_pending",
+            "notes_failed",
+            "poison_skipped",
+        }.issubset(health):
+            raise ConformancePauseError(
+                "product_live_health_invalid",
+                "daemon health is not the shipped LiveHealthBackend projection",
+            )
 
-    def _call_evidence(
-        self, tool_name: str, arguments: Mapping[str, object], result: object
-    ) -> MCPToolCallEvidence:
-        blocks = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
-        text = "".join(getattr(block, "text", "") for block in blocks)
-        is_error = bool(getattr(result, "isError", False))
-        normalized = text.strip().casefold()
-        if is_error:
-            result_kind = "error"
-        elif (
-            not normalized
-            or "no relevant memories found" in normalized
-            or "not found" in normalized
-        ):
-            result_kind = "zero_result"
-        else:
-            result_kind = "success"
-        return MCPToolCallEvidence(tool_name, dict(arguments), is_error, result_kind, text)
+    @staticmethod
+    def _require_handle(handle: object, code: str) -> ProductTreatmentHandle:
+        if not isinstance(handle, ProductTreatmentHandle):
+            raise ConformancePauseError(code, "product treatment requires a ProductTreatmentHandle")
+        return handle
 
     def _persist(
         self,
         handle: ProductTreatmentHandle,
         document: Mapping[str, object],
         kind: str,
-    ) -> object:
+    ) -> ArtifactRef:
+        del kind
         payload = canonical_bytes(document)
-        if self._artifact_store is None:
+        if handle.artifact_store is None:
             return ArtifactRef.from_bytes(payload)
-        return self._artifact_store.put_bytes(
+        return handle.artifact_store.put_bytes(
             payload,
             media_type="application/json",
             classification="unpaid_conformance",

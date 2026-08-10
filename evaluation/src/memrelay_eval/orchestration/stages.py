@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 
-from memrelay_eval.domain.entities import NativeModelCatalog, RuntimeIdentity
+from memrelay_eval.domain.entities import NativeModelCatalog, ProductIdentityChain, RuntimeIdentity
 from memrelay_eval.domain.errors import ConformancePauseError
 from memrelay_eval.domain.governance import (
     EvaluationStage,
@@ -22,6 +22,7 @@ from memrelay_eval.domain.ids import (
     PurposeVersionId,
     RepositoryId,
 )
+from memrelay_eval.domain.policies import require_single_product_stratum
 from memrelay_eval.orchestration.control import CrossRepositoryAdmissionController
 
 
@@ -99,3 +100,9 @@ def verify_stage_locks(
                 raise ConformancePauseError(
                     "model_capability_drift", f"locked model field changed: {key}"
                 )
+
+
+def require_product_stratum_aggregation(chains: tuple[ProductIdentityChain, ...]) -> None:
+    """Apply the stratum guard at the orchestration aggregation entry point."""
+
+    require_single_product_stratum(chains)

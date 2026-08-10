@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from unicodedata import normalize
+from urllib.parse import urlsplit, urlunsplit
 
 from memrelay_eval.domain.entities import ProductIdentityChain
 from memrelay_eval.domain.errors import ConformancePauseError
@@ -27,6 +29,10 @@ from memrelay_eval.domain.states import EvaluationStratum
 PRODUCT_SHIPPED_TOOL_NAMES = ("memory_detail", "memory_note", "memory_recall")
 EXPECTED_FRAMEWORK_MODEL = "gpt-4.1-mini-2025-04-14"
 EXPECTED_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EXPECTED_OPENAI_BASE_URL = "https://api.openai.com/v1"
+_FROZEN_LLM_STRATEGIES = frozenset({"byo-key"})
+_OPENAI_KEY_NAME = "openai_api_key"
+_OPENAI_BASE_URL_NAME = "openai_base_url"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +92,7 @@ class FrameworkPreflightEvidence:
     llm_strategy: str
     framework_model: str
     openai_base_url: str
+    expected_openai_base_url: str
     daemon_key_env: str
     daemon_key_only: bool
     embedding_provider: str
@@ -110,6 +117,8 @@ class FrameworkPreflightEvidence:
         return (
             self.llm_strategy == "byo-key"
             and self.framework_model == EXPECTED_FRAMEWORK_MODEL
+            and self.openai_base_url == EXPECTED_OPENAI_BASE_URL
+            and self.expected_openai_base_url == EXPECTED_OPENAI_BASE_URL
             and self.embedding_provider == "local"
             and self.embedding_model == EXPECTED_EMBEDDING_MODEL
             and self.daemon_key_only
@@ -124,6 +133,7 @@ class FrameworkPreflightEvidence:
             "llm_strategy": self.llm_strategy,
             "framework_model": self.framework_model,
             "openai_base_url": self.openai_base_url,
+            "expected_openai_base_url": self.expected_openai_base_url,
             "daemon_key_env": self.daemon_key_env,
             "daemon_key_only": self.daemon_key_only,
             "embedding_provider": self.embedding_provider,
@@ -246,16 +256,24 @@ def verify_framework_preflight(
     tool_contract: ProductToolContract | None = None,
     stratum: EvaluationStratum = EvaluationStratum.PRODUCT,
 ) -> FrameworkPreflightEvidence:
-    """Fail closed on borrow-host, LiteLLM, local fallbacks, or credential leaks."""
+    """Fail closed before any product process or tool can be exposed."""
 
     tool_contract = tool_contract or product_tool_contract()
     identity_chain = build_product_identity_chain(stratum=stratum)
-    rejected: list[str] = []
-    if llm_strategy != "byo-key":
-        rejected.append(llm_strategy)
-    for fallback in ("borrow-host", "litellm", "local"):
-        if fallback == llm_strategy:
-            rejected.append(fallback)
+    rejected = [] if llm_strategy in _FROZEN_LLM_STRATEGIES else [llm_strategy]
+    actual_base_url = _normalize_openai_base_url(openai_base_url)
+    expected_base_url = _normalize_openai_base_url(EXPECTED_OPENAI_BASE_URL)
+    daemon_names = _normalized_environment_names(daemon_environment)
+    agent_names = _normalized_environment_names(agent_environment)
+    mcp_names = _normalized_environment_names(mcp_environment)
+    daemon_openai_names = _openai_sensitive_names(daemon_names)
+    agent_openai_names = _openai_sensitive_names(agent_names)
+    mcp_openai_names = _openai_sensitive_names(mcp_names)
+    if rejected:
+        raise ConformancePauseError(
+            "framework_route_fallback",
+            "framework strategy is not one of the frozen supported strategies",
+        )
     if framework_model != EXPECTED_FRAMEWORK_MODEL:
         raise ConformancePauseError(
             "framework_model_drift",
@@ -266,46 +284,49 @@ def verify_framework_preflight(
             "embedding_configuration_drift",
             "local embeddings are not pinned to the frozen model",
         )
+    daemon_key_name = _normalize_environment_name(daemon_key_env)
     daemon_key_only = (
-        daemon_key_env in daemon_environment
-        and daemon_key_env not in agent_environment
-        and daemon_key_env not in mcp_environment
-        and "OPENAI_BASE_URL" in daemon_environment
-        and "OPENAI_BASE_URL" not in agent_environment
-        and "OPENAI_BASE_URL" not in mcp_environment
+        daemon_key_name == _OPENAI_KEY_NAME
+        and daemon_key_name in daemon_names
+        and daemon_key_name not in agent_names
+        and daemon_key_name not in mcp_names
+        and _OPENAI_BASE_URL_NAME in daemon_names
+        and _OPENAI_BASE_URL_NAME not in agent_names
+        and _OPENAI_BASE_URL_NAME not in mcp_names
+        and daemon_openai_names == {_OPENAI_KEY_NAME, _OPENAI_BASE_URL_NAME}
     )
     if not daemon_key_only:
         raise ConformancePauseError(
             "daemon_key_boundary_drift",
             "OpenAI credentials are not isolated to the daemon process",
         )
-    for forbidden in ("OPENAI_API_KEY", "OPENAI_BASE_URL"):
-        if forbidden in agent_environment or forbidden in mcp_environment:
-            raise ConformancePauseError(
-                "framework_credential_leak",
-                "OpenAI credentials leaked to a non-daemon process",
-            )
-    if "borrow-host" in rejected or "litellm" in rejected or "local" in rejected:
+    if agent_openai_names or mcp_openai_names:
         raise ConformancePauseError(
-            "framework_route_fallback",
-            "framework route fell back to a forbidden strategy",
+            "framework_credential_leak",
+            "OpenAI credentials leaked to a non-daemon process",
         )
     if not client_name or "openai" not in client_name.casefold():
         raise ConformancePauseError(
             "framework_client_drift",
             "framework client is not the expected OpenAI-backed client",
         )
-    if openai_base_url not in daemon_environment.get("OPENAI_BASE_URL", ""):
+    daemon_base_url = _environment_value(daemon_environment, _OPENAI_BASE_URL_NAME)
+    if (
+        daemon_base_url is None
+        or _normalize_openai_base_url(daemon_base_url) != expected_base_url
+        or actual_base_url != expected_base_url
+    ):
         raise ConformancePauseError(
             "framework_base_url_drift",
-            "framework base URL is not pinned in the daemon environment",
+            "framework base URL does not exactly match the normalized frozen endpoint",
         )
     require_same_evaluation_stratum((stratum,))
     require_same_product_identity_chain((identity_chain,))
     return FrameworkPreflightEvidence(
         llm_strategy,
         framework_model,
-        openai_base_url,
+        actual_base_url,
+        expected_base_url,
         daemon_key_env,
         daemon_key_only,
         embedding_provider,
@@ -313,9 +334,9 @@ def verify_framework_preflight(
         embedding_digest,
         client_name,
         tuple(dict.fromkeys(rejected)),
-        tuple(sorted(daemon_environment)),
-        tuple(sorted(agent_environment)),
-        tuple(sorted(mcp_environment)),
+        tuple(sorted(daemon_names)),
+        tuple(sorted(agent_names)),
+        tuple(sorted(mcp_names)),
         tool_contract,
         identity_chain,
     )
@@ -335,3 +356,63 @@ def build_framework_process_environments(
     agent_environment: dict[str, str] = {}
     mcp_environment: dict[str, str] = {}
     return daemon_environment, agent_environment, mcp_environment
+
+
+def _normalize_environment_name(name: str) -> str:
+    """Compare environment names case-insensitively and resist Unicode lookalikes."""
+
+    return normalize("NFKC", name).casefold()
+
+
+def _normalized_environment_names(environment: Mapping[str, str]) -> set[str]:
+    names = {_normalize_environment_name(name) for name in environment}
+    if len(names) != len(environment):
+        raise ConformancePauseError(
+            "framework_environment_name_collision",
+            "environment has indistinguishable normalized variable names",
+        )
+    return names
+
+
+def _environment_value(environment: Mapping[str, str], normalized_name: str) -> str | None:
+    for name, value in environment.items():
+        if _normalize_environment_name(name) == normalized_name:
+            return value
+    return None
+
+
+def _openai_sensitive_names(names: set[str]) -> set[str]:
+    sensitive = ("key", "token", "secret", "credential", "base_url", "endpoint")
+    return {name for name in names if "openai" in name and any(term in name for term in sensitive)}
+
+
+def _normalize_openai_base_url(value: str) -> str:
+    """Return the sole accepted stable form of the direct OpenAI endpoint."""
+
+    try:
+        parsed = urlsplit(value.strip())
+    except ValueError as error:
+        raise ConformancePauseError(
+            "framework_base_url_invalid", "framework base URL is malformed"
+        ) from error
+    if (
+        parsed.scheme.casefold() != "https"
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ConformancePauseError(
+            "framework_base_url_invalid", "framework base URL is not a direct HTTPS endpoint"
+        )
+    host = parsed.hostname.casefold()
+    try:
+        port_number = parsed.port
+    except ValueError as error:
+        raise ConformancePauseError(
+            "framework_base_url_invalid", "framework base URL has an invalid port"
+        ) from error
+    port = f":{port_number}" if port_number is not None else ""
+    path = parsed.path.rstrip("/") or "/"
+    return urlunsplit(("https", f"{host}{port}", path, "", ""))

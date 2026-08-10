@@ -105,6 +105,14 @@ def require_same_product_identity_chain(
     return first
 
 
+def require_single_product_stratum(
+    chains: Sequence[ProductIdentityChain],
+) -> EvaluationStratum:
+    """Guard the production aggregation boundary against product/engine pooling."""
+
+    return require_same_evaluation_stratum(tuple(chain.stratum for chain in chains))
+
+
 def _walk_treatment_neutral(value: object) -> None:
     if isinstance(value, Mapping):
         for key, nested in value.items():

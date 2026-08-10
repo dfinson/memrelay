@@ -51,9 +51,22 @@ from memrelay_eval.domain.ports import (
     DenialEvidencePort,
     LedgerPort,
     RepositoryAuthorizationPort,
+    TelemetryPort,
+    TreatmentPort,
 )
+from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, ProductTreatmentAttempt
 
 _Result = TypeVar("_Result")
+
+
+def build_product_treatment_attempt(
+    treatment: TreatmentPort,
+    terminal_recorder: AttemptTerminalRecorder,
+    telemetry: TelemetryPort,
+) -> ProductTreatmentAttempt:
+    """Compose the product boundary without replacing Inspect or lifecycle authority."""
+
+    return ProductTreatmentAttempt(treatment, terminal_recorder, telemetry)
 
 
 class InMemoryDenialEvidenceSink:

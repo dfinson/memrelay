@@ -3,6 +3,7 @@
 from .controls import (
     EXPECTED_EMBEDDING_MODEL,
     EXPECTED_FRAMEWORK_MODEL,
+    EXPECTED_OPENAI_BASE_URL,
     PRODUCT_SHIPPED_TOOL_NAMES,
     FrameworkPreflightEvidence,
     ProductIdentityEnvelope,
@@ -15,6 +16,7 @@ from .controls import (
     verify_framework_preflight,
 )
 from .product import (
+    AgentMCPServerConfiguration,
     MCPToolCallEvidence,
     MemrelayProductTreatment,
     ProductCleanupEvidence,
@@ -28,6 +30,8 @@ from .product import (
 __all__ = [
     "EXPECTED_EMBEDDING_MODEL",
     "EXPECTED_FRAMEWORK_MODEL",
+    "EXPECTED_OPENAI_BASE_URL",
+    "AgentMCPServerConfiguration",
     "FrameworkPreflightEvidence",
     "MCPToolCallEvidence",
     "MemrelayProductTreatment",

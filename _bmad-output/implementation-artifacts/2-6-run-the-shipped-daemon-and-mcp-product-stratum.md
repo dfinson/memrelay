@@ -1,6 +1,6 @@
 # Story 2.6: Run the Shipped Daemon and MCP Product Stratum
 
-Status: done
+Status: review
 
 ## Story
 
@@ -35,19 +35,19 @@ So that measured outcomes include the actual product lifecycle and transport ove
 
 ## Tasks / Subtasks
 
-- [ ] Implement shipped daemon lifecycle adapter (AC: 1, 3)
-  - [ ] Launch the shipped foreground `memrelay _serve` entry point (the process seam used by `memrelay start`) so the evaluator owns and can supervise the attempt-local process tree; there is no `memrelay-daemon` console script.
-  - [ ] Bind unique home/graph/spool/socket/session roots and capture exact redacted effective config.
-  - [ ] Verify health/readiness and record the configured shipped observation path: discovery plus `RunObserveCapture` for `ingest.intake_source="replay"` or `LiveTailCapture` for `"file_watch"`. Conformance-test both modes separately; never claim both are active in one attempt.
-- [ ] Implement shipped MCP client/tool contract (AC: 1, 3)
-  - [ ] Expose exactly `memory_recall`, `memory_detail`, `memory_note`; reject direct engine access and extra tools.
-  - [ ] Prove the task-agent/MCP process has no OpenAI credential.
-- [ ] Enforce framework provider/model/embedding strategy (AC: 2)
-  - [ ] Require local `BAAI/bge-small-en-v1.5`, direct OpenAI `byo-key`, dated model, daemon-only key.
-  - [ ] Pause on borrow-host, LiteLLM, local fallback, missing key, or alternate endpoint/provider.
-- [ ] Route lifecycle and telemetry through deterministic fake ports and block durable inclusion (AC: 4)
-- [ ] Create product-stratum identity chain and non-pooling guards (Architecture: AD-03, AD-20)
-- [ ] Add shipped-surface, single-writer, isolation, credential, evidence, and stratum tests (AC: 1-4)
+- [x] Implement shipped daemon lifecycle adapter (AC: 1, 3)
+  - [x] Launch the shipped foreground `memrelay _serve` entry point (the process seam used by `memrelay start`) so the evaluator owns and can supervise the attempt-local process tree; there is no `memrelay-daemon` console script.
+  - [x] Bind the attempt-owned home, endpoint, spool, and pinned configuration path without inheriting the host environment.
+  - [x] Verify `LiveHealthBackend` readiness and require the daemon-owned canonical observation artifact before state evidence is persisted.
+- [x] Implement shipped MCP client/tool contract (AC: 1, 3)
+  - [x] Supply the live agent only the shipped `memrelay mcp` command and exact `memory_recall`, `memory_detail`, `memory_note` contract; reject extra tools.
+  - [x] Prove the task-agent/MCP process has no normalized or case-variant OpenAI credential.
+- [x] Enforce framework provider/model/embedding strategy (AC: 2)
+  - [x] Require local `BAAI/bge-small-en-v1.5`, direct OpenAI `byo-key`, dated model, daemon-only key.
+  - [x] Pause before launch on borrow-host, LiteLLM, local/unknown fallback, missing key, or alternate endpoint/provider.
+- [x] Route product process startup through the Story 1.1 ledger claim and telemetry ports using deterministic fakes for unpaid conformance (AC: 4)
+- [x] Create product-stratum identity chain and non-pooling guards at orchestration aggregation (Architecture: AD-03, AD-20)
+- [x] Add shipped-surface, process crash/cleanup, credential, observation-evidence, and stratum tests (AC: 1-4)
 - [ ] Require explicit live invocation plus frozen positive Copilot/OpenAI call, credit/token, USD, active-time, and wall-time caps; record planned/consumed quantities and stop before overage.
 
 ## Developer Context
@@ -125,9 +125,9 @@ OpenAI coding agent
 ### Completion Notes List
 
 - Added product-stratum controls for the shipped tool contract, framework preflight, and opaque product identity chain.
-- Added a shipped daemon and MCP harness that uses the real daemon server, the shipped FastMCP surface, and canonical evidence persistence.
-- Added unit and integration coverage for tool visibility, daemon-only credential boundaries, preflight rejection, zero-result classification, and shipped product round-trips.
-- Verified the evaluator suite, product suite, lockfile check, Ruff check, and Ruff format check.
+- Replaced the in-process daemon shortcut with evaluator-owned `memrelay _serve` process-tree supervision, pinned config delivery, `LiveHealthBackend` readiness, cleanup evidence, and canonical spool-artifact verification.
+- Added the daemon-only OpenAI environment boundary and shipped `memrelay mcp` agent command; evaluator self-probes do not stand in for task-agent evidence.
+- Added fake-only evaluator contract/integration coverage for strategy and URL rejection, normalized credential leaks, fourth-tool spoofing, crash cleanup, observation evidence, ledger claim/telemetry wiring, and product/engine aggregation denial.
 
 ### File List
 
@@ -137,7 +137,12 @@ OpenAI coding agent
 - `evaluation/src/memrelay_eval/domain/entities.py`
 - `evaluation/src/memrelay_eval/domain/ids.py`
 - `evaluation/src/memrelay_eval/domain/policies.py`
-- `tests/integration/test_memrelay_product_treatment.py`
-- `tests/unit/test_memrelay_product_controls.py`
+- `evaluation/src/memrelay_eval/orchestration/attempt.py`
+- `evaluation/src/memrelay_eval/orchestration/control.py`
+- `evaluation/src/memrelay_eval/orchestration/stages.py`
+- `evaluation/tests/contract/memrelay/test_daemon.py`
+- `evaluation/tests/contract/memrelay/test_mcp_tools.py`
+- `evaluation/tests/contract/memrelay/test_provider_strategy.py`
+- `evaluation/tests/integration/test_product_stratum_fake.py`
 - `_bmad-output/implementation-artifacts/2-6-run-the-shipped-daemon-and-mcp-product-stratum.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
