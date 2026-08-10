@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from enum import StrEnum
 from hashlib import sha256
 from types import MappingProxyType
 
@@ -394,6 +395,87 @@ class ArtifactRef:
     def from_bytes(cls, data: bytes) -> ArtifactRef:
         digest = sha256(data).hexdigest()
         return cls(ArtifactId.from_digest(digest), digest, len(data))
+
+
+class GraderSandboxDiagnosticAuthority(StrEnum):
+    """The bounded authority that observed a confined-grader failure."""
+
+    SANDBOX = "sandbox"
+
+
+class GraderSandboxDiagnosticPhase(StrEnum):
+    """A non-overlapping stage in confined grader execution."""
+
+    SELECTION_PROBE = "selection_probe"
+    PROFILE_LAUNCH = "profile_launch"
+    CANDIDATE_RUNTIME = "candidate_runtime"
+    OUTPUT_PARSE = "output_parse"
+
+
+class GraderSandboxDiagnosticCode(StrEnum):
+    """Value-free failure codes for the confined grader diagnostic matrix."""
+
+    AUTHORITY_UNAVAILABLE = "authority_unavailable"
+    PROFILE_LAUNCH_FAILED = "profile_launch_failed"
+    TIMEOUT = "timeout"
+    CRASH = "crash"
+    MALFORMED_OUTPUT = "malformed_output"
+
+
+@dataclass(frozen=True, slots=True)
+class GraderSandboxDiagnostic:
+    """A closed, value-free projection of a sandbox failure."""
+
+    authority: GraderSandboxDiagnosticAuthority
+    phase: GraderSandboxDiagnosticPhase
+    code: GraderSandboxDiagnosticCode
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.authority, GraderSandboxDiagnosticAuthority)
+            or not isinstance(self.phase, GraderSandboxDiagnosticPhase)
+            or not isinstance(self.code, GraderSandboxDiagnosticCode)
+        ):
+            raise InvalidArtifactManifestError("grader sandbox diagnostic fields must be typed")
+        valid_pairs = {
+            (
+                GraderSandboxDiagnosticPhase.SELECTION_PROBE,
+                GraderSandboxDiagnosticCode.AUTHORITY_UNAVAILABLE,
+            ),
+            (
+                GraderSandboxDiagnosticPhase.PROFILE_LAUNCH,
+                GraderSandboxDiagnosticCode.PROFILE_LAUNCH_FAILED,
+            ),
+            (
+                GraderSandboxDiagnosticPhase.CANDIDATE_RUNTIME,
+                GraderSandboxDiagnosticCode.TIMEOUT,
+            ),
+            (
+                GraderSandboxDiagnosticPhase.CANDIDATE_RUNTIME,
+                GraderSandboxDiagnosticCode.CRASH,
+            ),
+            (
+                GraderSandboxDiagnosticPhase.OUTPUT_PARSE,
+                GraderSandboxDiagnosticCode.MALFORMED_OUTPUT,
+            ),
+        }
+        if (
+            self.authority is not GraderSandboxDiagnosticAuthority.SANDBOX
+            or (
+                self.phase,
+                self.code,
+            )
+            not in valid_pairs
+        ):
+            raise InvalidArtifactManifestError("grader sandbox diagnostic matrix is invalid")
+
+    def to_record(self) -> dict[str, str]:
+        return {
+            "schema_version": "1.0.0",
+            "authority": self.authority.value,
+            "phase": self.phase.value,
+            "code": self.code.value,
+        }
 
 
 def _normalized_grader_path(path: str) -> str:

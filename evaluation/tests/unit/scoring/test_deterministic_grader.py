@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import json
 import socket
+import subprocess
 import sys
 import threading
 from hashlib import sha256
@@ -11,11 +13,16 @@ from pathlib import Path
 
 import pytest
 from memrelay_eval.adapters.fakes import InMemoryArtifactStore
+from memrelay_eval.adapters.grader import executable
 from memrelay_eval.adapters.grader.executable import CredentialFreeExecutableGrader
 from memrelay_eval.adapters.workspace.base import WorkspaceSnapshot
-from memrelay_eval.canonical import canonical_bytes
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.entities import GraderContract, GraderResult
-from memrelay_eval.domain.errors import GraderContractError, GraderReplayMismatchError
+from memrelay_eval.domain.errors import (
+    GraderContractError,
+    GraderReplayMismatchError,
+    NetworkSandboxUnavailableError,
+)
 from memrelay_eval.domain.states import GraderTerminalKind
 from memrelay_eval.evidence.required import require_unpaid_conformance_ports
 from memrelay_eval.scoring.service import (
@@ -159,6 +166,20 @@ def _grade(
     return asyncio.run(
         grader.grade(snapshot, _contract(store, snapshot, script or _passing_script(), **changes))
     )
+
+
+def _sandbox_diagnostic_bytes(store: InMemoryArtifactStore, result: GraderResult) -> list[bytes]:
+    return [
+        payload
+        for reference in result.evidence_refs
+        if b'"authority":"sandbox"' in (payload := store.open_verified(reference))
+    ]
+
+
+def _sandbox_diagnostics(
+    store: InMemoryArtifactStore, result: GraderResult
+) -> list[dict[str, object]]:
+    return [json.loads(payload) for payload in _sandbox_diagnostic_bytes(store, result)]
 
 
 def test_identical_frozen_snapshot_and_contract_replay_exactly() -> None:
@@ -334,8 +355,8 @@ def test_grader_output_parser_rejects_ambiguous_or_invalid_documents(
     assert result.binary_passed is not True
     if terminal is GraderTerminalKind.UNAVAILABLE:
         assert any(
-            b"grader_malformed_output" in store.open_verified(reference)
-            for reference in result.evidence_refs
+            diagnostic["phase"] == "output_parse" and diagnostic["code"] == "malformed_output"
+            for diagnostic in _sandbox_diagnostics(store, result)
         )
 
 
@@ -401,10 +422,12 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "input_readable=pathlib.Path(sys.argv[2], 'app.py').read_text() == 'answer = 2\\n'\n"
         "input_immutable=not os.access(sys.argv[2], os.W_OK)\n"
         "unprivileged=os.geteuid() == 65534\n"
-        "assert direct and connect_ex and child and ipv6 and dns and sudo and nsenter and "
-        "host_file and input_readable and input_immutable and unprivileged\n"
+        "checks={'direct':direct,'connect_ex':connect_ex,'child':child,'ipv6':ipv6,'dns':dns,"
+        "'sudo':sudo,'nsenter':nsenter,'host_file':host_file,'input_readable':input_readable,"
+        "'input_immutable':input_immutable,'unprivileged':unprivileged}\n"
         "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
-        "'hidden_tests':True,'continuous_score':1.0,'objective_components':{'network':1.0}},"
+        "'hidden_tests':True,'continuous_score':1.0,'objective_components':"
+        "{name:float(value) for name,value in checks.items()}},"
         "sort_keys=True,separators=(',',':')))\n"
     )
     try:
@@ -415,6 +438,19 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         listener.close()
 
     assert result.terminal is GraderTerminalKind.PASSED
+    assert result.objective_components == {
+        "child": 1.0,
+        "connect_ex": 1.0,
+        "direct": 1.0,
+        "dns": 1.0,
+        "host_file": 1.0,
+        "input_immutable": 1.0,
+        "input_readable": 1.0,
+        "ipv6": 1.0,
+        "nsenter": 1.0,
+        "sudo": 1.0,
+        "unprivileged": 1.0,
+    }
     assert accepted == []
 
 
@@ -451,6 +487,143 @@ def test_timeout_and_crash_preserve_partial_raw_evidence() -> None:
     assert crash.raw_output_artifact is not None
     assert b"started" in store.open_verified(timeout.raw_output_artifact)
     assert b"before crash" in store.open_verified(crash.raw_output_artifact)
+    assert _sandbox_diagnostics(store, timeout) == [
+        {
+            "schema_version": "1.0.0",
+            "authority": "sandbox",
+            "phase": "candidate_runtime",
+            "code": "timeout",
+        }
+    ]
+    assert _sandbox_diagnostics(store, crash) == [
+        {
+            "schema_version": "1.0.0",
+            "authority": "sandbox",
+            "phase": "candidate_runtime",
+            "code": "crash",
+        }
+    ]
+    assert b"started" not in _sandbox_diagnostic_bytes(store, timeout)[0]
+    assert b"before crash" not in _sandbox_diagnostic_bytes(store, crash)[0]
+
+
+@pytest.mark.parametrize(
+    ("failure", "completed", "expected"),
+    (
+        (
+            "selection",
+            None,
+            {
+                "schema_version": "1.0.0",
+                "authority": "sandbox",
+                "phase": "selection_probe",
+                "code": "authority_unavailable",
+            },
+        ),
+        (
+            "launch",
+            None,
+            {
+                "schema_version": "1.0.0",
+                "authority": "sandbox",
+                "phase": "profile_launch",
+                "code": "profile_launch_failed",
+            },
+        ),
+        (
+            "timeout",
+            subprocess.CompletedProcess(
+                ("fixture",),
+                124,
+                stdout=b"candidate output must never enter the diagnostic",
+                stderr=b"host path /private/fixture must never enter the diagnostic",
+            ),
+            {
+                "schema_version": "1.0.0",
+                "authority": "sandbox",
+                "phase": "candidate_runtime",
+                "code": "timeout",
+            },
+        ),
+        (
+            "crash",
+            subprocess.CompletedProcess(
+                ("fixture",),
+                1,
+                stdout=b"candidate output must never enter the diagnostic",
+                stderr=b"host path /private/fixture must never enter the diagnostic",
+            ),
+            {
+                "schema_version": "1.0.0",
+                "authority": "sandbox",
+                "phase": "candidate_runtime",
+                "code": "crash",
+            },
+        ),
+        (
+            "parse",
+            subprocess.CompletedProcess(
+                ("fixture",),
+                0,
+                stdout=b"candidate output must never enter the diagnostic",
+                stderr=b"host path /private/fixture must never enter the diagnostic",
+            ),
+            {
+                "schema_version": "1.0.0",
+                "authority": "sandbox",
+                "phase": "output_parse",
+                "code": "malformed_output",
+            },
+        ),
+    ),
+)
+def test_sandbox_diagnostic_matrix_is_exact_and_value_free(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    completed: subprocess.CompletedProcess[bytes] | None,
+    expected: dict[str, str],
+) -> None:
+    store = InMemoryArtifactStore()
+    snapshot = _snapshot(store)
+    grader = CredentialFreeExecutableGrader(store)
+    contract = _contract(store, snapshot, _passing_script())
+    if failure == "selection":
+        monkeypatch.setattr(
+            executable,
+            "_require_network_sandbox",
+            lambda *_: (_ for _ in ()).throw(NetworkSandboxUnavailableError()),
+        )
+    else:
+        monkeypatch.setattr(executable, "_require_network_sandbox", lambda *_: "bubblewrap")
+        if failure == "launch":
+            monkeypatch.setattr(
+                executable,
+                "_run_python_in_network_sandbox",
+                lambda *_, **__: (_ for _ in ()).throw(NetworkSandboxUnavailableError()),
+            )
+        else:
+            assert completed is not None
+            monkeypatch.setattr(
+                executable,
+                "_run_python_in_network_sandbox",
+                lambda *_, **__: completed,
+            )
+
+    result = grader._grade(snapshot, contract)
+
+    assert result.terminal is GraderTerminalKind.UNAVAILABLE
+    assert _sandbox_diagnostics(store, result) == [expected]
+    diagnostic = _sandbox_diagnostic_bytes(store, result)
+    assert diagnostic == [canonical_bytes(expected)]
+    assert b"candidate output" not in diagnostic[0]
+    assert b"/private/fixture" not in diagnostic[0]
+    assert b"terminal" not in diagnostic[0]
+    result_document = json.loads(store.open_verified(result.result_artifact))
+    assert result_document["snapshot_sha256"] == snapshot.canonical_sha256
+    assert result_document["contract_sha256"] == canonical_digest(contract.to_record())
+    assert set(
+        reference.sha256 for reference in grader._input_evidence(snapshot, contract)
+    ).issubset(result_document["evidence_sha256"])
 
 
 def test_replay_disagreement_and_flaky_favorable_run_cannot_be_substituted() -> None:

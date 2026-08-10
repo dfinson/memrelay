@@ -21,7 +21,15 @@ from pathlib import Path
 from memrelay_eval.adapters.process.environment import ProcessRole, build_process_environment
 from memrelay_eval.adapters.workspace.base import WorkspaceSnapshot
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
-from memrelay_eval.domain.entities import ArtifactRef, GraderContract, GraderResult
+from memrelay_eval.domain.entities import (
+    ArtifactRef,
+    GraderContract,
+    GraderResult,
+    GraderSandboxDiagnostic,
+    GraderSandboxDiagnosticAuthority,
+    GraderSandboxDiagnosticCode,
+    GraderSandboxDiagnosticPhase,
+)
 from memrelay_eval.domain.errors import (
     ArtifactIntegrityError,
     MalformedGraderOutputError,
@@ -128,6 +136,18 @@ class CredentialFreeExecutableGrader:
             environment = _minimal_grader_environment(root)
             try:
                 sandbox_kind = _require_network_sandbox(snapshot_root, environment)
+            except NetworkSandboxUnavailableError:
+                diagnostic = self._sandbox_diagnostic(
+                    GraderSandboxDiagnosticPhase.SELECTION_PROBE,
+                    GraderSandboxDiagnosticCode.AUTHORITY_UNAVAILABLE,
+                )
+                return self._unavailable_result(
+                    snapshot,
+                    contract_sha256,
+                    "network_sandbox_unavailable",
+                    (*input_evidence, diagnostic),
+                )
+            try:
                 completed = _run_python_in_network_sandbox(
                     command,
                     cwd=snapshot_root,
@@ -137,12 +157,13 @@ class CredentialFreeExecutableGrader:
                 )
             except NetworkSandboxUnavailableError:
                 diagnostic = self._sandbox_diagnostic(
-                    "unavailable", "selection_probe", "authority_unavailable"
+                    GraderSandboxDiagnosticPhase.PROFILE_LAUNCH,
+                    GraderSandboxDiagnosticCode.PROFILE_LAUNCH_FAILED,
                 )
                 return self._unavailable_result(
                     snapshot,
                     contract_sha256,
-                    "network_sandbox_unavailable",
+                    "grader_profile_launch_failed",
                     (*input_evidence, diagnostic),
                 )
             raw_output = completed.stdout + b"\n--- stderr ---\n" + completed.stderr
@@ -293,17 +314,15 @@ class CredentialFreeExecutableGrader:
             (*evidence, marker),
         )
 
-    def _sandbox_diagnostic(self, authority: str, phase: str, code: str) -> ArtifactRef:
+    def _sandbox_diagnostic(
+        self,
+        phase: GraderSandboxDiagnosticPhase,
+        code: GraderSandboxDiagnosticCode,
+    ) -> ArtifactRef:
         """Persist a bounded value-free sandbox failure projection."""
+        diagnostic = GraderSandboxDiagnostic(GraderSandboxDiagnosticAuthority.SANDBOX, phase, code)
         return self._artifact_store.put_bytes(
-            canonical_bytes(
-                {
-                    "schema_version": "1.0.0",
-                    "authority": authority,
-                    "phase": phase,
-                    "code": code,
-                }
-            ),
+            canonical_bytes(diagnostic.to_record()),
             media_type="application/json",
             classification="grader_sandbox_diagnostic",
         )
@@ -376,24 +395,42 @@ def _result_from_process(
     raw_output: ArtifactRef,
     input_evidence: tuple[ArtifactRef, ...],
 ) -> GraderResult:
+    if completed.returncode == 124:
+        diagnostic = grader._sandbox_diagnostic(
+            GraderSandboxDiagnosticPhase.CANDIDATE_RUNTIME,
+            GraderSandboxDiagnosticCode.TIMEOUT,
+        )
+        return grader._unavailable_result(
+            snapshot,
+            contract_sha256,
+            "grader_timeout",
+            (*input_evidence, raw_output, diagnostic),
+        )
     try:
         payload = _parse_grader_result(completed.stdout)
     except MalformedGraderOutputError:
-        marker = grader._artifact_store.put_bytes(
-            canonical_bytes({"terminal": "unavailable", "reason": "grader_malformed_output"}),
-            media_type="application/json",
-            classification="grader_malformed_output",
+        phase, code, reason = (
+            (
+                GraderSandboxDiagnosticPhase.CANDIDATE_RUNTIME,
+                GraderSandboxDiagnosticCode.CRASH,
+                "grader_crash",
+            )
+            if completed.returncode != 0
+            else (
+                GraderSandboxDiagnosticPhase.OUTPUT_PARSE,
+                GraderSandboxDiagnosticCode.MALFORMED_OUTPUT,
+                "grader_malformed_output",
+            )
         )
-        return grader._result(
+        diagnostic = grader._sandbox_diagnostic(
+            phase,
+            code,
+        )
+        return grader._unavailable_result(
             snapshot,
             contract_sha256,
-            GraderTerminalKind.UNAVAILABLE,
-            None,
-            {},
-            None,
-            {},
-            raw_output,
-            (*input_evidence, raw_output, marker),
+            reason,
+            (*input_evidence, raw_output, diagnostic),
         )
     tests = {
         "native": payload["native_tests"],
