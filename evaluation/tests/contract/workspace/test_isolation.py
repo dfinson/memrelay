@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import socket
 import subprocess
 from hashlib import sha256
@@ -16,6 +17,7 @@ from memrelay_eval.adapters.workspace.base import (
 )
 from memrelay_eval.adapters.workspace.clone import IsolatedCloneWorkspaceProvider
 from memrelay_eval.adapters.workspace.worktree import TemporaryWorktreeWorkspaceProvider
+from memrelay_eval.domain.errors import SnapshotHardlinkError, SnapshotMutationError
 from memrelay_eval.domain.ids import AttemptId, RunId
 
 
@@ -198,6 +200,61 @@ def test_clone_uses_only_the_frozen_local_source(
     )
 
     assert _git(handle.workspace_root, "remote") == ""
+
+    asyncio.run(provider.destroy(handle))
+
+
+def test_freeze_rejects_external_and_internal_hardlinked_snapshot_inputs(
+    provider, frozen_source: tuple[Path, str, str], tmp_path: Path
+) -> None:
+    source, revision, content_hash = frozen_source
+    handle = asyncio.run(
+        provider.create(_spec(source, revision, content_hash, tmp_path / "attempts"))
+    )
+    external = tmp_path / "external.txt"
+    external.write_text("external\n", encoding="utf-8")
+    os.link(external, handle.workspace_root / "external-link.txt")
+
+    with pytest.raises(SnapshotHardlinkError):
+        asyncio.run(provider.freeze(handle))
+
+    (handle.workspace_root / "external-link.txt").unlink()
+    original = handle.workspace_root / "README.md"
+    os.link(original, handle.workspace_root / "internal-link.txt")
+    with pytest.raises(SnapshotHardlinkError):
+        asyncio.run(provider.freeze(handle))
+
+    asyncio.run(provider.destroy(handle))
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="descriptor race probe requires /proc handle inspection"
+)
+def test_freeze_rejects_snapshot_file_replacement_race(
+    provider, frozen_source: tuple[Path, str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, revision, content_hash = frozen_source
+    handle = asyncio.run(
+        provider.create(_spec(source, revision, content_hash, tmp_path / "attempts"))
+    )
+    target = handle.workspace_root / "README.md"
+    real_read = os.read
+    replaced = False
+
+    def replacing_read(descriptor: int, size: int) -> bytes:
+        nonlocal replaced
+        data = real_read(descriptor, size)
+        descriptor_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        if data and descriptor_path == target and not replaced:
+            replacement = target.with_suffix(".replacement")
+            replacement.write_text("replacement\n", encoding="utf-8")
+            replacement.replace(target)
+            replaced = True
+        return data
+
+    monkeypatch.setattr("memrelay_eval.adapters.workspace.base.os.read", replacing_read)
+    with pytest.raises(SnapshotMutationError):
+        asyncio.run(provider.freeze(handle))
 
     asyncio.run(provider.destroy(handle))
 

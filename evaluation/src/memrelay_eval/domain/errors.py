@@ -353,6 +353,18 @@ class SnapshotIntegrityError(ArtifactIntegrityError):
     code = "workspace_snapshot_integrity_failure"
 
 
+class SnapshotHardlinkError(SnapshotIntegrityError):
+    """A snapshot input has more than one name and cannot establish isolated authority."""
+
+    code = "workspace_snapshot_hardlink_forbidden"
+
+
+class SnapshotMutationError(SnapshotIntegrityError):
+    """A snapshot path changed while its bytes were being captured."""
+
+    code = "workspace_snapshot_toctou_detected"
+
+
 class GraderContractError(DomainError):
     """A deterministic-grader contract is malformed or no longer matches its pins."""
 
@@ -375,3 +387,17 @@ class GraderReplayMismatchError(GraderExecutionError):
 
     def __init__(self) -> None:
         super().__init__("grader_replay_mismatch")
+
+
+class MalformedGraderOutputError(GraderExecutionError):
+    """The grader did not emit exactly one complete frozen result document."""
+
+    def __init__(self) -> None:
+        super().__init__("grader_malformed_output")
+
+
+class NetworkSandboxUnavailableError(GraderExecutionError):
+    """The host cannot prove OS-level network denial for a grader process."""
+
+    def __init__(self) -> None:
+        super().__init__("grader_network_sandbox_unavailable")

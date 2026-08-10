@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import fnmatch
+import functools
 import json
+import math
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -18,7 +22,12 @@ from memrelay_eval.adapters.process.environment import ProcessRole, build_proces
 from memrelay_eval.adapters.workspace.base import WorkspaceSnapshot
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.entities import ArtifactRef, GraderContract, GraderResult
-from memrelay_eval.domain.errors import ArtifactIntegrityError, SnapshotIntegrityError
+from memrelay_eval.domain.errors import (
+    ArtifactIntegrityError,
+    MalformedGraderOutputError,
+    NetworkSandboxUnavailableError,
+    SnapshotIntegrityError,
+)
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import GraderTerminalKind
 from memrelay_eval.evidence.secret_scan import scan_secret_boundaries
@@ -115,12 +124,21 @@ class CredentialFreeExecutableGrader:
                 dependencies=dependencies,
             )
             environment = _minimal_grader_environment(root)
-            completed = _run_python_with_network_denied(
-                command,
-                cwd=snapshot_root,
-                environment=environment,
-                timeout_seconds=self._timeout_seconds,
-            )
+            try:
+                _require_network_sandbox()
+                completed = _run_python_in_network_sandbox(
+                    command,
+                    cwd=snapshot_root,
+                    environment=environment,
+                    timeout_seconds=self._timeout_seconds,
+                )
+            except NetworkSandboxUnavailableError:
+                return self._unavailable_result(
+                    snapshot,
+                    contract_sha256,
+                    "network_sandbox_unavailable",
+                    input_evidence,
+                )
             raw_output = completed.stdout + b"\n--- stderr ---\n" + completed.stderr
             findings = scan_secret_boundaries({"grader_output": raw_output})
             if findings:
@@ -144,12 +162,7 @@ class CredentialFreeExecutableGrader:
                 raw_output, media_type="text/plain", classification="grader_raw_output"
             )
             return _result_from_process(
-                self,
-                snapshot,
-                contract_sha256,
-                completed,
-                raw_artifact,
-                input_evidence,
+                self, snapshot, contract_sha256, completed, raw_artifact, input_evidence
             )
 
     def _verify_snapshot(self, snapshot: WorkspaceSnapshot) -> Mapping[str, object]:
@@ -251,7 +264,11 @@ class CredentialFreeExecutableGrader:
         )
 
     def _unavailable_result(
-        self, snapshot: WorkspaceSnapshot, contract_sha256: str, reason: str
+        self,
+        snapshot: WorkspaceSnapshot,
+        contract_sha256: str,
+        reason: str,
+        evidence: tuple[ArtifactRef, ...] = (),
     ) -> GraderResult:
         marker = self._artifact_store.put_bytes(
             canonical_bytes({"terminal": "unavailable", "reason": reason}),
@@ -267,7 +284,7 @@ class CredentialFreeExecutableGrader:
             None,
             {},
             None,
-            (marker,),
+            (*evidence, marker),
         )
 
     def _result(
@@ -339,54 +356,150 @@ def _result_from_process(
     input_evidence: tuple[ArtifactRef, ...],
 ) -> GraderResult:
     try:
-        payload = json.loads(completed.stdout.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        payload = {}
-    if completed.returncode == 0:
-        tests = _test_outcomes(payload, default=True)
-        score = _score(payload)
-        components = _components(payload)
-        terminal = GraderTerminalKind.PASSED if all(tests.values()) else GraderTerminalKind.FAILED
+        payload = _parse_grader_result(completed.stdout)
+    except MalformedGraderOutputError:
+        marker = grader._artifact_store.put_bytes(
+            canonical_bytes({"terminal": "unavailable", "reason": "grader_malformed_output"}),
+            media_type="application/json",
+            classification="grader_malformed_output",
+        )
         return grader._result(
             snapshot,
             contract_sha256,
-            terminal,
-            terminal is GraderTerminalKind.PASSED,
-            tests,
-            score,
-            components,
+            GraderTerminalKind.UNAVAILABLE,
+            None,
+            {},
+            None,
+            {},
             raw_output,
-            (*input_evidence, raw_output),
+            (*input_evidence, raw_output, marker),
         )
-    if payload:
-        tests = _test_outcomes(payload, default=False)
-        return grader._result(
-            snapshot,
-            contract_sha256,
-            GraderTerminalKind.FAILED,
-            False,
-            tests,
-            _score(payload),
-            _components(payload),
-            raw_output,
-            (*input_evidence, raw_output),
-        )
-    marker = grader._artifact_store.put_bytes(
-        canonical_bytes({"terminal": "unavailable", "reason": "grader_crash"}),
-        media_type="application/json",
-        classification="grader_result",
+    tests = {
+        "native": payload["native_tests"],
+        "hidden": payload["hidden_tests"],
+    }
+    terminal = (
+        GraderTerminalKind.PASSED
+        if completed.returncode == 0 and all(tests.values())
+        else GraderTerminalKind.FAILED
     )
     return grader._result(
         snapshot,
         contract_sha256,
-        GraderTerminalKind.UNAVAILABLE,
-        None,
-        {},
-        None,
-        {},
+        terminal,
+        terminal is GraderTerminalKind.PASSED,
+        tests,
+        payload["continuous_score"],
+        payload["objective_components"],
         raw_output,
-        (*input_evidence, raw_output, marker),
+        (*input_evidence, raw_output),
     )
+
+
+def _parse_grader_result(data: bytes) -> dict[str, object]:
+    """Accept one exact canonical frozen result and reject all output framing ambiguity."""
+    try:
+        text = data.decode("utf-8")
+        value, end = json.JSONDecoder(object_pairs_hook=_reject_duplicate_json_keys).raw_decode(
+            text
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MalformedGraderOutputError() from error
+    if end != len(text) or not isinstance(value, dict):
+        raise MalformedGraderOutputError()
+    if set(value) != {
+        "schema_version",
+        "native_tests",
+        "hidden_tests",
+        "continuous_score",
+        "objective_components",
+    }:
+        raise MalformedGraderOutputError()
+    if value["schema_version"] != "1.0.0":
+        raise MalformedGraderOutputError()
+    if not isinstance(value["native_tests"], bool) or not isinstance(value["hidden_tests"], bool):
+        raise MalformedGraderOutputError()
+    score = value["continuous_score"]
+    if not isinstance(score, float) or not math.isfinite(score):
+        raise MalformedGraderOutputError()
+    components = value["objective_components"]
+    if not isinstance(components, dict) or not components:
+        raise MalformedGraderOutputError()
+    if any(
+        not isinstance(name, str)
+        or not name
+        or not isinstance(component, float)
+        or not math.isfinite(component)
+        for name, component in components.items()
+    ):
+        raise MalformedGraderOutputError()
+    return value
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise json.JSONDecodeError("duplicate object key", "", 0)
+        result[key] = value
+    return result
+
+
+def _network_sandbox_command(command: tuple[str, ...]) -> tuple[str, ...]:
+    """Use an OS network namespace; do not execute if this authority is unavailable."""
+    if sys.platform != "linux":
+        raise NetworkSandboxUnavailableError()
+    unshare = shutil.which("unshare")
+    if unshare is None:
+        raise NetworkSandboxUnavailableError()
+    return (unshare, "--user", "--map-root-user", "--net", "--", *command)
+
+
+def _run_python_in_network_sandbox(
+    command: tuple[str, ...], *, cwd: Path, environment: Mapping[str, str], timeout_seconds: float
+) -> subprocess.CompletedProcess[bytes]:
+    sandboxed = _network_sandbox_command(command)
+    try:
+        return subprocess.run(
+            sandboxed,
+            cwd=cwd,
+            env=dict(environment),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        return subprocess.CompletedProcess(
+            sandboxed,
+            returncode=124,
+            stdout=error.stdout or b"",
+            stderr=(error.stderr or b"") + b"\ngraded process timed out",
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise NetworkSandboxUnavailableError() from error
+
+
+def _require_network_sandbox() -> None:
+    """Prove the host can create an isolated network namespace before grading begins."""
+    if not _network_sandbox_available():
+        raise NetworkSandboxUnavailableError()
+
+
+@functools.lru_cache(maxsize=1)
+def _network_sandbox_available() -> bool:
+    try:
+        completed = subprocess.run(
+            _network_sandbox_command((sys.executable, "-c", "pass")),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        del error
+        return False
+    return completed.returncode == 0
 
 
 def _resolve_command(
@@ -428,36 +541,6 @@ def _minimal_grader_environment(root: Path) -> dict[str, str]:
     return environment
 
 
-def _run_python_with_network_denied(
-    command: tuple[str, ...], *, cwd: Path, environment: Mapping[str, str], timeout_seconds: float
-) -> subprocess.CompletedProcess[bytes]:
-    target, *arguments = command[1:]
-    bootstrap = (
-        "import runpy,socket,sys;"
-        "deny=lambda *args,**kwargs: (_ for _ in ()).throw("
-        "OSError('network denied by frozen grader contract'));"
-        "socket.create_connection=deny;socket.getaddrinfo=deny;socket.socket.connect=deny;"
-        "sys.argv=[sys.argv[1],*sys.argv[2:]];runpy.run_path(sys.argv[0],run_name='__main__')"
-    )
-    try:
-        return subprocess.run(
-            (sys.executable, "-c", bootstrap, target, *arguments),
-            cwd=cwd,
-            env=dict(environment),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as error:
-        return subprocess.CompletedProcess(
-            command,
-            returncode=124,
-            stdout=error.stdout or b"",
-            stderr=(error.stderr or b"") + b"\ngraded process timed out",
-        )
-
-
 def _materialize_files(files: Mapping[str, tuple[int, bytes]], root: Path) -> None:
     for relative, (mode, data) in files.items():
         target = root / relative
@@ -483,42 +566,39 @@ def _changed_paths(
 
 def _scope_is_allowed(changed_paths: tuple[str, ...], contract: GraderContract) -> bool:
     for path in changed_paths:
-        if any(fnmatch.fnmatchcase(path, pattern) for pattern in contract.forbidden_paths):
+        try:
+            normalized_path = _normalized_policy_path(path)
+            forbidden = tuple(
+                _normalized_policy_path(pattern) for pattern in contract.forbidden_paths
+            )
+            allowed = tuple(_normalized_policy_path(pattern) for pattern in contract.allowed_paths)
+        except ValueError:
             return False
-        if contract.allowed_paths and not any(
-            fnmatch.fnmatchcase(path, pattern) for pattern in contract.allowed_paths
+        if any(fnmatch.fnmatchcase(normalized_path, pattern) for pattern in forbidden):
+            return False
+        if allowed and not any(
+            fnmatch.fnmatchcase(normalized_path, pattern) for pattern in allowed
         ):
             return False
     return True
 
 
 def _safe_relative_path(path: str) -> bool:
-    return (
-        bool(path) and "\\" not in path and not path.startswith("/") and ".." not in path.split("/")
-    )
+    try:
+        _normalized_policy_path(path)
+    except ValueError:
+        return False
+    return True
 
 
-def _test_outcomes(payload: object, *, default: bool) -> dict[str, bool]:
-    if not isinstance(payload, Mapping):
-        return {"command": default}
-    tests = payload.get("tests")
-    if not isinstance(tests, Mapping):
-        return {"command": default}
-    result = {str(name): value for name, value in tests.items() if isinstance(value, bool)}
-    return result or {"command": default}
-
-
-def _score(payload: object) -> float | None:
-    value = payload.get("continuous_score") if isinstance(payload, Mapping) else None
-    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
-def _components(payload: object) -> dict[str, float]:
-    values = payload.get("objective_components") if isinstance(payload, Mapping) else None
-    if not isinstance(values, Mapping):
-        return {}
-    return {
-        str(name): float(value)
-        for name, value in values.items()
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
-    }
+def _normalized_policy_path(path: str) -> str:
+    normalized = unicodedata.normalize("NFC", path).replace("\\", "/")
+    if not normalized or normalized.startswith("/") or ":" in normalized:
+        raise ValueError("path is not relative")
+    segments = normalized.split("/")
+    if any(
+        not segment or segment in {".", ".."} or segment.endswith((" ", "."))
+        for segment in segments
+    ):
+        raise ValueError("path has an ambiguous alias")
+    return "/".join(segment.casefold() for segment in segments)

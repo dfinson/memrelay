@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -395,6 +396,21 @@ class ArtifactRef:
         return cls(ArtifactId.from_digest(digest), digest, len(data))
 
 
+def _normalized_grader_path(path: str) -> str:
+    if not isinstance(path, str):
+        raise InvalidArtifactManifestError("grader path rules must be strings")
+    normalized = unicodedata.normalize("NFC", path).replace("\\", "/")
+    if not normalized or normalized.startswith("/") or ":" in normalized:
+        raise InvalidArtifactManifestError("grader path rules must be relative")
+    segments = normalized.split("/")
+    if any(
+        not segment or segment in {".", ".."} or segment.endswith((" ", "."))
+        for segment in segments
+    ):
+        raise InvalidArtifactManifestError("grader path rules contain an ambiguous alias")
+    return "/".join(segment.casefold() for segment in segments)
+
+
 @dataclass(frozen=True, slots=True)
 class GraderContract:
     """Pinned, treatment-blind executable-grader inputs and restrictions."""
@@ -439,15 +455,12 @@ class GraderContract:
             raise InvalidArtifactManifestError(
                 "grader command must begin with the pinned Python placeholder"
             )
-        if len(set(self.allowed_paths)) != len(self.allowed_paths) or len(
-            set(self.forbidden_paths)
-        ) != len(self.forbidden_paths):
+        normalized_allowed = tuple(_normalized_grader_path(path) for path in self.allowed_paths)
+        normalized_forbidden = tuple(_normalized_grader_path(path) for path in self.forbidden_paths)
+        if len(set(normalized_allowed)) != len(normalized_allowed) or len(
+            set(normalized_forbidden)
+        ) != len(normalized_forbidden):
             raise InvalidArtifactManifestError("grader path rules must not duplicate")
-        for path in (*self.allowed_paths, *self.forbidden_paths):
-            if not path or "\\" in path or path.startswith("/") or ".." in path.split("/"):
-                raise InvalidArtifactManifestError(
-                    "grader path rules must be normalized relative paths"
-                )
         object.__setattr__(self, "command", command)
         object.__setattr__(self, "allowed_paths", tuple(self.allowed_paths))
         object.__setattr__(self, "forbidden_paths", tuple(self.forbidden_paths))

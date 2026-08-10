@@ -20,6 +20,7 @@ from typing import Protocol
 
 from ...canonical import canonical_bytes
 from ...domain.entities import ArtifactLink, ArtifactRef, TelemetryObservation
+from ...domain.errors import SnapshotHardlinkError, SnapshotMutationError
 from ...domain.ids import AttemptId, RunId
 from ..fakes import InMemoryArtifactStore, InMemoryLedger, InMemoryTelemetry
 
@@ -526,6 +527,7 @@ class BaseWorkspaceProvider:
         """Capture regular workspace files with no clock or host-path authority."""
         self._assert_safe_authority_path(root, "workspace snapshot root")
         files: list[dict[str, object]] = []
+        normalized_identities: set[str] = set()
         for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
             current_path = Path(current)
             retained_directories: list[str] = []
@@ -553,7 +555,13 @@ class BaseWorkspaceProvider:
                     raise WorkspacePathSafetyError(
                         f"workspace snapshot contains non-regular file: {candidate}"
                     )
-                data = candidate.read_bytes()
+                normalized_identity = _normalized_snapshot_path(relative.as_posix())
+                if normalized_identity in normalized_identities:
+                    raise WorkspacePathSafetyError(
+                        f"workspace snapshot contains path-normalization aliases: {candidate}"
+                    )
+                normalized_identities.add(normalized_identity)
+                data = self._read_regular_snapshot_file(root, relative, candidate)
                 files.append(
                     {
                         "path": relative.as_posix(),
@@ -563,6 +571,45 @@ class BaseWorkspaceProvider:
                     }
                 )
         return canonical_bytes({"schema_version": "1.0.0", "files": files})
+
+    def _read_regular_snapshot_file(self, root: Path, relative: Path, candidate: Path) -> bytes:
+        """Read one file from a bound descriptor while rejecting links and replacement races."""
+        before = candidate.stat()
+        _require_unlinked_regular_file(before)
+        descriptor: int | None = None
+        root_descriptor: int | None = None
+        try:
+            if os.name != "nt" and os.supports_dir_fd:
+                root_descriptor = os.open(root, os.O_RDONLY)
+                descriptor = os.open(
+                    relative.as_posix(),
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=root_descriptor,
+                )
+            else:
+                descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            opened = os.fstat(descriptor)
+            _require_unlinked_regular_file(opened)
+            if not _same_file_identity(before, opened):
+                raise SnapshotMutationError("workspace snapshot file changed before handle read")
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            after_handle = os.fstat(descriptor)
+            after_path = candidate.stat()
+            _require_unlinked_regular_file(after_handle)
+            _require_unlinked_regular_file(after_path)
+            if not (
+                _same_file_identity(before, after_handle)
+                and _same_file_identity(before, after_path)
+            ):
+                raise SnapshotMutationError("workspace snapshot file changed during handle read")
+            return b"".join(chunks)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if root_descriptor is not None:
+                os.close(root_descriptor)
 
     def _clear_readonly_and_retry(
         self,
@@ -834,3 +881,37 @@ class BaseWorkspaceProvider:
 
     def _remove_workspace(self, handle: WorkspaceHandle) -> None:
         raise NotImplementedError
+
+
+def _normalized_snapshot_path(path: str) -> str:
+    """Return a host-neutral identity, rejecting ambiguous Windows-compatible aliases."""
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFC", path).replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
+        raise WorkspacePathSafetyError("workspace snapshot path is not relative")
+    segments = normalized.split("/")
+    if any(
+        not segment or segment in {".", ".."} or segment.endswith((" ", "."))
+        for segment in segments
+    ):
+        raise WorkspacePathSafetyError("workspace snapshot path has a forbidden alias")
+    return "/".join(segment.casefold() for segment in segments)
+
+
+def _require_unlinked_regular_file(status: os.stat_result) -> None:
+    if not stat.S_ISREG(status.st_mode):
+        raise WorkspacePathSafetyError("workspace snapshot input is not a regular file")
+    if status.st_nlink > 1:
+        raise SnapshotHardlinkError("workspace snapshot input has multiple hardlinks")
+
+
+def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        first.st_dev == second.st_dev
+        and first.st_ino == second.st_ino
+        and first.st_mode == second.st_mode
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+        and first.st_nlink == second.st_nlink
+    )

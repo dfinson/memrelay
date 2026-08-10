@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import socket
+import sys
+import threading
 from hashlib import sha256
 from pathlib import Path
 
@@ -21,6 +24,11 @@ from memrelay_eval.scoring.service import (
     grade_with_bounded_regrades,
     require_intake_stability,
     require_matching_replays,
+)
+
+pytestmark = pytest.mark.skipif(
+    sys.platform != "linux",
+    reason="OS network namespace unavailable; production grading fails closed",
 )
 
 
@@ -133,8 +141,10 @@ def _passing_script() -> str:
         "hidden, snapshot = sys.argv[1:]\n"
         "assert pathlib.Path(hidden).read_bytes() == b'assert True\\n'\n"
         "assert (pathlib.Path(snapshot) / 'app.py').read_text() == 'answer = 2\\n'\n"
-        "print(json.dumps({'tests': {'native': True, 'hidden': True}, "
-        "'continuous_score': 1.0, 'objective_components': {'fraction': 1.0}}))\n"
+        "sys.stdout.write(json.dumps({'schema_version': '1.0.0', 'native_tests': True, "
+        "'hidden_tests': True, 'continuous_score': 1.0, "  # noqa: E501
+        "'objective_components': {'fraction': 1.0}}, "
+        "sort_keys=True, separators=(',', ':')))\n"
     )
 
 
@@ -142,7 +152,7 @@ def _grade(
     store: InMemoryArtifactStore,
     snapshot: WorkspaceSnapshot,
     script: str | None = None,
-    timeout_seconds: float = 1.0,
+    timeout_seconds: float = 5.0,
     **changes: object,
 ) -> GraderResult:
     grader = CredentialFreeExecutableGrader(store, timeout_seconds=timeout_seconds)
@@ -200,6 +210,42 @@ def test_path_escape_and_scope_tampering_are_blocked() -> None:
     assert _grade(store, out_of_scope).terminal is GraderTerminalKind.BLOCKED
 
 
+@pytest.mark.parametrize(
+    "path",
+    (
+        "Secrets/leak.txt",
+        "Secrets\\leak.txt",
+        "secrets/leak.txt ",
+        "secrets/leak.txt.",
+        "secrets/../leak.txt",
+    ),
+)
+def test_scope_policy_normalizes_case_and_separators_and_rejects_aliases(path: str) -> None:
+    store = InMemoryArtifactStore()
+    baseline = {"app.py": b"answer = 2\n", "secrets/leak.txt": b"old"}
+    terminal = {"app.py": b"answer = 2\n", path: b"new"}
+    snapshot = _snapshot(store, baseline=baseline, terminal=terminal)
+
+    result = _grade(
+        store,
+        snapshot,
+        allowed_paths=("app.py", "secrets/**"),
+        forbidden_paths=("secrets/**",),
+    )
+
+    assert result.terminal is GraderTerminalKind.BLOCKED
+
+
+def test_snapshot_rejects_unicode_path_normalization_aliases() -> None:
+    store = InMemoryArtifactStore()
+    snapshot = _snapshot(
+        store,
+        terminal={"caf\u00e9.py": b"one", "cafe\u0301.py": b"two"},
+    )
+
+    assert _grade(store, snapshot).terminal is GraderTerminalKind.BLOCKED
+
+
 def test_frozen_baseline_and_contract_hash_mismatch_are_blocked() -> None:
     store = InMemoryArtifactStore()
     snapshot = _snapshot(store)
@@ -214,11 +260,14 @@ def test_grader_receives_no_provider_credentials_or_assignment() -> None:
     store = InMemoryArtifactStore()
     snapshot = _snapshot(store)
     script = (
-        "import json, os\n"
+        "import json, os, sys\n"
         "blocked = {'OPENAI_API_KEY', 'GITHUB_TOKEN', 'GH_TOKEN', 'COPILOT_AUTH_TOKEN'}\n"
         "assert not blocked.intersection(os.environ)\n"
         "assert not any('assignment' in name.lower() for name in os.environ)\n"
-        "print(json.dumps({'tests': {'credential_free': True}}))\n"
+        "sys.stdout.write(json.dumps({'schema_version': '1.0.0', 'native_tests': True, "
+        "'hidden_tests': True, 'continuous_score': 1.0, "  # noqa: E501
+        "'objective_components': {'credential_free': 1.0}}, "
+        "sort_keys=True, separators=(',', ':')))\n"
     )
 
     assert _grade(store, snapshot, script).terminal is GraderTerminalKind.PASSED
@@ -234,7 +283,111 @@ def test_network_policy_is_enforced_inside_the_grader_process() -> None:
 
     assert result.terminal is GraderTerminalKind.UNAVAILABLE
     assert result.raw_output_artifact is not None
-    assert b"network denied" in store.open_verified(result.raw_output_artifact)
+    assert (
+        b"temporary failure in name resolution"
+        in store.open_verified(result.raw_output_artifact).lower()
+    )
+
+
+@pytest.mark.parametrize(
+    ("script", "terminal"),
+    (
+        (
+            "import sys\nsys.stdout.write('diagnostic\\n"
+            '{"continuous_score":1.0,"hidden_tests":true,"native_tests":true,'
+            '"objective_components":{"fraction":1.0},"schema_version":"1.0.0"}\')\n',
+            GraderTerminalKind.UNAVAILABLE,
+        ),
+        (
+            'import sys\npayload=\'{"continuous_score":1.0,"hidden_tests":true,'
+            '"native_tests":true,"objective_components":{"fraction":1.0},'
+            '"schema_version":"1.0.0"}\'\nsys.stdout.write(payload + payload)\n',
+            GraderTerminalKind.UNAVAILABLE,
+        ),
+        ("import sys\nsys.stdout.write('{not-json}')\n", GraderTerminalKind.UNAVAILABLE),
+        (
+            'import sys\nsys.stdout.write(\'{"schema_version":"1.0.0"}\')\n',
+            GraderTerminalKind.UNAVAILABLE,
+        ),
+        (
+            'import sys\nsys.stdout.write(\'{"continuous_score":1.0,"hidden_tests":true,'
+            '"native_tests":"true","objective_components":{"fraction":1.0},'
+            '"schema_version":"1.0.0"}\')\n',
+            GraderTerminalKind.UNAVAILABLE,
+        ),
+        (
+            'import sys\nsys.stdout.write(\'{"continuous_score":0.0,"hidden_tests":true,'
+            '"native_tests":false,"objective_components":{"fraction":0.0},'
+            '"schema_version":"1.0.0"}\')\n',
+            GraderTerminalKind.FAILED,
+        ),
+    ),
+)
+def test_grader_output_parser_rejects_ambiguous_or_invalid_documents(
+    script: str, terminal: GraderTerminalKind
+) -> None:
+    store = InMemoryArtifactStore()
+
+    result = _grade(store, _snapshot(store), script)
+
+    assert result.terminal is terminal
+    assert result.binary_passed is not True
+    if terminal is GraderTerminalKind.UNAVAILABLE:
+        assert any(
+            b"grader_malformed_output" in store.open_verified(reference)
+            for reference in result.evidence_refs
+        )
+
+
+def test_network_namespace_blocks_listener_connect_connect_ex_child_ipv6_and_dns() -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(1.0)
+    port = listener.getsockname()[1]
+    accepted: list[object] = []
+
+    def accept_once() -> None:
+        try:
+            accepted.append(listener.accept())
+        except TimeoutError:
+            return
+
+    thread = threading.Thread(target=accept_once)
+    thread.start()
+    script = (
+        "import json, socket, subprocess, sys\n"
+        f"port={port}\n"
+        "def denied(operation):\n"
+        "    try:\n"
+        "        operation()\n"
+        "    except OSError:\n"
+        "        return True\n"
+        "    return False\n"
+        "direct=denied(lambda: socket.create_connection(('127.0.0.1', port), timeout=0.2))\n"
+        "probe=socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "connect_ex=probe.connect_ex(('127.0.0.1', port)) != 0\n"
+        "probe.close()\n"
+        "child=subprocess.run([sys.executable, '-c', "
+        "'import socket,sys; sys.exit(0 if socket.socket().connect_ex((\"127.0.0.1\", '"
+        "+str(port)+')) else 1)']).returncode == 0\n"
+        "ipv6=denied(lambda: socket.create_connection(('::1', port), timeout=0.2)) "
+        "if socket.has_ipv6 else True\n"
+        "dns=denied(lambda: socket.getaddrinfo('example.invalid', port))\n"
+        "assert direct and connect_ex and child and ipv6 and dns\n"
+        "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
+        "'hidden_tests':True,'continuous_score':1.0,'objective_components':{'network':1.0}},"
+        "sort_keys=True,separators=(',',':')))\n"
+    )
+    try:
+        store = InMemoryArtifactStore()
+        result = _grade(store, _snapshot(store), script, 5.0)
+    finally:
+        thread.join()
+        listener.close()
+
+    assert result.terminal is GraderTerminalKind.PASSED
+    assert accepted == []
 
 
 def test_secret_output_blocks_without_persisting_secret_bytes() -> None:
@@ -251,9 +404,17 @@ def test_secret_output_blocks_without_persisting_secret_bytes() -> None:
 def test_timeout_and_crash_preserve_partial_raw_evidence() -> None:
     store = InMemoryArtifactStore()
     snapshot = _snapshot(store)
-    timeout = _grade(store, snapshot, "import time\nprint('started', flush=True)\ntime.sleep(2)\n")
+    timeout = _grade(
+        store,
+        snapshot,
+        "import time\nprint('started', flush=True)\ntime.sleep(10)\n",
+        timeout_seconds=2.0,
+    )
     crash = _grade(
-        store, snapshot, "print('before crash', flush=True)\nraise RuntimeError('fixture')\n"
+        store,
+        snapshot,
+        "print('before crash', flush=True)\nraise RuntimeError('fixture')\n",
+        timeout_seconds=5.0,
     )
 
     assert timeout.terminal is GraderTerminalKind.UNAVAILABLE
@@ -269,7 +430,13 @@ def test_replay_disagreement_and_flaky_favorable_run_cannot_be_substituted() -> 
     snapshot = _snapshot(store)
     passed = _grade(store, snapshot)
     failed = _grade(
-        store, snapshot, "import json\nprint(json.dumps({'tests': {'native': False}}))\n"
+        store,
+        snapshot,
+        "import json, sys\n"
+        "sys.stdout.write(json.dumps({'schema_version': '1.0.0', 'native_tests': False, "
+        "'hidden_tests': True, 'continuous_score': 0.0, "  # noqa: E501
+        "'objective_components': {'fraction': 0.0}}, "
+        "sort_keys=True, separators=(',', ':')))\n",
     )
 
     assert compare_grading_replays(passed, failed).matches is False
@@ -318,7 +485,10 @@ def test_concurrent_attempts_use_distinct_detached_snapshot_bytes() -> None:
     second = _snapshot(store, terminal={"app.py": b"answer = 3\n"})
     script = (
         "import json, pathlib, sys\n"
-        "print(json.dumps({'tests': {'isolated': pathlib.Path(sys.argv[2], 'app.py').exists()}}))\n"
+        "sys.stdout.write(json.dumps({'schema_version': '1.0.0', "
+        "'native_tests': pathlib.Path(sys.argv[2], 'app.py').exists(), 'hidden_tests': True, "
+        "'continuous_score': 1.0, 'objective_components': {'isolated': 1.0}}, "
+        "sort_keys=True, separators=(',', ':')))\n"
     )
     grader = CredentialFreeExecutableGrader(store)
     first_contract = _contract(store, first, script)
