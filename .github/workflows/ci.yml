@@ -107,6 +107,10 @@ jobs:
       - name: Install evaluator dependencies from its lockfile
         run: uv sync --locked --extra dev
 
+      - name: Install Linux grader network sandbox
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
+
       - name: Run evaluator contract, fault, and ownership tests
         run: uv run --locked pytest
   first-run-smoke:
@@ -212,6 +216,10 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: evaluation/uv.lock
+
+      - name: Install Linux grader network sandbox
+        if: runner.os != 'Windows'
+        run: sudo apt-get update && sudo apt-get install --yes bubblewrap
 
       - name: Install locked evaluator dependencies and run conformance (POSIX)
         if: runner.os != 'Windows'

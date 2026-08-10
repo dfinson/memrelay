@@ -445,20 +445,51 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
     return result
 
 
-def _network_sandbox_command(command: tuple[str, ...]) -> tuple[str, ...]:
-    """Use an OS network namespace; do not execute if this authority is unavailable."""
-    if sys.platform != "linux":
-        raise NetworkSandboxUnavailableError()
-    unshare = shutil.which("unshare")
-    if unshare is None:
-        raise NetworkSandboxUnavailableError()
-    return (unshare, "--user", "--map-root-user", "--net", "--", *command)
+def _network_sandbox_command(
+    command: tuple[str, ...], *, cwd: Path | None = None
+) -> tuple[str, ...]:
+    """Use the preflight-proven OS sandbox authority for this Linux host."""
+    kind = _network_sandbox_kind()
+    if kind == "bubblewrap":
+        assert cwd is not None
+        bubblewrap = shutil.which("bwrap")
+        if bubblewrap is None:
+            raise NetworkSandboxUnavailableError()
+        return (
+            bubblewrap,
+            "--unshare-user",
+            "--uid",
+            "0",
+            "--gid",
+            "0",
+            "--unshare-net",
+            "--ro-bind",
+            "/",
+            "/",
+            "--bind",
+            str(cwd),
+            str(cwd),
+            "--proc",
+            "/proc",
+            "--dev",
+            "/dev",
+            "--chdir",
+            str(cwd),
+            "--",
+            *command,
+        )
+    if kind == "unshare":
+        unshare = shutil.which("unshare")
+        if unshare is None:
+            raise NetworkSandboxUnavailableError()
+        return (unshare, "--user", "--map-root-user", "--net", "--", *command)
+    raise NetworkSandboxUnavailableError()
 
 
 def _run_python_in_network_sandbox(
     command: tuple[str, ...], *, cwd: Path, environment: Mapping[str, str], timeout_seconds: float
 ) -> subprocess.CompletedProcess[bytes]:
-    sandboxed = _network_sandbox_command(command)
+    sandboxed = _network_sandbox_command(command, cwd=cwd)
     try:
         return subprocess.run(
             sandboxed,
@@ -482,24 +513,69 @@ def _run_python_in_network_sandbox(
 
 def _require_network_sandbox() -> None:
     """Prove the host can create an isolated network namespace before grading begins."""
-    if not _network_sandbox_available():
+    if _network_sandbox_kind() is None:
         raise NetworkSandboxUnavailableError()
 
 
 @functools.lru_cache(maxsize=1)
-def _network_sandbox_available() -> bool:
-    try:
-        completed = subprocess.run(
-            _network_sandbox_command((sys.executable, "-c", "pass")),
-            stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as error:
-        del error
-        return False
-    return completed.returncode == 0
+def _network_sandbox_kind() -> str | None:
+    """Prefer bubblewrap because GitHub hosted Linux disallows direct unshare namespaces."""
+    if sys.platform != "linux":
+        return None
+    candidates = (
+        (
+            "bubblewrap",
+            (
+                shutil.which("bwrap"),
+                "--unshare-user",
+                "--uid",
+                "0",
+                "--gid",
+                "0",
+                "--unshare-net",
+                "--ro-bind",
+                "/",
+                "/",
+                "--proc",
+                "/proc",
+                "--dev",
+                "/dev",
+                "--",
+                sys.executable,
+                "-c",
+                "pass",
+            ),
+        ),
+        (
+            "unshare",
+            (
+                shutil.which("unshare"),
+                "--user",
+                "--map-root-user",
+                "--net",
+                "--",
+                sys.executable,
+                "-c",
+                "pass",
+            ),
+        ),
+    )
+    for kind, command in candidates:
+        if command[0] is None:
+            continue
+        try:
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if completed.returncode == 0:
+            return kind
+    return None
 
 
 def _resolve_command(
