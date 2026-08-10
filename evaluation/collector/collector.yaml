@@ -1,5 +1,16 @@
-receivers: {}
-processors: {}
-exporters: {}
+receivers:
+  otlp:
+    protocols:
+      grpc: {}
+      http: {}
+processors:
+  batch: {}
+exporters:
+  file:
+    path: ${env:MEMRELAY_EVAL_OTLP_EXPORT_PATH}
 service:
-  pipelines: {}
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file]

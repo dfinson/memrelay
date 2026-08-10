@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/telemetry-evidence-1.0.0.json",
+  "title": "Versioned Telemetry Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "spans"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "spans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "span_id", "span_class", "started_at", "ended_at", "attributes", "links",
+          "memrelay.eval.schema_version", "memrelay.eval.experiment_id",
+          "memrelay.eval.protocol_id", "memrelay.eval.run_id", "memrelay.eval.attempt_id",
+          "memrelay.eval.scenario_id", "memrelay.eval.stratum_id",
+          "memrelay.eval.history_mode", "memrelay.eval.provider",
+          "memrelay.eval.credential_domain", "memrelay.eval.cost_source",
+          "memrelay.eval.evidence_class", "memrelay.eval.exposure_state",
+          "memrelay.eval.failure_code", "memrelay.eval.environment_fingerprint_sha256"
+        ],
+        "properties": {
+          "span_id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$"},
+          "span_class": {"enum": ["control.assignment", "provisioning", "cleanup", "copilot.session", "copilot.model_request", "mcp.tool_request", "daemon.dispatch", "memory.write", "memory.retrieval", "framework.extraction", "framework.embedding", "grader.execution", "judge.adjudication", "artifact.persistence", "inspect.export", "cost.reconciliation", "evidence.reconciliation"]},
+          "started_at": {"type": "string", "pattern": "Z$"},
+          "ended_at": {"type": "string", "pattern": "Z$"},
+          "attributes": {"type": "object"},
+          "links": {"type": "array"},
+          "memrelay.eval.schema_version": {"const": "1.0.0"},
+          "memrelay.eval.experiment_id": {"type": "string", "pattern": "^exp_[a-f0-9]{32}$"},
+          "memrelay.eval.protocol_id": {"type": "string", "pattern": "^protocol_[a-f0-9]{32}$"},
+          "memrelay.eval.run_id": {"type": "string", "pattern": "^run_[a-f0-9]{32}$"},
+          "memrelay.eval.attempt_id": {"type": "string", "pattern": "^attempt_[a-f0-9]{32}$"},
+          "memrelay.eval.scenario_id": {"type": "string", "pattern": "^scenario_[a-f0-9]{32}$"},
+          "memrelay.eval.stratum_id": {"enum": ["product", "direct_engine"]},
+          "memrelay.eval.history_mode": {"enum": ["controlled", "dynamic"]},
+          "memrelay.eval.provider": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$"},
+          "memrelay.eval.credential_domain": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$"},
+          "memrelay.eval.cost_source": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$"},
+          "memrelay.eval.evidence_class": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$"},
+          "memrelay.eval.exposure_state": {"enum": ["unexposed", "exposed", "ambiguous", "unknown", "contradictory"]},
+          "memrelay.eval.failure_code": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.:-]{0,127}$"},
+          "memrelay.eval.environment_fingerprint_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    },
+    "raw_spans": {"type": "array"},
+    "reconciliation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "raw_span_ids", "canonical_span_ids", "duplicate_span_ids",
+        "missing_classes", "failure_codes", "canonical_projection_digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "raw_span_ids": {"type": "array", "items": {"type": "string"}},
+        "canonical_span_ids": {"type": "array", "items": {"type": "string"}},
+        "duplicate_span_ids": {"type": "array", "items": {"type": "string"}},
+        "missing_classes": {"type": "array", "items": {"type": "string"}},
+        "failure_codes": {"type": "array", "items": {"type": "string"}},
+        "canonical_projection_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    }
+  }
+}
