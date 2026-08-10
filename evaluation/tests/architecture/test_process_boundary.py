@@ -12,6 +12,7 @@ def test_all_authoritative_process_roles_are_explicit() -> None:
         ProcessRole.INSPECT_CONTROL,
         ProcessRole.COPILOT_WORKER,
         ProcessRole.MEMRELAY_DAEMON,
+        ProcessRole.DIRECT_ENGINE_WORKER,
         ProcessRole.MCP_CLIENT,
         ProcessRole.GRADER,
         ProcessRole.JUDGE,
