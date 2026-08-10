@@ -133,8 +133,9 @@ A context-separated automated review was run via a fresh subagent (`gpt-5.3-code
 distinct from this implementing session's model) with read-only tools, instructed to
 review the uncommitted diff against the story's ACs and architecture-compliance notes.
 It reported two blocking findings, one warning, and one info finding; this implementing
-context repaired both blocking findings (they were confirmed reproducible) and the info
-finding, and disclosed the warning as an accepted, documented residual risk rather than
+context repaired one prior blocker and the info finding, while the restore-once
+ledger-backed guard was deferred and disclosed as the non-blocking residual described
+below. It also disclosed the warning as an accepted, documented residual risk rather than
 silently dismissing it, since Hard Rule 5 forbids this implementing context from
 self-accepting its own work:
 
