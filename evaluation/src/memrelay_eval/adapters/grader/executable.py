@@ -400,12 +400,13 @@ def _parse_grader_result(data: bytes) -> dict[str, object]:
     """Accept one exact canonical frozen result and reject all output framing ambiguity."""
     try:
         text = data.decode("utf-8")
+        start = len(text) - len(text.lstrip(" \t\r\n"))
         value, end = json.JSONDecoder(object_pairs_hook=_reject_duplicate_json_keys).raw_decode(
-            text
+            text, start
         )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MalformedGraderOutputError() from error
-    if end != len(text) or not isinstance(value, dict):
+    if text[end:].strip(" \t\r\n") or not isinstance(value, dict):
         raise MalformedGraderOutputError()
     if set(value) != {
         "schema_version",
@@ -450,57 +451,74 @@ def _network_sandbox_command(
 ) -> tuple[str, ...]:
     """Use the preflight-proven OS sandbox authority for this Linux host."""
     kind = _network_sandbox_kind()
-    if kind == "bubblewrap":
+    if kind in {"bubblewrap", "sudo_bubblewrap"}:
         assert cwd is not None
         bubblewrap = shutil.which("bwrap")
         if bubblewrap is None:
             raise NetworkSandboxUnavailableError()
+        prefix = () if kind == "bubblewrap" else (shutil.which("sudo"), "-n")
+        user_namespace = ("--unshare-user",) if kind == "bubblewrap" else ()
+        if any(value is None for value in prefix):
+            raise NetworkSandboxUnavailableError()
+        sandboxed_command = _remap_sandbox_command(command, cwd)
         return (
+            *prefix,
             bubblewrap,
-            "--unshare-user",
-            "--uid",
-            "0",
-            "--gid",
-            "0",
+            "--die-with-parent",
+            "--new-session",
+            *user_namespace,
             "--unshare-net",
-            "--ro-bind",
-            "/",
-            "/",
-            "--bind",
-            str(cwd),
-            str(cwd),
+            "--unshare-pid",
             "--proc",
             "/proc",
             "--dev",
             "/dev",
+            "--tmpfs",
+            "/tmp",
+            "--dir",
+            "/runtime",
+            "--dir",
+            "/inputs",
+            "--ro-bind",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/bin",
+            "/bin",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--ro-bind",
+            str(_python_runtime_root()),
+            "/runtime",
+            "--ro-bind",
+            str(cwd.parent),
+            "/inputs",
+            "--dir",
+            "/work",
+            "--setenv",
+            "TMPDIR",
+            "/tmp",
+            "--setenv",
+            "PYTHONDONTWRITEBYTECODE",
+            "1",
+            "--uid",
+            "65534",
+            "--gid",
+            "65534",
             "--chdir",
-            str(cwd),
+            f"/inputs/{cwd.name}",
             "--",
-            *command,
+            *sandboxed_command,
         )
     if kind == "unshare":
         unshare = shutil.which("unshare")
         if unshare is None:
             raise NetworkSandboxUnavailableError()
         return (unshare, "--user", "--map-root-user", "--net", "--", *command)
-    if kind == "sudo_unshare":
-        sudo = shutil.which("sudo")
-        unshare = shutil.which("unshare")
-        if sudo is None or unshare is None:
-            raise NetworkSandboxUnavailableError()
-        return (
-            sudo,
-            "-n",
-            unshare,
-            "--net",
-            "--",
-            sudo,
-            "-n",
-            "-u",
-            _current_username(),
-            "--",
-            *command,
-        )
     raise NetworkSandboxUnavailableError()
 
 
@@ -537,7 +555,10 @@ def _require_network_sandbox() -> None:
 
 @functools.lru_cache(maxsize=1)
 def _network_sandbox_kind() -> str | None:
-    """Prefer bubblewrap because GitHub hosted Linux disallows direct unshare namespaces."""
+    """Prefer a confined bubblewrap root.
+
+    GitHub permits its sudo launcher after user-namespace failure.
+    """
     if sys.platform != "linux":
         return None
     candidates = (
@@ -565,12 +586,12 @@ def _network_sandbox_kind() -> str | None:
             ),
         ),
         (
-            "unshare",
+            "sudo_bubblewrap",
             (
-                shutil.which("unshare"),
-                "--user",
-                "--map-root-user",
-                "--net",
+                shutil.which("sudo"),
+                "-n",
+                shutil.which("bwrap"),
+                "--unshare-net",
                 "--",
                 sys.executable,
                 "-c",
@@ -578,17 +599,12 @@ def _network_sandbox_kind() -> str | None:
             ),
         ),
         (
-            "sudo_unshare",
+            "unshare",
             (
-                shutil.which("sudo"),
-                "-n",
                 shutil.which("unshare"),
+                "--user",
+                "--map-root-user",
                 "--net",
-                "--",
-                shutil.which("sudo"),
-                "-n",
-                "-u",
-                _current_username(),
                 "--",
                 sys.executable,
                 "-c",
@@ -614,10 +630,28 @@ def _network_sandbox_kind() -> str | None:
     return None
 
 
-def _current_username() -> str:
-    import pwd
+def _python_runtime_root() -> Path:
+    return Path(sys.executable).resolve().parent.parent
 
-    return pwd.getpwuid(os.getuid()).pw_name
+
+def _remap_sandbox_command(command: tuple[str, ...], cwd: Path) -> tuple[str, ...]:
+    runtime_root = _python_runtime_root()
+    input_root = cwd.parent.resolve()
+    remapped: list[str] = []
+    for value in command:
+        path = Path(value)
+        if path.is_absolute():
+            try:
+                remapped.append(str(Path("/runtime") / path.resolve().relative_to(runtime_root)))
+                continue
+            except ValueError:
+                try:
+                    remapped.append(str(Path("/inputs") / path.resolve().relative_to(input_root)))
+                    continue
+                except ValueError:
+                    pass
+        remapped.append(value)
+    return tuple(remapped)
 
 
 def _resolve_command(
@@ -629,14 +663,18 @@ def _resolve_command(
     dependencies: Path,
 ) -> tuple[str, ...]:
     replacements = {
-        "{python}": sys.executable,
+        "{python}": str(Path(sys.executable).resolve()),
         "{snapshot}": str(snapshot_root),
         "{native_tests}": str(native_tests),
         "{hidden_tests}": str(hidden_tests),
         "{dependencies}": str(dependencies),
     }
     result = tuple(replacements.get(value, value) for value in command)
-    if result[0] != sys.executable or len(result) < 2 or result[1].startswith("-"):
+    if (
+        Path(result[0]).resolve() != Path(sys.executable).resolve()
+        or len(result) < 2
+        or result[1].startswith("-")
+    ):
         raise ValueError("grader command must execute a pinned test script")
     return result
 

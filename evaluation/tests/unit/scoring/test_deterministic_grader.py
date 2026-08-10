@@ -339,7 +339,23 @@ def test_grader_output_parser_rejects_ambiguous_or_invalid_documents(
         )
 
 
-def test_network_namespace_blocks_listener_connect_connect_ex_child_ipv6_and_dns() -> None:
+@pytest.mark.parametrize("padding", ("", " ", "\t", "\n", " \t\r\n"))
+def test_grader_output_parser_accepts_exact_json_with_only_outer_whitespace(padding: str) -> None:
+    store = InMemoryArtifactStore()
+    script = (
+        "import json\n"
+        "print(json.dumps({'schema_version':'1.0.0','native_tests':True,'hidden_tests':True,"
+        "'continuous_score':1.0,'objective_components':{'fraction':1.0}},"
+        "sort_keys=True,separators=(',',':')), end='')\n"
+    )
+    if padding:
+        script = f"import sys\nsys.stdout.write({padding!r})\n" + script
+        script += f"print({padding!r}, end='')\n"
+
+    assert _grade(store, _snapshot(store), script).terminal is GraderTerminalKind.PASSED
+
+
+def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> None:
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen()
@@ -355,9 +371,12 @@ def test_network_namespace_blocks_listener_connect_connect_ex_child_ipv6_and_dns
 
     thread = threading.Thread(target=accept_once)
     thread.start()
+    host_sentinel = tmp_path / "host-sentinel.txt"
+    host_sentinel.write_text("must not be readable", encoding="utf-8")
     script = (
-        "import json, socket, subprocess, sys\n"
+        "import json, os, socket, subprocess, sys\n"
         f"port={port}\n"
+        f"host_sentinel={str(host_sentinel)!r}\n"
         "def denied(operation):\n"
         "    try:\n"
         "        operation()\n"
@@ -374,7 +393,13 @@ def test_network_namespace_blocks_listener_connect_connect_ex_child_ipv6_and_dns
         "ipv6=denied(lambda: socket.create_connection(('::1', port), timeout=0.2)) "
         "if socket.has_ipv6 else True\n"
         "dns=denied(lambda: socket.getaddrinfo('example.invalid', port))\n"
-        "assert direct and connect_ex and child and ipv6 and dns\n"
+        "sudo=subprocess.run(['sudo','-n','true'], stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL).returncode != 0\n"
+        "nsenter=subprocess.run(['nsenter','--net=/proc/1/ns/net','true'], "
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0\n"
+        "host_file=not os.path.exists(host_sentinel)\n"
+        "assert direct and connect_ex and child and ipv6 and dns and sudo and nsenter and "
+        "host_file\n"
         "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
         "'hidden_tests':True,'continuous_score':1.0,'objective_components':{'network':1.0}},"
         "sort_keys=True,separators=(',',':')))\n"
