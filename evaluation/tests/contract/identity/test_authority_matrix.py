@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
 import jsonschema
@@ -15,6 +17,7 @@ from memrelay_eval.domain.identity import (
     local_identity,
     source_provider_to_canonical,
 )
+from memrelay_eval.domain.ids import AttemptId, CostEntryId
 from memrelay_eval.evidence.costs import CostRecord, IdentityEvidence, validate_identity_evidence
 
 
@@ -58,6 +61,15 @@ def test_cost_and_telemetry_evidence_preserve_source_disagreement_without_substi
         )
     assert conflict.value.code == "authority_conflict"
     cost = CostRecord(
-        "cost_opaque", "attempt_" + "1" * 32, local_identity("local_cpu"), "usage_opaque"
+        CostEntryId.new(),
+        AttemptId.new(),
+        local_identity("local_cpu"),
+        "native_local_counter",
+        "usage_opaque",
+        sha256(b"usage").hexdigest(),
+        1,
+        "cpu_second",
+        "metered",
+        datetime(2026, 8, 10, tzinfo=UTC),
     )
     assert cost.identity.logical_ledger == "local_resources"

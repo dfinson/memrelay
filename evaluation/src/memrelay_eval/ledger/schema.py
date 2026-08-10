@@ -236,6 +236,33 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        version=5,
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS cost_ledger_entries (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id TEXT NOT NULL UNIQUE REFERENCES intent_receipts(intent_id),
+                cost_entry_id TEXT NOT NULL UNIQUE,
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                logical_ledger TEXT NOT NULL CHECK (
+                    logical_ledger IN (
+                        'copilot_subscription', 'framework_openai', 'local_resources'
+                    )
+                ),
+                artifact_id TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL
+            )
+            """,
+            (
+                "CREATE INDEX IF NOT EXISTS cost_ledger_entries_by_attempt "
+                "ON cost_ledger_entries(attempt_id, logical_ledger, sequence)"
+            ),
+        ),
+    ),
 )
 
 

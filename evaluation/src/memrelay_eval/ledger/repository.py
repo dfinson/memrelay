@@ -25,6 +25,7 @@ from memrelay_eval.domain.entities import (
     ArtifactRef,
     Attempt,
     AttemptTerminal,
+    CostLedgerLink,
     InclusionDecision,
     InternalRetryRecord,
     RetryAuthorization,
@@ -40,6 +41,7 @@ from memrelay_eval.domain.ids import (
     ArtifactId,
     AssignmentId,
     AttemptId,
+    CostEntryId,
     ExperimentId,
     IntentId,
     ProtocolId,
@@ -49,6 +51,7 @@ from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
     AuthorityConflictIntent,
+    CostLedgerIntent,
     CreateAttemptIntent,
     CreateExperimentIntent,
     CreateRunIntent,
@@ -361,6 +364,36 @@ class SqliteLedger:
                 raise
             return self._persist_rejection(intent, digest, rejection_reason, occurred_at)
 
+    def cost_ledger_entries_for(self, attempt_id: AttemptId) -> tuple[CostLedgerLink, ...]:
+        """Return immutable artifact links grouped only by their recorded logical ledger."""
+
+        self._ensure_open()
+        with self.__lock:
+            rows = self.__connection.execute(
+                """
+                SELECT cost_entry_id, run_id, attempt_id, logical_ledger,
+                       artifact_id, artifact_sha256, size_bytes
+                FROM cost_ledger_entries
+                WHERE attempt_id = ?
+                ORDER BY sequence
+                """,
+                (str(attempt_id),),
+            ).fetchall()
+        return tuple(
+            CostLedgerLink(
+                CostEntryId(row["cost_entry_id"]),
+                RunId(row["run_id"]),
+                AttemptId(row["attempt_id"]),
+                row["logical_ledger"],
+                ArtifactRef(
+                    ArtifactId(row["artifact_id"]),
+                    row["artifact_sha256"],
+                    row["size_bytes"],
+                ),
+            )
+            for row in rows
+        )
+
     def _persist_rejection(
         self, intent: LedgerIntent, digest: str, reason_code: str, occurred_at: str
     ) -> IntentRejection:
@@ -517,6 +550,33 @@ class SqliteLedger:
                     str(intent.run_id),
                     str(intent.attempt_id),
                     ",".join(intent.conflict_fields),
+                    occurred_at,
+                ),
+            )
+            return
+        if isinstance(intent, CostLedgerIntent):
+            self._require_attempt_for_run(intent.attempt_id, intent.run_id)
+            self._require_source_attempt_for_run(intent.metadata.source_attempt_id, intent.run_id)
+            if intent.metadata.source_attempt_id != intent.attempt_id:
+                raise _RejectIntent("cost_attempt_source_mismatch")
+            if intent.artifact_ref not in intent.metadata.evidence_refs:
+                raise _RejectIntent("cost_artifact_not_evidence")
+            self.__connection.execute(
+                """
+                INSERT INTO cost_ledger_entries (
+                    intent_id, cost_entry_id, run_id, attempt_id, logical_ledger,
+                    artifact_id, artifact_sha256, size_bytes, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(intent.intent_id),
+                    str(intent.cost_entry_id),
+                    str(intent.run_id),
+                    str(intent.attempt_id),
+                    intent.logical_ledger,
+                    str(intent.artifact_ref.artifact_id),
+                    intent.artifact_ref.sha256,
+                    intent.artifact_ref.size_bytes,
                     occurred_at,
                 ),
             )
@@ -820,6 +880,17 @@ class SqliteLedger:
             )
         elif isinstance(intent, InclusionDecisionIntent):
             valid = isinstance(intent.decision, InclusionDecision)
+        elif isinstance(intent, AuthorityConflictIntent):
+            valid = isinstance(intent.run_id, RunId) and isinstance(intent.attempt_id, AttemptId)
+        elif isinstance(intent, CostLedgerIntent):
+            valid = (
+                isinstance(intent.cost_entry_id, CostEntryId)
+                and isinstance(intent.run_id, RunId)
+                and isinstance(intent.attempt_id, AttemptId)
+                and intent.logical_ledger
+                in {"copilot_subscription", "framework_openai", "local_resources"}
+                and isinstance(intent.artifact_ref, ArtifactRef)
+            )
         else:
             valid = False
         if not valid:

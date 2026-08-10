@@ -115,3 +115,4 @@ class LedgerIntentKind(StrEnum):
     RETRY_LINEAGE = "retry_lineage"
     INCLUSION_DECISION = "inclusion_decision"
     AUTHORITY_CONFLICT = "authority_conflict"
+    COST_LEDGER = "cost_ledger"

@@ -12,6 +12,7 @@ from memrelay_eval.domain.entities import (
     ArtifactManifest,
     ArtifactRef,
     AttemptTerminal,
+    CostLedgerLink,
     DynamicSequenceCleanup,
     DynamicSequenceTerminal,
     ExposureRecord,
@@ -32,6 +33,7 @@ from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
     AuthorityConflictIntent,
+    CostLedgerIntent,
     CreateAttemptIntent,
     CreateExperimentIntent,
     CreateRunIntent,
@@ -128,6 +130,7 @@ class InMemoryLedger:
         self._intent_results: dict[IntentId, IntentAck | IntentRejection] = {}
         self._transition_digests: dict[RunId, str | None] = {}
         self.authority_conflicts: list[AuthorityConflictIntent] = []
+        self.cost_ledger_intents: list[CostLedgerIntent] = []
 
     def append_transition(self, transition: RunTransition) -> None:
         history = self.history(transition.run_id)
@@ -290,6 +293,17 @@ class InMemoryLedger:
                 return self.reject_intent(intent, "unknown_attempt")
             self.authority_conflicts.append(intent)
             return self._ack(intent)
+        if isinstance(intent, CostLedgerIntent):
+            if self._attempts.get(intent.attempt_id) != intent.run_id:
+                return self.reject_intent(intent, "unknown_attempt")
+            if intent.metadata.source_attempt_id != intent.attempt_id:
+                return self.reject_intent(intent, "cost_attempt_source_mismatch")
+            if intent.artifact_ref not in intent.metadata.evidence_refs:
+                return self.reject_intent(intent, "cost_artifact_not_evidence")
+            if any(item.cost_entry_id == intent.cost_entry_id for item in self.cost_ledger_intents):
+                return self.reject_intent(intent, "duplicate_cost_entry")
+            self.cost_ledger_intents.append(intent)
+            return self._ack(intent)
         return self.reject_intent(intent, "unknown_intent_kind")
 
     def reject_intent(self, intent: LedgerIntentType, reason_code: str) -> IntentRejection:
@@ -433,6 +447,19 @@ class InMemoryLedger:
             return self.reject_intent(intent, "unpaid_inclusion_forbidden")
         self._inclusions.append(decision)
         return self._ack(intent)
+
+    def cost_ledger_entries_for(self, attempt_id: AttemptId) -> tuple[CostLedgerLink, ...]:
+        return tuple(
+            CostLedgerLink(
+                item.cost_entry_id,
+                item.run_id,
+                item.attempt_id,
+                item.logical_ledger,
+                item.artifact_ref,
+            )
+            for item in self.cost_ledger_intents
+            if item.attempt_id == attempt_id
+        )
 
     def history(self, run_id: RunId) -> tuple[RunTransition, ...]:
         return tuple(item for item in self._transitions if item.run_id == run_id)
