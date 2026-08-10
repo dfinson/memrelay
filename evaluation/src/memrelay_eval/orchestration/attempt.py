@@ -11,10 +11,11 @@ from memrelay_eval.domain.entities import (
     TelemetryObservation,
 )
 from memrelay_eval.domain.errors import (
+    AttemptExecutionClaimDeniedError,
     AttemptTerminalAlreadyRecordedError,
     InternalRetryLimitExceededError,
 )
-from memrelay_eval.domain.ids import AttemptId
+from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType
 from memrelay_eval.domain.ports import LedgerPort, TelemetryPort
 from memrelay_eval.domain.states import InternalRetrySubsystem
@@ -42,6 +43,14 @@ class AttemptTerminalRecorder:
 
     def terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None:
         return self._terminals.get(attempt_id) or self._ledger.attempt_terminal_for(attempt_id)
+
+    def claim_execution(self, attempt_id: AttemptId, run_id: object) -> None:
+        """Reserve an open attempt before any scheduler or task side effect."""
+
+        if not isinstance(run_id, RunId) or not self._ledger.claim_attempt_execution(
+            attempt_id, run_id
+        ):
+            raise AttemptExecutionClaimDeniedError(AttemptExecutionClaimDeniedError.code)
 
 
 class InternalRetryRecorder:

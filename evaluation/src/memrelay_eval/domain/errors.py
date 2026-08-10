@@ -62,6 +62,23 @@ class EnvironmentStratumChangedError(DomainError):
     code = "environment_stratum_changed"
 
 
+class AgentParityMismatchError(DomainError):
+    """A paired attempt differs outside its declared intervention delta."""
+
+    def __init__(self, code: str, fields: tuple[str, ...]) -> None:
+        self.code = code
+        self.fields = fields
+        super().__init__(code.replace("_", " "))
+
+
+class ProtocolDeltaAuthorityError(DomainError):
+    """A sealed protocol does not contain a usable opaque delta commitment."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
 class IneligibleEnrollmentError(DomainError):
     """A Story 1.4 disposition does not permit enrollment."""
 
@@ -90,6 +107,12 @@ class AttemptTerminalAlreadyRecordedError(DomainError):
     """An attempt may receive only one immutable terminal record."""
 
     code = "attempt_terminal_already_recorded"
+
+
+class AttemptExecutionClaimDeniedError(DomainError):
+    """An attempt is already terminal or owned by another execution claimant."""
+
+    code = "attempt_execution_claim_denied"
 
 
 class RetryDeniedError(DomainError):

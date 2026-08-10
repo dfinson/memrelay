@@ -205,6 +205,18 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        version=3,
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS attempt_execution_claims (
+                attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                claimed_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 )
 
 

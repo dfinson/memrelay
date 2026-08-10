@@ -110,6 +110,8 @@ class InMemoryLedger:
         self._dynamic_sequence_cleanup: list[DynamicSequenceCleanup] = []
         self._exposure_records: list[ExposureRecord] = []
         self._exposure_lock = Lock()
+        self._attempt_execution_claims: set[AttemptId] = set()
+        self._attempt_execution_claim_lock = Lock()
         self._internal_retries: list[InternalRetryRecord] = []
         self._retry_authorizations: list[RetryAuthorization] = []
         self._artifact_links: list[ArtifactLink] = []
@@ -133,15 +135,29 @@ class InMemoryLedger:
         self._transitions.append(transition)
 
     def append_attempt_terminal(self, terminal: AttemptTerminal) -> None:
-        if any(item.attempt_id == terminal.attempt_id for item in self._attempt_terminals):
-            raise AttemptTerminalAlreadyRecordedError(AttemptTerminalAlreadyRecordedError.code)
-        self._attempt_terminals.append(terminal)
+        with self._attempt_execution_claim_lock:
+            if terminal.attempt_id in self._terminals or any(
+                item.attempt_id == terminal.attempt_id for item in self._attempt_terminals
+            ):
+                raise AttemptTerminalAlreadyRecordedError(AttemptTerminalAlreadyRecordedError.code)
+            self._attempt_terminals.append(terminal)
+            self._terminals[terminal.attempt_id] = terminal
 
     def attempt_terminal_for(self, attempt_id: AttemptId) -> AttemptTerminal | None:
-        return next(
-            (item for item in self._attempt_terminals if item.attempt_id == attempt_id),
-            None,
-        )
+        return self._terminals.get(attempt_id)
+
+    def claim_attempt_execution(self, attempt_id: AttemptId, run_id: RunId) -> bool:
+        """Atomically reserve one nonterminal attempt for its only execution."""
+
+        with self._attempt_execution_claim_lock:
+            if (
+                attempt_id in self._attempt_execution_claims
+                or attempt_id in self._terminals
+                or any(terminal.attempt_id == attempt_id for terminal in self._attempt_terminals)
+            ):
+                return False
+            self._attempt_execution_claims.add(attempt_id)
+            return True
 
     def append_dynamic_sequence_terminal(self, terminal: DynamicSequenceTerminal) -> None:
         if any(
@@ -343,32 +359,35 @@ class InMemoryLedger:
         return result
 
     def _submit_terminal(self, intent: AttemptTerminalIntent) -> IntentAck | IntentRejection:
-        if self._attempts.get(intent.attempt_id) != intent.run_id:
-            return self.reject_intent(intent, "unknown_attempt")
-        if self._attempts.get(intent.metadata.source_attempt_id) != intent.run_id:
-            return self.reject_intent(intent, "invalid_source_attempt")
-        if intent.attempt_id in self._terminals:
-            return self.reject_intent(intent, "attempt_already_terminal")
-        if intent.classification is AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE and (
-            intent.metadata.source_attempt_id != intent.attempt_id
-            or intent.pre_exposure_evidence is None
-            or intent.pre_exposure_evidence not in intent.metadata.evidence_refs
-        ):
-            return self.reject_intent(intent, "unverified_pre_exposure_failure")
-        if (
-            intent.classification is not AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE
-            and intent.pre_exposure_evidence is not None
-        ):
-            return self.reject_intent(intent, "unexpected_pre_exposure_evidence")
-        self._terminals[intent.attempt_id] = AttemptTerminal(
-            intent.attempt_id,
-            intent.run_id,
-            intent.classification,
-            intent.metadata.occurred_at,
-            intent.metadata.reason_code,
-            intent.metadata.evidence_refs,
-        )
-        return self._ack(intent)
+        with self._attempt_execution_claim_lock:
+            if self._attempts.get(intent.attempt_id) != intent.run_id:
+                return self.reject_intent(intent, "unknown_attempt")
+            if self._attempts.get(intent.metadata.source_attempt_id) != intent.run_id:
+                return self.reject_intent(intent, "invalid_source_attempt")
+            if intent.attempt_id in self._terminals:
+                return self.reject_intent(intent, "attempt_already_terminal")
+            if intent.classification is AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE and (
+                intent.metadata.source_attempt_id != intent.attempt_id
+                or intent.pre_exposure_evidence is None
+                or intent.pre_exposure_evidence not in intent.metadata.evidence_refs
+            ):
+                return self.reject_intent(intent, "unverified_pre_exposure_failure")
+            if (
+                intent.classification is not AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE
+                and intent.pre_exposure_evidence is not None
+            ):
+                return self.reject_intent(intent, "unexpected_pre_exposure_evidence")
+            terminal = AttemptTerminal(
+                intent.attempt_id,
+                intent.run_id,
+                intent.classification,
+                intent.metadata.occurred_at,
+                intent.metadata.reason_code,
+                intent.metadata.evidence_refs,
+            )
+            self._terminals[intent.attempt_id] = terminal
+            self._attempt_terminals.append(terminal)
+            return self._ack(intent)
 
     def _submit_artifact_link(self, intent: ArtifactLinkIntent) -> IntentAck | IntentRejection:
         link = intent.link

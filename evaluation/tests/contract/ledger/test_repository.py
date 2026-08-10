@@ -289,7 +289,7 @@ def test_sqlite_ledger_records_normalized_append_only_lifecycle_and_refs(tmp_pat
     ]
     assert ledger.sqlite_settings() == {"journal_mode": "wal", "foreign_keys": True}
     assert ledger.integrity_check() == "ok"
-    assert ledger.schema_version == 2
+    assert ledger.schema_version == 3
     assert ledger.migration_journal == tuple(
         (migration.version, migration.digest) for migration in MIGRATIONS
     )
@@ -305,6 +305,34 @@ def test_only_one_control_connection_can_own_a_ledger_path(tmp_path: object) -> 
     first.close()
     reopened = SqliteLedger.open_control(path)
     reopened.close()
+
+
+def test_attempt_execution_claim_is_atomic_and_terminal_attempts_cannot_replay(
+    tmp_path: object,
+) -> None:
+    ledger = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    _, run_id, attempt_id = seed(ledger)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        claims = tuple(
+            executor.map(
+                lambda _: ledger.claim_attempt_execution(attempt_id, run_id),
+                range(2),
+            )
+        )
+
+    assert claims.count(True) == 1
+    ledger.append_attempt_terminal(
+        AttemptTerminal(
+            attempt_id,
+            run_id,
+            AttemptTerminalKind.SUCCEEDED,
+            NOW,
+            "completed",
+        )
+    )
+    assert ledger.claim_attempt_execution(attempt_id, run_id) is False
+    ledger.close()
 
 
 def test_control_ownership_is_exclusive_across_processes_and_released_on_close(
