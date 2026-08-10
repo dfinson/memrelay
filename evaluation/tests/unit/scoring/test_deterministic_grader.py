@@ -621,9 +621,9 @@ def test_sandbox_diagnostic_matrix_is_exact_and_value_free(
     result_document = json.loads(store.open_verified(result.result_artifact))
     assert result_document["snapshot_sha256"] == snapshot.canonical_sha256
     assert result_document["contract_sha256"] == canonical_digest(contract.to_record())
-    assert set(
-        reference.sha256 for reference in grader._input_evidence(snapshot, contract)
-    ).issubset(result_document["evidence_sha256"])
+    assert {reference.sha256 for reference in grader._input_evidence(snapshot, contract)}.issubset(
+        result_document["evidence_sha256"]
+    )
 
 
 def test_replay_disagreement_and_flaky_favorable_run_cannot_be_substituted() -> None:
