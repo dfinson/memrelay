@@ -101,6 +101,8 @@ def test_direct_sdk_session_preserves_locked_controls_and_native_evidence() -> N
     assert record.event_references == ("event-1",)
     assert record.patch_references == ("patch-1",)
     assert record.usage["total_tokens"] == 9
+    assert record.raw_event_payload is not None
+    assert record.raw_event_payload["event_references"] == ["event-1"]
 
 
 @pytest.mark.parametrize(

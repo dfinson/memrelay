@@ -84,6 +84,7 @@ class NativeTerminalRecord:
     usage: Mapping[str, int | float]
     failure_code: str | None = None
     corroborates_inspect: bool = True
+    raw_event_payload: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.state not in {"succeeded", "failed", "cancelled", "timed_out"}:
@@ -102,3 +103,9 @@ class NativeTerminalRecord:
         object.__setattr__(self, "event_references", tuple(self.event_references))
         object.__setattr__(self, "patch_references", tuple(self.patch_references))
         object.__setattr__(self, "usage", MappingProxyType(dict(self.usage)))
+        if self.raw_event_payload is not None:
+            object.__setattr__(
+                self,
+                "raw_event_payload",
+                MappingProxyType(dict(self.raw_event_payload)),
+            )

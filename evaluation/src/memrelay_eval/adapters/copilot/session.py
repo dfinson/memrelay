@@ -306,6 +306,7 @@ def _terminal_record(event: object) -> NativeTerminalRecord:
         patch_references,
         usage,
         failure_code,
+        raw_event_payload=dict(data),
     )
 
 
