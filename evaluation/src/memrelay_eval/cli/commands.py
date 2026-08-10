@@ -193,3 +193,53 @@ def _split_credential_reference(value: str) -> tuple[str, str]:
     if not separator or not variable or not process:
         raise InvalidConfigurationError()
     return variable, process
+
+
+def plan_offline_command(args: Namespace) -> int:
+    """Run the deterministic offline catalog-to-planned-run dry run."""
+    from memrelay_eval.orchestration.planning import (
+        plan_offline,
+        plan_offline_to_command_manifest,
+    )
+
+    catalog_path = Path(args.catalog)
+    output_dir = Path(args.output_dir)
+    manifest_path = Path(args.manifest)
+    lock_path = Path(args.lock) if args.lock else None
+    prior_lock_path = (
+        _optional_path(args.prior_lock) if hasattr(args, "prior_lock") and args.prior_lock else None
+    )
+    runtime_lock_path = (
+        _optional_path(args.runtime_lock)
+        if hasattr(args, "runtime_lock") and args.runtime_lock
+        else None
+    )
+
+    try:
+        result = plan_offline(
+            catalog_path=catalog_path,
+            output_dir=output_dir,
+            manifest_path=manifest_path,
+            lock_path=lock_path,
+            prior_lock=prior_lock_path,
+            runtime_lock=runtime_lock_path,
+        )
+    except KeyboardInterrupt:
+        from memrelay_eval.orchestration.planning import (
+            PlanningResult,
+        )
+        from memrelay_eval.orchestration.planning import (
+            plan_offline_to_command_manifest as to_manifest,
+        )
+
+        result_interrupted = PlanningResult(
+            terminal_status="interrupted",
+            exit_code=130,
+            error_code="keyboard_interrupt",
+        )
+        print(to_manifest(result_interrupted).decode("utf-8"))
+        return 130
+
+    command_manifest = plan_offline_to_command_manifest(result)
+    print(command_manifest.decode("utf-8"))
+    return result.exit_code

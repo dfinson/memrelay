@@ -4,7 +4,7 @@ baseline_commit: dd225bc41c6b90e6afb0199bb4d5144b71922c38
 
 # Story 1.6: Conceal Assignment and Record Exposure
 
-Status: review
+Status: done
 
 ## Story
 

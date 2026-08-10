@@ -54,21 +54,21 @@ development_status:
   1-3-compile-canonical-tasks-and-catalog-locks: done
   1-4-govern-fixtures-traceability-and-task-eligibility: done
   1-5-freeze-effective-configuration-and-enrollment-inputs: done
-  1-6-conceal-assignment-and-record-exposure: review
+  1-6-conceal-assignment-and-record-exposure: done
   1-7-enforce-attempt-terminal-and-retry-policy: done
-  1-8-produce-an-offline-catalog-to-manifest-dry-run: ready-for-dev
+  1-8-produce-an-offline-catalog-to-manifest-dry-run: review
   epic-1-retrospective: optional
 
   epic-2: in-progress
   2-1-lock-the-copilot-runtime-and-qualified-models: done
   2-2-provision-isolated-workspace-providers: done
   2-3-launch-disposable-credential-isolated-processes: done
-  2-4-execute-copilot-through-inspect-authority: review
+  2-4-execute-copilot-through-inspect-authority: done
   2-5-verify-agent-and-environment-parity: ready-for-dev
   2-6-run-the-shipped-daemon-and-mcp-product-stratum: ready-for-dev
   2-7-run-the-direct-engine-upper-bound-stratum: ready-for-dev
   2-8-restore-controlled-immutable-histories: ready-for-dev
-  2-9-execute-dynamic-histories-and-protocol-defined-arms: review
+  2-9-execute-dynamic-histories-and-protocol-defined-arms: done
   2-10-preserve-native-evidence-and-scan-secret-boundaries: ready-for-dev
   epic-2-retrospective: optional
 
