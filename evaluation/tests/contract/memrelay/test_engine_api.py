@@ -8,6 +8,7 @@ from memrelay_eval.adapters.fakes import InMemoryArtifactStore, InMemoryLedger, 
 from memrelay_eval.adapters.memrelay.engine import (
     DirectEngineAdapter,
     DirectEngineAttempt,
+    UnpaidEngineRuntime,
 )
 from memrelay_eval.domain.engine import (
     DirectEngineIsolation,
@@ -32,6 +33,8 @@ from memrelay_eval.orchestration.control import DirectEngineGraphClaimRegistry
 
 
 class ApiSpy:
+    provenance = "unpaid_conformance"
+    eligible_for_paid_or_study = False
     calls: list[tuple[str, object]] = []
     instance: ApiSpy | None = None
     graph_path: str = ""
@@ -142,8 +145,7 @@ def test_direct_engine_calls_only_public_async_api_and_converts_plain_dicts(
         ledger,
         InMemoryTelemetry(),
         DirectEngineGraphClaimRegistry(),
-        engine_type=ApiSpy,
-        config_builder=lambda value: sentinel_config,
+        unpaid_runtime=UnpaidEngineRuntime(ApiSpy, lambda value: sentinel_config),
     )
 
     evidence = asyncio.run(adapter.execute(attempt))

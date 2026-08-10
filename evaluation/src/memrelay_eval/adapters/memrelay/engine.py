@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from hashlib import sha256
 from importlib import import_module
 from pathlib import Path
 from typing import Protocol
@@ -77,6 +78,26 @@ class LiveUsageMeter(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class UnpaidEngineRuntime:
+    """Explicit fake-only engine capability for deterministic unpaid execution."""
+
+    engine_type: MemoryEngineType
+    config_builder: Callable[[DirectEngineAttempt], object]
+    provenance: str = "unpaid_conformance"
+    eligible_for_paid_or_study: bool = False
+
+    def __post_init__(self) -> None:
+        if (
+            self.provenance != "unpaid_conformance"
+            or self.eligible_for_paid_or_study
+            or getattr(self.engine_type, "provenance", None) != "unpaid_conformance"
+            or getattr(self.engine_type, "eligible_for_paid_or_study", None) is not False
+            or self.config_builder is _build_memrelay_config
+        ):
+            raise DirectEngineBoundaryError("unpaid_engine_capability_invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class DirectEngineAttempt:
     attempt_id: AttemptId
     run_id: RunId
@@ -141,16 +162,14 @@ class DirectEngineAdapter:
         telemetry: TelemetryPort,
         graph_registry: object,
         *,
-        engine_type: MemoryEngineType | None = None,
-        config_builder: Callable[[DirectEngineAttempt], object] | None = None,
+        unpaid_runtime: UnpaidEngineRuntime | None = None,
         live_usage_meter: LiveUsageMeter | None = None,
     ) -> None:
         self._store = store
         self._ledger = ledger
         self._telemetry = telemetry
         self._graphs = graph_registry
-        self._engine_type = engine_type
-        self._config_builder = config_builder
+        self._unpaid_runtime = unpaid_runtime
         self._live_usage_meter = live_usage_meter
 
     async def execute(self, attempt: DirectEngineAttempt) -> DirectEngineEvidence:
@@ -225,29 +244,25 @@ class DirectEngineAdapter:
         rendered_search: str | None = None
         failure: BaseException | None = None
         try:
-            config = (self._config_builder or _build_memrelay_config)(attempt)
-            engine_class = self._engine_type or _load_memory_engine()
-            engine = await self._invoke(
+            engine_class, config = self._execution_dependencies(attempt)
+            engine_value, construction_artifact = await self._invoke(
                 attempt,
                 "construction",
                 lambda: engine_class.from_config(config),
                 deadline,
-            )
-            construction_artifact = self._event(
-                attempt,
-                "construction",
-                "succeeded",
                 artifacts,
-                {"framework_configuration_sha256": attempt.framework.digest},
             )
+            engine = engine_value
             self._record_exposure(attempt, construction_artifact)
-            health_external = await self._invoke(attempt, "health", engine.health, deadline)
+            health_external, _ = await self._invoke(
+                attempt, "health", engine.health, deadline, artifacts
+            )
             health = EngineExternalRecord.from_external(
                 "health", _conceal_health(health_external, attempt.isolation)
             )
             self._record(attempt, "engine_health", health.to_document(), artifacts)
             if attempt.note_content is not None:
-                note_result = await self._invoke(
+                note_value, _ = await self._invoke(
                     attempt,
                     "note",
                     lambda: engine.note(
@@ -257,30 +272,27 @@ class DirectEngineAdapter:
                         attempt.note_source,
                     ),
                     deadline,
+                    artifacts,
                 )
+                note_result = note_value
                 if not isinstance(note_result, str):
                     raise DirectEngineBoundaryError("engine_note_result_invalid")
-                self._event(
-                    attempt,
-                    "note",
-                    "succeeded",
-                    artifacts,
-                    {"result": note_result},
-                )
             if attempt.search_query is not None:
+                search_external, _ = await self._invoke(
+                    attempt,
+                    "search",
+                    lambda: engine.search(
+                        attempt.search_query,
+                        attempt.namespace,
+                        attempt.search_prefer_repo,
+                        prefer_agent=attempt.search_prefer_agent,
+                    ),
+                    deadline,
+                    artifacts,
+                )
                 search = EngineExternalRecord.from_external(
                     "search",
-                    await self._invoke(
-                        attempt,
-                        "search",
-                        lambda: engine.search(
-                            attempt.search_query,
-                            attempt.namespace,
-                            attempt.search_prefer_repo,
-                            prefer_agent=attempt.search_prefer_agent,
-                        ),
-                        deadline,
-                    ),
+                    search_external,
                 )
                 self._record(attempt, "engine_search", search.to_document(), artifacts)
                 rendered_search = _render_search(search, attempt.rendering)
@@ -295,40 +307,34 @@ class DirectEngineAdapter:
                     artifacts,
                 )
             if attempt.detail_node_uuid is not None:
+                detail_external, _ = await self._invoke(
+                    attempt,
+                    "detail",
+                    lambda: engine.detail(attempt.detail_node_uuid, attempt.namespace),
+                    deadline,
+                    artifacts,
+                )
                 detail = EngineExternalRecord.from_external(
                     "detail",
-                    await self._invoke(
-                        attempt,
-                        "detail",
-                        lambda: engine.detail(attempt.detail_node_uuid, attempt.namespace),
-                        deadline,
-                    ),
+                    detail_external,
                 )
                 self._record(attempt, "engine_detail", detail.to_document(), artifacts)
+        except asyncio.CancelledError as error:
+            failure = error
         except BaseException as error:
             failure = error
             if construction_artifact is None:
-                construction_artifact = self._event(
-                    attempt,
-                    "construction",
-                    "failed",
-                    artifacts,
-                    {"failure_type": type(error).__name__},
-                )
+                construction_artifact = artifacts[-1]
                 self._record_exposure(attempt, construction_artifact)
         finally:
             if engine is not None:
                 try:
-                    await self._invoke(attempt, "close", engine.close, deadline)
-                    close_artifact = self._event(attempt, "close", "succeeded", artifacts)
+                    close_artifact = await self._close_engine(attempt, engine, artifacts)
+                except asyncio.CancelledError as close_cancel:
+                    if failure is None:
+                        failure = close_cancel
                 except BaseException as close_error:
-                    close_artifact = self._event(
-                        attempt,
-                        "close",
-                        "failed",
-                        artifacts,
-                        {"failure_type": type(close_error).__name__},
-                    )
+                    close_artifact = artifacts[-1]
                     if failure is None:
                         failure = close_error
             else:
@@ -340,6 +346,8 @@ class DirectEngineAdapter:
             if failure is None:
                 failure = usage_error
         if failure is not None:
+            if isinstance(failure, asyncio.CancelledError):
+                raise failure
             if isinstance(failure, DirectEngineBoundaryError):
                 raise DirectEngineBoundaryError(failure.code, tuple(artifacts)) from failure
             raise DirectEngineBoundaryError(
@@ -363,13 +371,31 @@ class DirectEngineAdapter:
 
     def _preflight_execution_mode(self, attempt: DirectEngineAttempt) -> None:
         if attempt.execution_mode is DirectEngineExecutionMode.UNPAID_FAKE:
-            if self._engine_type is None or self._config_builder is None:
-                raise DirectEngineBoundaryError("unpaid_engine_requires_injected_fakes")
+            if not isinstance(self._unpaid_runtime, UnpaidEngineRuntime):
+                raise DirectEngineBoundaryError("unpaid_engine_capability_required")
+            if (
+                self._unpaid_runtime.provenance != "unpaid_conformance"
+                or self._unpaid_runtime.eligible_for_paid_or_study
+            ):
+                raise DirectEngineBoundaryError("unpaid_engine_capability_invalid")
             if self._live_usage_meter is not None:
                 raise DirectEngineBoundaryError("unpaid_engine_usage_meter_forbidden")
             return
+        if self._unpaid_runtime is not None:
+            raise DirectEngineBoundaryError("live_engine_fake_capability_forbidden")
         if self._live_usage_meter is None:
             raise DirectEngineBoundaryError("live_engine_usage_meter_required")
+
+    def _execution_dependencies(
+        self, attempt: DirectEngineAttempt
+    ) -> tuple[MemoryEngineType, object]:
+        if attempt.execution_mode is DirectEngineExecutionMode.UNPAID_FAKE:
+            assert self._unpaid_runtime is not None
+            return (
+                self._unpaid_runtime.engine_type,
+                self._unpaid_runtime.config_builder(attempt),
+            )
+        return _load_memory_engine(), _build_memrelay_config(attempt)
 
     async def _invoke(
         self,
@@ -377,27 +403,132 @@ class DirectEngineAdapter:
         method: str,
         operation: Callable[[], Awaitable[object]],
         deadline: float | None,
-    ) -> object:
+        artifacts: list[ArtifactRef],
+    ) -> tuple[object, ArtifactRef]:
         meter = self._live_usage_meter
         is_cleanup = method == "close"
-        if meter is not None and not is_cleanup:
-            assert attempt.live_envelope is not None
-            meter.reserve(method, attempt.live_envelope)
-        awaitable = operation()
-        if deadline is None:
-            result = await awaitable
-        else:
-            remaining = 5.0 if is_cleanup else deadline - time.monotonic()
-            if remaining <= 0:
-                close_awaitable = getattr(awaitable, "close", None)
-                if close_awaitable is not None:
-                    close_awaitable()
-                raise DirectEngineBoundaryError("live_engine_wall_limit_reached")
-            result = await asyncio.wait_for(awaitable, timeout=remaining)
+        started = time.monotonic()
+        try:
+            if meter is not None and not is_cleanup:
+                assert attempt.live_envelope is not None
+                meter.reserve(method, attempt.live_envelope)
+            awaitable = operation()
+            if deadline is None:
+                result = await awaitable
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    close_awaitable = getattr(awaitable, "close", None)
+                    if close_awaitable is not None:
+                        close_awaitable()
+                    raise TimeoutError
+                result = await asyncio.wait_for(awaitable, timeout=remaining)
+        except asyncio.CancelledError:
+            artifact = self._boundary_event(
+                attempt, method, "cancelled", "engine_call_cancelled", started, artifacts
+            )
+            raise
+        except TimeoutError as error:
+            self._boundary_event(
+                attempt,
+                method,
+                "timed_out",
+                "engine_call_timed_out",
+                started,
+                artifacts,
+                error,
+            )
+            raise DirectEngineBoundaryError("engine_call_timed_out", tuple(artifacts)) from error
+        except BaseException as error:
+            code = (
+                error.code if isinstance(error, DirectEngineBoundaryError) else "engine_call_failed"
+            )
+            self._boundary_event(attempt, method, "failed", code, started, artifacts, error)
+            raise
         if meter is not None and not is_cleanup:
             meter.record(method)
             self._require_usage_within_envelope(attempt, meter.snapshot())
-        return result
+        artifact = self._boundary_event(
+            attempt,
+            method,
+            "succeeded",
+            "engine_call_succeeded",
+            started,
+            artifacts,
+            result=result,
+        )
+        return result, artifact
+
+    async def _close_engine(
+        self,
+        attempt: DirectEngineAttempt,
+        engine: PublicMemoryEngine,
+        artifacts: list[ArtifactRef],
+    ) -> ArtifactRef:
+        close_task = asyncio.create_task(
+            self._invoke(
+                attempt,
+                "close",
+                engine.close,
+                time.monotonic() + 5.0,
+                artifacts,
+            )
+        )
+        try:
+            _, artifact = await asyncio.wait_for(asyncio.shield(close_task), timeout=5.1)
+            return artifact
+        except asyncio.CancelledError:
+            try:
+                _, artifact = await asyncio.wait_for(asyncio.shield(close_task), timeout=5.1)
+                return artifact
+            finally:
+                raise
+
+    def _boundary_event(
+        self,
+        attempt: DirectEngineAttempt,
+        method: str,
+        outcome: str,
+        code: str,
+        started: float,
+        artifacts: list[ArtifactRef],
+        error: BaseException | None = None,
+        result: object | None = None,
+    ) -> ArtifactRef:
+        exception_type = (
+            f"{type(error).__module__}.{type(error).__qualname__}" if error is not None else None
+        )
+        partial_refs = [artifact.sha256 for artifact in artifacts]
+        usage = (
+            dict(self._live_usage_meter.snapshot())
+            if self._live_usage_meter is not None
+            else {"calls": 0, "tokens": 0, "usd": 0, "wall_seconds": 0}
+        )
+        success_details: dict[str, object] = {}
+        if outcome == "succeeded" and method == "construction":
+            success_details["framework_configuration_sha256"] = attempt.framework.digest
+        if outcome == "succeeded" and method == "note" and isinstance(result, str):
+            success_details["result"] = result
+        return self._event(
+            attempt,
+            method,
+            outcome,
+            artifacts,
+            {
+                "failure_classification": code if outcome != "succeeded" else None,
+                "failure_code": code if outcome != "succeeded" else None,
+                "exception_type": exception_type,
+                "exception_type_sha256": (
+                    sha256(exception_type.encode("utf-8")).hexdigest()
+                    if exception_type is not None
+                    else None
+                ),
+                "duration_ms": max(0, round((time.monotonic() - started) * 1000)),
+                "partial_evidence_sha256": partial_refs,
+                "usage": usage,
+                **success_details,
+            },
+        )
 
     def _record_consumed_usage(
         self, attempt: DirectEngineAttempt, artifacts: list[ArtifactRef]

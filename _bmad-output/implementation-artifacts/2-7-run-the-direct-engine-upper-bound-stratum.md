@@ -109,8 +109,8 @@ GPT-5.6 Sol (gpt-5.6-sol)
 
 ### Debug Log References
 
-- `$env:PYTHONPATH = ((Resolve-Path .\evaluation\src).Path + [IO.Path]::PathSeparator + (Resolve-Path .\src).Path); py -3.13 -m pytest .\evaluation\tests\contract\memrelay\test_engine_api.py .\evaluation\tests\integration\test_engine_stratum_fake.py .\evaluation\tests\unit\test_stratum_non_pooling.py .\evaluation\tests\contract\process\test_environment_allowlists.py` - 31 passed.
-- `$env:PYTHONPATH = ((Resolve-Path .\evaluation\src).Path + [IO.Path]::PathSeparator + (Resolve-Path .\src).Path); py -3.13 -m pytest .\evaluation\tests` - 915 passed, 4 platform-capability skips.
+- `$env:PYTHONPATH = ((Resolve-Path .\evaluation\src).Path + [IO.Path]::PathSeparator + (Resolve-Path .\src).Path); py -3.13 -m pytest .\evaluation\tests\contract\memrelay\test_engine_api.py .\evaluation\tests\integration\test_engine_stratum_fake.py .\evaluation\tests\unit\test_stratum_non_pooling.py .\evaluation\tests\contract\process\test_environment_allowlists.py` - 37 passed.
+- `$env:PYTHONPATH = ((Resolve-Path .\evaluation\src).Path + [IO.Path]::PathSeparator + (Resolve-Path .\src).Path); py -3.13 -m pytest .\evaluation\tests` - 921 passed, 4 platform-capability skips.
 - `$env:PYTHONPATH = (Resolve-Path .\src).Path; py -3.13 -m pytest .\tests` - 1303 passed, 4 optional-backend skips.
 - `py -3.13 -m ruff check .\evaluation\src .\evaluation\tests; py -3.13 -m ruff format --check .\evaluation\src .\evaluation\tests` - passed.
 - `uv lock --check` from `evaluation/` - passed.
@@ -124,6 +124,9 @@ GPT-5.6 Sol (gpt-5.6-sol)
 - Added domain-owned external records and immutable stratum authority across protocol, assignment, run/runtime, endpoint, cost, analysis, report, and claim identities.
 - Added explicit-only cross-stratum aggregation and frozen `mechanism_upper_bound` / `engine upper bound` claim language.
 - Added deterministic unpaid API, fault, isolation, configuration parity, credential, concealment, evidence, and non-pooling coverage; no provider call is made by tests.
+- Remediated review finding 1: every construction, health, note, search, detail, and close boundary now records a retrievable typed success, failure, timeout, or cancellation artifact with safe exception-type identity, timing, prior evidence references, and usage before propagation.
+- Remediated review finding 2: cancellation remains `asyncio.CancelledError`, records a cancelled operation artifact, runs close through a shielded bounded task, and returns cancellation classification to the upstream execution authority.
+- Remediated review finding 3: unpaid mode now requires an explicit `UnpaidEngineRuntime` whose engine advertises unpaid-conformance provenance and study ineligibility; absent, arbitrary unlabeled, real default, and live-mode fake capabilities fail before provider construction.
 
 ### File List
 
