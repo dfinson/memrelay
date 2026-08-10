@@ -37,6 +37,7 @@ from memrelay_eval.domain.ids import (
 from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
+    AuthorityConflictIntent,
     CreateAttemptIntent,
     CreateExperimentIntent,
     CreateRunIntent,
@@ -332,6 +333,39 @@ def test_attempt_execution_claim_is_atomic_and_terminal_attempts_cannot_replay(
         )
     )
     assert ledger.claim_attempt_execution(attempt_id, run_id) is False
+    ledger.close()
+
+
+def test_sqlite_ledger_appends_replay_safe_authority_conflict_with_evidence(
+    tmp_path: object,
+) -> None:
+    ledger = SqliteLedger.open_control(tmp_path / "ledger.sqlite")  # type: ignore[operator]
+    _, run_id, attempt_id = seed(ledger)
+    reference = ArtifactRef.from_bytes(b"conflicting provider identities")
+    intent = AuthorityConflictIntent(
+        metadata(
+            source_attempt_id=attempt_id,
+            evidence_refs=(reference,),
+            reason_code="authority_conflict",
+        ),
+        run_id,
+        attempt_id,
+        ("provider_credential_resource_mismatch",),
+    )
+
+    first = accepted(ledger.submit_intent(intent))
+    replay = accepted(ledger.submit_intent(intent))
+    row = ledger._SqliteLedger__connection.execute(  # noqa: SLF001
+        "SELECT run_id, attempt_id, conflict_fields FROM authority_conflicts"
+    ).fetchone()
+
+    assert first.idempotent is False
+    assert replay.idempotent is True
+    assert tuple(row) == (
+        str(run_id),
+        str(attempt_id),
+        "provider_credential_resource_mismatch",
+    )
     ledger.close()
 
 

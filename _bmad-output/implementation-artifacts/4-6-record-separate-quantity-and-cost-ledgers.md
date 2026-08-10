@@ -135,6 +135,10 @@ GPT-5.6 Terra (gpt-5.6-terra)
   control-owned SQLite writer; no worker-side SQLite path was added.
 - Added exact native-field normalization, conversion guards, conflict rejection, secret-safe source
   validation, telemetry/resource identity separation, and replay/concurrency coverage.
+- Remediation: wired immutable Copilot quantity publication through the Inspect terminal-evidence
+  boundary and framework/local quantity publication through the direct-engine boundary, including
+  failed, timed-out, and observed-zero paths. Every cost intent now carries its native-source
+  artifact reference, and SQLite authority-conflict insertion has replay coverage.
 
 ### File List
 
@@ -142,4 +146,5 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - `evaluation/{schemas/{cost-ledger,cost-unit-conversion}.schema.json}`
 - `evaluation/src/memrelay_eval/{domain/{entities,intents,ports,states}.py,evidence/costs.py}`
 - `evaluation/src/memrelay_eval/{adapters/fakes.py,ledger/{repository,schema}.py}`
-- `evaluation/tests/{contract/{costs/test_cost_schema_units.py,identity/test_authority_matrix.py,ledger/test_repository.py},integration/costs/test_provider_ledgers.py,fault/costs/test_missing_conflicting_usage.py}`
+- `evaluation/src/memrelay_eval/{adapters/memrelay/engine.py,orchestration/inspect.py}`
+- `evaluation/tests/{contract/{costs/test_cost_schema_units.py,identity/test_authority_matrix.py,ledger/test_repository.py},integration/{costs/{test_provider_ledgers.py,test_production_quantity_emission.py},test_engine_stratum_fake.py},fault/costs/test_missing_conflicting_usage.py}`

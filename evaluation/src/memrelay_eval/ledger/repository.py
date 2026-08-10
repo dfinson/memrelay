@@ -561,6 +561,8 @@ class SqliteLedger:
                 raise _RejectIntent("cost_attempt_source_mismatch")
             if intent.artifact_ref not in intent.metadata.evidence_refs:
                 raise _RejectIntent("cost_artifact_not_evidence")
+            if intent.source_evidence_ref not in intent.metadata.evidence_refs:
+                raise _RejectIntent("cost_source_not_evidence")
             self.__connection.execute(
                 """
                 INSERT INTO cost_ledger_entries (

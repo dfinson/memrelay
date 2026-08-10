@@ -259,7 +259,12 @@ class CostRecord:
         ):
             raise AuthorityConflictError("authority_conflict", ("invalid_cost_quantity",))
         if self.unit == "usd":
-            if (
+            if self.quantity == UNAVAILABLE and any(
+                value != NOT_APPLICABLE
+                for value in (self.currency, self.price_table_version, self.price_table_ref)
+            ):
+                raise AuthorityConflictError("authority_conflict", ("unexpected_price_authority",))
+            if self.quantity != UNAVAILABLE and (
                 not re.fullmatch(r"[A-Z]{3}", self.currency)
                 or self.price_table_version == NOT_APPLICABLE
                 or self.price_table_ref == NOT_APPLICABLE
@@ -496,6 +501,7 @@ def publish_cost_record(
     artifact_store: ArtifactStorePort,
     ledger: LedgerPort,
     run_id: RunId,
+    source_evidence: ArtifactRef,
 ) -> ArtifactRef:
     """Write immutable cost evidence first, then append only its typed ledger reference."""
 
@@ -510,7 +516,7 @@ def publish_cost_record(
                 IntentId.new(),
                 record.observed_at,
                 source_attempt_id=record.attempt_id,
-                evidence_refs=(artifact,),
+                evidence_refs=(artifact, source_evidence),
                 reason_code="cost_quantity_recorded",
             ),
             record.cost_entry_id,
@@ -518,11 +524,50 @@ def publish_cost_record(
             record.attempt_id,
             record.identity.logical_ledger,
             artifact,
+            source_evidence,
         )
     )
     if getattr(result, "reason_code", None) is not None:
         raise AuthorityConflictError("authority_conflict", ("cost_ledger_intent_rejected",))
     return artifact
+
+
+def publish_native_quantity_ledger(
+    *,
+    attempt_id: AttemptId,
+    run_id: RunId,
+    identity: ProviderIdentity,
+    source_authority: str,
+    source_ref: str,
+    source_evidence: ArtifactRef,
+    raw_quantities: Mapping[str, int],
+    instrumentation_active: bool,
+    artifact_store: ArtifactStorePort,
+    ledger: LedgerPort,
+    observed_at: datetime,
+) -> tuple[ArtifactRef, ...]:
+    """Publish every exposed or unavailable field without altering its native authority."""
+
+    records = normalize_native_quantities(
+        attempt_id=attempt_id,
+        identity=identity,
+        source_authority=source_authority,
+        source_ref=source_ref,
+        source_sha256=source_evidence.sha256,
+        observed_at=observed_at,
+        raw_quantities=raw_quantities,
+        instrumentation_active=instrumentation_active,
+    )
+    return tuple(
+        publish_cost_record(
+            record,
+            artifact_store=artifact_store,
+            ledger=ledger,
+            run_id=run_id,
+            source_evidence=source_evidence,
+        )
+        for record in records
+    )
 
 
 def validate_identity_evidence(

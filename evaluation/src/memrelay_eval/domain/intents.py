@@ -303,6 +303,7 @@ class CostLedgerIntent(LedgerIntent):
     attempt_id: AttemptId
     logical_ledger: str
     artifact_ref: ArtifactRef
+    source_evidence_ref: ArtifactRef
 
     kind: ClassVar[LedgerIntentKind] = LedgerIntentKind.COST_LEDGER
 
@@ -313,6 +314,7 @@ class CostLedgerIntent(LedgerIntent):
             "attempt_id": str(self.attempt_id),
             "logical_ledger": self.logical_ledger,
             "artifact": _artifact_payload(self.artifact_ref),
+            "source_evidence": _artifact_payload(self.source_evidence_ref),
         }
 
 
@@ -438,7 +440,9 @@ def preflight_intent_rejection(intent: object) -> str | None:
             and intent.logical_ledger
             in {"copilot_subscription", "framework_openai", "local_resources"}
             and isinstance(intent.artifact_ref, ArtifactRef)
+            and isinstance(intent.source_evidence_ref, ArtifactRef)
             and intent.artifact_ref in metadata.evidence_refs
+            and intent.source_evidence_ref in metadata.evidence_refs
         )
     else:
         valid = False

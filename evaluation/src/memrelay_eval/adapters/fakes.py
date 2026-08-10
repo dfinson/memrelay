@@ -294,12 +294,12 @@ class InMemoryLedger:
             self.authority_conflicts.append(intent)
             return self._ack(intent)
         if isinstance(intent, CostLedgerIntent):
-            if self._attempts.get(intent.attempt_id) != intent.run_id:
-                return self.reject_intent(intent, "unknown_attempt")
             if intent.metadata.source_attempt_id != intent.attempt_id:
                 return self.reject_intent(intent, "cost_attempt_source_mismatch")
             if intent.artifact_ref not in intent.metadata.evidence_refs:
                 return self.reject_intent(intent, "cost_artifact_not_evidence")
+            if intent.source_evidence_ref not in intent.metadata.evidence_refs:
+                return self.reject_intent(intent, "cost_source_not_evidence")
             if any(item.cost_entry_id == intent.cost_entry_id for item in self.cost_ledger_intents):
                 return self.reject_intent(intent, "duplicate_cost_entry")
             self.cost_ledger_intents.append(intent)

@@ -79,7 +79,15 @@ def test_cost_records_publish_cas_artifacts_then_three_separate_ledger_links() -
         ),
     )
     artifacts = tuple(
-        publish_cost_record(item, artifact_store=artifact_store, ledger=ledger, run_id=run_id)
+        publish_cost_record(
+            item,
+            artifact_store=artifact_store,
+            ledger=ledger,
+            run_id=run_id,
+            source_evidence=artifact_store.put_bytes(
+                b"native usage", media_type="application/json", classification="native_usage"
+            ),
+        )
         for item in records
     )
     links = ledger.cost_ledger_entries_for(attempt_id)
@@ -104,11 +112,16 @@ def test_control_ledger_replays_one_cost_intent_without_duplicate_or_partial_lin
         media_type="application/json",
         classification="cost_quantity_evidence",
     )
+    source = artifact_store.put_bytes(
+        b"native usage",
+        media_type="application/json",
+        classification="native_usage",
+    )
     metadata = IntentMetadata(
         IntentId.new(),
         NOW,
         source_attempt_id=attempt_id,
-        evidence_refs=(artifact,),
+        evidence_refs=(artifact, source),
         reason_code="cost_quantity_recorded",
     )
     intent = CostLedgerIntent(
@@ -117,6 +130,7 @@ def test_control_ledger_replays_one_cost_intent_without_duplicate_or_partial_lin
         run_id,
         attempt_id,
         "local_resources",
+        source,
         artifact,
     )
     first = ledger.submit_intent(intent)
@@ -129,13 +143,14 @@ def test_control_ledger_replays_one_cost_intent_without_duplicate_or_partial_lin
                 IntentId.new(),
                 NOW,
                 source_attempt_id=attempt_id,
-                evidence_refs=(artifact,),
+                evidence_refs=(artifact, source),
                 reason_code="cost_quantity_recorded",
             ),
             entry.cost_entry_id,
             run_id,
             attempt_id,
             "local_resources",
+            source,
             artifact,
         )
     )
@@ -154,18 +169,24 @@ def test_control_ledger_serializes_concurrent_cost_intent_replay(tmp_path: objec
         media_type="application/json",
         classification="cost_quantity_evidence",
     )
+    source = artifact_store.put_bytes(
+        b"native usage",
+        media_type="application/json",
+        classification="native_usage",
+    )
     intent = CostLedgerIntent(
         IntentMetadata(
             IntentId.new(),
             NOW,
             source_attempt_id=attempt_id,
-            evidence_refs=(artifact,),
+            evidence_refs=(artifact, source),
             reason_code="cost_quantity_recorded",
         ),
         entry.cost_entry_id,
         run_id,
         attempt_id,
         "local_resources",
+        source,
         artifact,
     )
     with ThreadPoolExecutor(max_workers=8) as executor:
