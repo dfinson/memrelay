@@ -284,6 +284,15 @@ class TelemetryConformanceError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
+class AuthorityConflictError(DomainError):
+    """Provider, credential, resource, or ledger authority is unknown or incompatible."""
+
+    def __init__(self, code: str = "authority_conflict", fields: tuple[str, ...] = ()) -> None:
+        self.code = code
+        self.fields = fields
+        super().__init__(code)
+
+
 class ExecutionAdapterError(DomainError):
     """The Inspect-to-SDK adapter returned a typed terminal failure."""
 

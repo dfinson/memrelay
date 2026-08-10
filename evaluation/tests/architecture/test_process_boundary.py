@@ -17,6 +17,7 @@ def test_all_authoritative_process_roles_are_explicit() -> None:
         ProcessRole.GRADER,
         ProcessRole.JUDGE,
         ProcessRole.COLLECTOR,
+        ProcessRole.EVIDENCE,
         ProcessRole.ANALYSIS,
     }
 

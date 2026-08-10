@@ -41,7 +41,7 @@
 # - Retrospective appends its action items to action_items; sprint-status surfaces open ones
 
 generated: 2026-08-05T12:50:11-04:00
-last_updated: 2026-08-10T14:37:36-04:00
+last_updated: 2026-08-10T15:55:12-04:00
 project: memrelay Evaluation Platform
 project_key: NOKEY
 tracking_system: file-system
@@ -85,7 +85,7 @@ development_status:
   4-1-store-immutable-artifacts-and-versioned-manifests: done
   4-2-integrate-the-sole-writer-append-only-ledger: review
   4-3-capture-versioned-telemetry-semantics-and-classes: review
-  4-4-separate-provider-and-credential-domain-identities: ready-for-dev
+  4-4-separate-provider-and-credential-domain-identities: review
   4-5-reconcile-required-evidence-and-decide-inclusion: ready-for-dev
   4-6-record-separate-quantity-and-cost-ledgers: ready-for-dev
   4-7-reprice-retained-quantities-without-rewriting-history: ready-for-dev

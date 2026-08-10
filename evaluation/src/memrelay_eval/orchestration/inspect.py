@@ -29,6 +29,7 @@ from memrelay_eval.domain.errors import (
     ExecutionEvidenceConflictError,
     SecretBoundaryViolationError,
 )
+from memrelay_eval.domain.identity import identity_for_span_class
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import AttemptTerminalKind
@@ -350,4 +351,5 @@ def _emit_boundary(
         started_at=started_at or ended_at,
         ended_at=ended_at,
         failure_code=failure_code or None,
+        identity=identity_for_span_class(span_class.value),
     )

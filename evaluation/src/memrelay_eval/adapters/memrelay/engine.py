@@ -37,6 +37,7 @@ from memrelay_eval.domain.entities import (
     TelemetryObservation,
 )
 from memrelay_eval.domain.errors import DirectEngineBoundaryError
+from memrelay_eval.domain.identity import identity_for_span_class
 from memrelay_eval.domain.ids import AssignmentId, AttemptId, RunId
 from memrelay_eval.domain.ports import ArtifactStorePort, LedgerPort, TelemetryPort
 from memrelay_eval.domain.states import (
@@ -438,6 +439,9 @@ class DirectEngineAdapter:
             artifact = self._boundary_event(
                 attempt, method, "cancelled", "engine_call_cancelled", started, artifacts
             )
+            self._emit_method_outcome_span(
+                attempt, method, started, failure_code="engine_call_cancelled"
+            )
             raise
         except TimeoutError as error:
             self._boundary_event(
@@ -449,12 +453,16 @@ class DirectEngineAdapter:
                 artifacts,
                 error,
             )
+            self._emit_method_outcome_span(
+                attempt, method, started, failure_code="engine_call_timed_out"
+            )
             raise DirectEngineBoundaryError("engine_call_timed_out", tuple(artifacts)) from error
         except BaseException as error:
             code = (
                 error.code if isinstance(error, DirectEngineBoundaryError) else "engine_call_failed"
             )
             self._boundary_event(attempt, method, "failed", code, started, artifacts, error)
+            self._emit_method_outcome_span(attempt, method, started, failure_code=code)
             raise
         if meter is not None and not is_cleanup:
             meter.record(method)
@@ -468,6 +476,17 @@ class DirectEngineAdapter:
             artifacts,
             result=result,
         )
+        self._emit_method_outcome_span(attempt, method, started)
+        return result, artifact
+
+    def _emit_method_outcome_span(
+        self,
+        attempt: DirectEngineAttempt,
+        method: str,
+        started: float,
+        *,
+        failure_code: str | None = None,
+    ) -> None:
         span_class = {
             "construction": SpanClass.FRAMEWORK_EXTRACTION,
             "health": SpanClass.DAEMON_DISPATCH,
@@ -481,8 +500,8 @@ class DirectEngineAdapter:
                 attempt,
                 span_class,
                 duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+                failure_code=failure_code,
             )
-        return result, artifact
 
     async def _close_engine(
         self,
@@ -695,6 +714,7 @@ class DirectEngineAdapter:
         *,
         duration_ms: int = 0,
         attributes: Mapping[str, object] | None = None,
+        failure_code: str | None = None,
     ) -> None:
         emitter = self._telemetry_emitters.get(attempt.attempt_id)
         if emitter is None:
@@ -702,7 +722,14 @@ class DirectEngineAdapter:
         now = datetime.now(UTC)
         values: dict[str, object] = {"duration_ms": duration_ms}
         values.update(attributes or {})
-        emitter.record(span_class, started_at=now, ended_at=now, attributes=values)
+        emitter.record(
+            span_class,
+            started_at=now,
+            ended_at=now,
+            attributes=values,
+            identity=identity_for_span_class(span_class.value),
+            failure_code=failure_code,
+        )
 
 
 def _load_memory_engine() -> MemoryEngineType:

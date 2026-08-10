@@ -114,3 +114,4 @@ class LedgerIntentKind(StrEnum):
     ARTIFACT_LINK = "artifact_link"
     RETRY_LINEAGE = "retry_lineage"
     INCLUSION_DECISION = "inclusion_decision"
+    AUTHORITY_CONFLICT = "authority_conflict"

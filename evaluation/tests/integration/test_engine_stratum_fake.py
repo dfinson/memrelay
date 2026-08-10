@@ -22,6 +22,7 @@ from memrelay_eval.domain.engine import (
     StratumAuthority,
 )
 from memrelay_eval.domain.errors import DirectEngineBoundaryError
+from memrelay_eval.domain.identity import framework_openai_identity
 from memrelay_eval.domain.ids import (
     AnalysisId,
     AssignmentId,
@@ -132,9 +133,7 @@ def _attempt(tmp_path: Path, graph_name: str = "graph.db") -> DirectEngineAttemp
             scenario_id="scenario_" + "2" * 32,
             stratum_id="direct_engine",
             history_mode="controlled",
-            provider="framework_internal_openai",
-            credential_domain="openai_api",
-            cost_source="openai_api_metered",
+            identity=framework_openai_identity(),
             evidence_class="native_evidence",
             exposure_state="unexposed",
             environment_fingerprint_sha256="a" * 64,
@@ -259,10 +258,11 @@ def test_each_engine_boundary_failure_persists_typed_retrievable_evidence(
     )
     FaultingEngine.graph_path = str(attempt.isolation.graph_path)
     FaultingEngine.fault_method = method
+    telemetry = InMemoryTelemetry()
     adapter = DirectEngineAdapter(
         store,
         ledger,
-        InMemoryTelemetry(),
+        telemetry,
         DirectEngineGraphClaimRegistry(),
         unpaid_runtime=UnpaidEngineRuntime(
             FaultingEngine, lambda value: value.framework.to_document()
@@ -278,22 +278,34 @@ def test_each_engine_boundary_failure_persists_typed_retrievable_evidence(
     assert document["outcome"] == expected_outcome
     assert document["failure_code"] == expected_code
     assert "synthetic secret" not in json.dumps(document)
+    assert any(
+        span.context.failure_code == expected_code
+        for span in telemetry.semantic_spans
+        if span.span_class
+        in {
+            SpanClass.DAEMON_DISPATCH,
+            SpanClass.MEMORY_WRITE,
+            SpanClass.MEMORY_RETRIEVAL,
+            SpanClass.CLEANUP,
+        }
+    )
     if method == "close":
         assert any(link.purpose == "engine_note" for link in ledger.artifact_links)
 
 
 def test_cancellation_propagates_and_shielded_cleanup_records_success(tmp_path: Path) -> None:
-    async def scenario() -> tuple[asyncio.Task[object], dict[str, object]]:
+    async def scenario() -> tuple[asyncio.Task[object], dict[str, object], InMemoryTelemetry]:
         store = InMemoryArtifactStore()
         ledger = InMemoryLedger()
         attempt = _attempt(tmp_path, "cancel.db")
         FaultingEngine.graph_path = str(attempt.isolation.graph_path)
         FaultingEngine.fault_method = "cancel"
         FaultingEngine.blocker = asyncio.Event()
+        telemetry = InMemoryTelemetry()
         adapter = DirectEngineAdapter(
             store,
             ledger,
-            InMemoryTelemetry(),
+            telemetry,
             DirectEngineGraphClaimRegistry(),
             unpaid_runtime=UnpaidEngineRuntime(
                 FaultingEngine, lambda value: value.framework.to_document()
@@ -309,18 +321,27 @@ def test_cancellation_propagates_and_shielded_cleanup_records_success(tmp_path: 
             link for link in ledger.artifact_links if link.purpose == "engine_search"
         )
         close_link = next(link for link in ledger.artifact_links if link.purpose == "engine_close")
-        return task, {
-            "search": json.loads(store.open_verified(search_link.artifact_ref)),
-            "close": json.loads(store.open_verified(close_link.artifact_ref)),
-        }
+        return (
+            task,
+            {
+                "search": json.loads(store.open_verified(search_link.artifact_ref)),
+                "close": json.loads(store.open_verified(close_link.artifact_ref)),
+            },
+            telemetry,
+        )
 
-    task, evidence = asyncio.run(scenario())
+    task, evidence, telemetry = asyncio.run(scenario())
 
     assert task.cancelled()
     assert FaultingEngine.closed
     assert evidence["search"]["outcome"] == "cancelled"
     assert evidence["search"]["failure_code"] == "engine_call_cancelled"
     assert evidence["close"]["outcome"] == "succeeded"
+    assert any(
+        span.span_class is SpanClass.MEMORY_RETRIEVAL
+        and span.context.failure_code == "engine_call_cancelled"
+        for span in telemetry.semantic_spans
+    )
 
 
 def test_unpaid_mode_rejects_unlabeled_or_real_runtime_before_execution(

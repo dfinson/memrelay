@@ -32,6 +32,7 @@ class ProcessRole(StrEnum):
     GRADER = "grader"
     JUDGE = "judge"
     COLLECTOR = "collector"
+    EVIDENCE = "evidence"
     ANALYSIS = "analysis"
 
 
@@ -44,6 +45,7 @@ _ROLE_DOMAINS: Mapping[ProcessRole, CredentialDomain] = {
     ProcessRole.GRADER: CredentialDomain.NONE,
     ProcessRole.JUDGE: CredentialDomain.COPILOT,
     ProcessRole.COLLECTOR: CredentialDomain.NONE,
+    ProcessRole.EVIDENCE: CredentialDomain.NONE,
     ProcessRole.ANALYSIS: CredentialDomain.NONE,
 }
 _CREDENTIAL_VARIABLE_DOMAINS: Mapping[str, CredentialDomain] = {
