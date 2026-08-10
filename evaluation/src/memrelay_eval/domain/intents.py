@@ -274,6 +274,25 @@ class InclusionDecisionIntent(LedgerIntent):
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AuthorityConflictIntent(LedgerIntent):
+    """Control-owned, append-only ineligibility fact with evidence references only."""
+
+    metadata: IntentMetadata
+    run_id: RunId
+    attempt_id: AttemptId
+    conflict_fields: tuple[str, ...]
+
+    kind: ClassVar[LedgerIntentKind] = LedgerIntentKind.AUTHORITY_CONFLICT
+
+    def _operation_payload(self) -> dict[str, object]:
+        return {
+            "run_id": str(self.run_id),
+            "attempt_id": str(self.attempt_id),
+            "conflict_fields": list(self.conflict_fields),
+        }
+
+
 LedgerIntentType = (
     CreateExperimentIntent
     | CreateRunIntent
@@ -283,6 +302,7 @@ LedgerIntentType = (
     | ArtifactLinkIntent
     | RetryLineageIntent
     | InclusionDecisionIntent
+    | AuthorityConflictIntent
 )
 
 
@@ -376,6 +396,16 @@ def preflight_intent_rejection(intent: object) -> str | None:
         )
     elif isinstance(intent, InclusionDecisionIntent):
         valid = isinstance(intent.decision, InclusionDecision)
+    elif isinstance(intent, AuthorityConflictIntent):
+        valid = (
+            isinstance(intent.run_id, RunId)
+            and isinstance(intent.attempt_id, AttemptId)
+            and bool(intent.conflict_fields)
+            and all(
+                isinstance(field, str) and _REASON_CODE.fullmatch(field)
+                for field in intent.conflict_fields
+            )
+        )
     else:
         valid = False
     return None if valid else "invalid_opaque_identity"

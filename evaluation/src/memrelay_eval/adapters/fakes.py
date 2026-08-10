@@ -31,6 +31,7 @@ from memrelay_eval.domain.ids import AttemptId, ExperimentId, IntentId, RunId
 from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
+    AuthorityConflictIntent,
     CreateAttemptIntent,
     CreateExperimentIntent,
     CreateRunIntent,
@@ -126,6 +127,7 @@ class InMemoryLedger:
         self._retry_links: list[tuple[AttemptId, AttemptId]] = []
         self._intent_results: dict[IntentId, IntentAck | IntentRejection] = {}
         self._transition_digests: dict[RunId, str | None] = {}
+        self.authority_conflicts: list[AuthorityConflictIntent] = []
 
     def append_transition(self, transition: RunTransition) -> None:
         history = self.history(transition.run_id)
@@ -283,6 +285,11 @@ class InMemoryLedger:
             return self._submit_retry(intent)
         if isinstance(intent, InclusionDecisionIntent):
             return self._submit_inclusion(intent)
+        if isinstance(intent, AuthorityConflictIntent):
+            if self._attempts.get(intent.attempt_id) != intent.run_id:
+                return self.reject_intent(intent, "unknown_attempt")
+            self.authority_conflicts.append(intent)
+            return self._ack(intent)
         return self.reject_intent(intent, "unknown_intent_kind")
 
     def reject_intent(self, intent: LedgerIntentType, reason_code: str) -> IntentRejection:

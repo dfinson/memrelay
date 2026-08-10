@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -12,6 +13,7 @@ from memrelay_eval.adapters.telemetry.semantics import (
     TelemetrySpan,
 )
 from memrelay_eval.domain.errors import TelemetryConformanceError
+from memrelay_eval.domain.identity import copilot_identity, identity_for_span_class
 
 
 def _context() -> TelemetryContext:
@@ -23,9 +25,7 @@ def _context() -> TelemetryContext:
         scenario_id="scenario_" + "5" * 32,
         stratum_id="product",
         history_mode="controlled",
-        provider="github_copilot_sdk",
-        credential_domain="github_copilot_subscription",
-        cost_source="copilot_subscription_usage",
+        identity=copilot_identity(),
         evidence_class="native_evidence",
         exposure_state="unexposed",
         failure_code="none",
@@ -39,7 +39,7 @@ def _spans() -> tuple[TelemetrySpan, ...]:
         TelemetrySpan(
             span_id=f"span-{index}",
             span_class=span_class,
-            context=_context(),
+            context=replace(_context(), identity=identity_for_span_class(span_class.value)),
             started_at=started + timedelta(milliseconds=index),
             ended_at=started + timedelta(milliseconds=index + 1),
             attributes={"duration_ms": 1, "input_tokens": index, "output_tokens": index},
