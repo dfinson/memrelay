@@ -4,10 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from unicodedata import normalize
 from urllib.parse import urlsplit, urlunsplit
 
+from memrelay.engine.model_lock import (
+    EmbeddingModelIntegrityError,
+    VerifiedEmbeddingModel,
+    materialize_verified_embedding_model,
+)
 from memrelay_eval.domain.entities import ProductIdentityChain
 from memrelay_eval.domain.errors import ConformancePauseError
 from memrelay_eval.domain.ids import (
@@ -33,6 +39,7 @@ EXPECTED_OPENAI_BASE_URL = "https://api.openai.com/v1"
 _FROZEN_LLM_STRATEGIES = frozenset({"byo-key"})
 _OPENAI_KEY_NAME = "openai_api_key"
 _OPENAI_BASE_URL_NAME = "openai_base_url"
+CALLER_DIGEST_UNDECLARED = object()
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +104,7 @@ class FrameworkPreflightEvidence:
     daemon_key_only: bool
     embedding_provider: str
     embedding_model: str
-    embedding_digest: str | None
+    embedding_artifact: VerifiedEmbeddingModel
     client_name: str
     rejected_fallbacks: tuple[str, ...]
     daemon_environment_keys: tuple[str, ...]
@@ -121,6 +128,7 @@ class FrameworkPreflightEvidence:
             and self.expected_openai_base_url == EXPECTED_OPENAI_BASE_URL
             and self.embedding_provider == "local"
             and self.embedding_model == EXPECTED_EMBEDDING_MODEL
+            and self.embedding_artifact.lock.model_name == EXPECTED_EMBEDDING_MODEL
             and self.daemon_key_only
             and not self.rejected_fallbacks
             and self.tool_contract.tool_names == PRODUCT_SHIPPED_TOOL_NAMES
@@ -138,7 +146,7 @@ class FrameworkPreflightEvidence:
             "daemon_key_only": self.daemon_key_only,
             "embedding_provider": self.embedding_provider,
             "embedding_model": self.embedding_model,
-            "embedding_digest": self.embedding_digest,
+            "embedding_artifact": self.embedding_artifact.to_evidence(),
             "client_name": self.client_name,
             "rejected_fallbacks": list(self.rejected_fallbacks),
             "daemon_environment_keys": list(self.daemon_environment_keys),
@@ -251,7 +259,8 @@ def verify_framework_preflight(
     daemon_key_env: str = "OPENAI_API_KEY",
     embedding_provider: str = "local",
     embedding_model: str = EXPECTED_EMBEDDING_MODEL,
-    embedding_digest: str | None = None,
+    embedding_cache_dir: Path,
+    embedding_digest: object = CALLER_DIGEST_UNDECLARED,
     client_name: str = "OpenAIClient",
     tool_contract: ProductToolContract | None = None,
     stratum: EvaluationStratum = EvaluationStratum.PRODUCT,
@@ -284,6 +293,18 @@ def verify_framework_preflight(
             "embedding_configuration_drift",
             "local embeddings are not pinned to the frozen model",
         )
+    if embedding_digest is not CALLER_DIGEST_UNDECLARED:
+        raise ConformancePauseError(
+            "embedding_digest_declaration_forbidden",
+            "caller-provided embedding digests cannot replace the frozen artifact authority",
+        )
+    try:
+        embedding_artifact = materialize_verified_embedding_model(embedding_cache_dir)
+    except EmbeddingModelIntegrityError as error:
+        raise ConformancePauseError(
+            "embedding_artifact_verification_failed",
+            "local embedding artifact does not match the frozen digest authority",
+        ) from error
     daemon_key_name = _normalize_environment_name(daemon_key_env)
     daemon_key_only = (
         daemon_key_name == _OPENAI_KEY_NAME
@@ -331,7 +352,7 @@ def verify_framework_preflight(
         daemon_key_only,
         embedding_provider,
         embedding_model,
-        embedding_digest,
+        embedding_artifact,
         client_name,
         tuple(dict.fromkeys(rejected)),
         tuple(sorted(daemon_names)),

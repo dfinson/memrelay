@@ -4,14 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tomllib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 from memrelay.daemon.transport import Endpoint, resolve_endpoint
+from memrelay.engine.model_lock import (
+    EmbeddingModelIntegrityError,
+    verify_materialized_embedding_model,
+)
 from memrelay.mcp.client import DaemonClient
 from memrelay_eval.adapters.memrelay.controls import (
+    CALLER_DIGEST_UNDECLARED,
+    EXPECTED_EMBEDDING_MODEL,
     FrameworkPreflightEvidence,
     ProductToolContract,
     ProductToolVisibilityEvidence,
@@ -150,7 +157,7 @@ class ProductProvisionRequest:
     openai_base_url: str = "https://api.openai.com/v1"
     embedding_provider: str = "local"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
-    embedding_digest: str | None = None
+    embedding_digest: object = CALLER_DIGEST_UNDECLARED
     client_name: str = "OpenAIClient"
     daemon_environment: Mapping[str, str] = field(default_factory=dict)
     agent_environment: Mapping[str, str] = field(default_factory=dict)
@@ -209,6 +216,14 @@ class MemrelayProductTreatment(TreatmentPort):
                 "product_provision_spec_invalid",
                 "product treatment requires a ProductProvisionRequest",
             )
+        paths = spec.resolved_paths()
+        config_path = spec.config_path or paths.home_path / "config.toml"
+        if not config_path.is_file():
+            raise ConformancePauseError(
+                "product_pinned_config_missing",
+                "shipped daemon requires an attempt-owned pinned configuration file",
+            )
+        _require_pinned_embedding_configuration(config_path)
         preflight = verify_framework_preflight(
             llm_strategy=spec.llm_strategy,
             framework_model=spec.framework_model,
@@ -218,6 +233,7 @@ class MemrelayProductTreatment(TreatmentPort):
             mcp_environment=spec.mcp_environment,
             embedding_provider=spec.embedding_provider,
             embedding_model=spec.embedding_model,
+            embedding_cache_dir=spec.home_path / "models",
             embedding_digest=spec.embedding_digest,
             client_name=spec.client_name,
         )
@@ -226,18 +242,18 @@ class MemrelayProductTreatment(TreatmentPort):
                 "product_preflight_not_ready",
                 "product process may not start before preflight is ready",
             )
-        paths = spec.resolved_paths()
         if not spec.attempt_id or paths.home_path == paths.workspace_root:
             raise ConformancePauseError(
                 "product_attempt_isolation_invalid",
                 "product attempt requires distinct isolated roots",
             )
-        config_path = spec.config_path or paths.home_path / "config.toml"
-        if not config_path.is_file():
+        try:
+            verify_materialized_embedding_model(preflight.embedding_artifact)
+        except EmbeddingModelIntegrityError as error:
             raise ConformancePauseError(
-                "product_pinned_config_missing",
-                "shipped daemon requires an attempt-owned pinned configuration file",
-            )
+                "embedding_artifact_changed_before_launch",
+                "local embedding artifact changed after preflight",
+            ) from error
         environment = dict(spec.daemon_environment)
         environment["MEMRELAY_HOME"] = str(paths.home_path)
         environment["MEMRELAY_CONFIG"] = str(config_path)
@@ -394,4 +410,27 @@ class MemrelayProductTreatment(TreatmentPort):
             payload,
             media_type="application/json",
             classification="unpaid_conformance",
+        )
+
+
+def _require_pinned_embedding_configuration(config_path: Path) -> None:
+    """Ensure the launched daemon configuration selects the frozen local artifact."""
+
+    try:
+        with config_path.open("rb") as source:
+            document = tomllib.load(source)
+    except (OSError, tomllib.TOMLDecodeError) as error:
+        raise ConformancePauseError(
+            "product_pinned_config_invalid",
+            "shipped daemon configuration is not valid TOML",
+        ) from error
+    embeddings = document.get("embeddings") if isinstance(document, dict) else None
+    if (
+        not isinstance(embeddings, dict)
+        or embeddings.get("provider") != "local"
+        or embeddings.get("model") != EXPECTED_EMBEDDING_MODEL
+    ):
+        raise ConformancePauseError(
+            "product_embedding_configuration_drift",
+            "shipped daemon configuration does not select the frozen local embedding model",
         )

@@ -1,6 +1,7 @@
 """Memrelay product-stratum and direct-engine adapters."""
 
 from .controls import (
+    CALLER_DIGEST_UNDECLARED,
     EXPECTED_EMBEDDING_MODEL,
     EXPECTED_FRAMEWORK_MODEL,
     EXPECTED_OPENAI_BASE_URL,
@@ -29,6 +30,7 @@ from .product import (
 )
 
 __all__ = [
+    "CALLER_DIGEST_UNDECLARED",
     "EXPECTED_EMBEDDING_MODEL",
     "EXPECTED_FRAMEWORK_MODEL",
     "EXPECTED_OPENAI_BASE_URL",

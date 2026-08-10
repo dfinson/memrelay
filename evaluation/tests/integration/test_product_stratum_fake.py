@@ -77,12 +77,18 @@ class _Launcher:
         )
 
 
-def _request(tmp_path: Path, **overrides: object) -> ProductProvisionRequest:
+def _request(
+    tmp_path: Path, frozen_embedding_artifact, **overrides: object
+) -> ProductProvisionRequest:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home.mkdir()
     workspace.mkdir()
-    (home / "config.toml").write_text("", encoding="utf-8")
+    (home / "config.toml").write_text(
+        '[embeddings]\nprovider = "local"\nmodel = "BAAI/bge-small-en-v1.5"\n',
+        encoding="utf-8",
+    )
+    frozen_embedding_artifact(home)
     (home / "spool").mkdir()
     (home / "spool" / "spool.db").write_bytes(b"canonical fake observation")
     daemon, agent, mcp = build_framework_process_environments()
@@ -147,9 +153,15 @@ async def _create_pair(
     return await asyncio.gather(provider.create(first), provider.create(second))
 
 
-def _request_from_workspace(handle: object, *, attempt_id: str) -> ProductProvisionRequest:
+def _request_from_workspace(
+    handle: object, frozen_embedding_artifact, *, attempt_id: str
+) -> ProductProvisionRequest:
     home = handle.memrelay_home
-    (home / "config.toml").write_text("", encoding="utf-8")
+    (home / "config.toml").write_text(
+        '[embeddings]\nprovider = "local"\nmodel = "BAAI/bge-small-en-v1.5"\n',
+        encoding="utf-8",
+    )
+    frozen_embedding_artifact(home)
     (home / "spool").mkdir(exist_ok=True)
     (home / "spool" / "spool.db").write_bytes(b"canonical fake observation")
     daemon, agent, mcp = build_framework_process_environments()
@@ -164,7 +176,9 @@ def _request_from_workspace(handle: object, *, attempt_id: str) -> ProductProvis
     )
 
 
-def test_fake_product_attempt_preserves_observation_and_cleanup_evidence(tmp_path: Path) -> None:
+def test_fake_product_attempt_preserves_observation_and_cleanup_evidence(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     launcher = _Launcher()
     store = InMemoryArtifactStore()
     treatment = MemrelayProductTreatment(
@@ -172,7 +186,11 @@ def test_fake_product_attempt_preserves_observation_and_cleanup_evidence(tmp_pat
         launcher=launcher,  # type: ignore[arg-type]
         health_client_factory=lambda _: _LiveHealthClient(),
     )
-    handle = asyncio.run(treatment.provision(_request(tmp_path, attempt_id="attempt-integration")))
+    handle = asyncio.run(
+        treatment.provision(
+            _request(tmp_path, frozen_embedding_artifact, attempt_id="attempt-integration")
+        )
+    )
     refs = asyncio.run(treatment.collect_state(handle))
     state = json.loads(store.open_verified(refs[0]))
     asyncio.run(treatment.close(handle))
@@ -183,7 +201,9 @@ def test_fake_product_attempt_preserves_observation_and_cleanup_evidence(tmp_pat
     assert cleanup["process"]["process_tree_stopped"] is True
 
 
-def test_fake_product_attempt_rejects_fourth_tool_before_evidence(tmp_path: Path) -> None:
+def test_fake_product_attempt_rejects_fourth_tool_before_evidence(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     async def four_tools() -> tuple[str, ...]:
         return ("memory_recall", "memory_detail", "memory_note", "spoof")
 
@@ -191,13 +211,19 @@ def test_fake_product_attempt_rejects_fourth_tool_before_evidence(tmp_path: Path
         launcher=_Launcher(),  # type: ignore[arg-type]
         health_client_factory=lambda _: _LiveHealthClient(),
     )
-    handle = asyncio.run(treatment.provision(_request(tmp_path, mcp_tool_surface_probe=four_tools)))
+    handle = asyncio.run(
+        treatment.provision(
+            _request(tmp_path, frozen_embedding_artifact, mcp_tool_surface_probe=four_tools)
+        )
+    )
     with pytest.raises(ConformancePauseError):
         asyncio.run(treatment.collect_state(handle))
     asyncio.run(treatment.close(handle))
 
 
-def test_product_attempt_uses_existing_ledger_claim_and_telemetry(tmp_path: Path) -> None:
+def test_product_attempt_uses_existing_ledger_claim_and_telemetry(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     ledger = InMemoryLedger()
     telemetry = InMemoryTelemetry()
     treatment = MemrelayProductTreatment(
@@ -210,7 +236,11 @@ def test_product_attempt_uses_existing_ledger_claim_and_telemetry(tmp_path: Path
         telemetry,
     )
     handle = asyncio.run(
-        stage.provision(_request(tmp_path), attempt_id=AttemptId.new(), run_id=RunId.new())
+        stage.provision(
+            _request(tmp_path, frozen_embedding_artifact),
+            attempt_id=AttemptId.new(),
+            run_id=RunId.new(),
+        )
     )
     references = asyncio.run(stage.collect_and_close(handle))
 
@@ -218,7 +248,9 @@ def test_product_attempt_uses_existing_ledger_claim_and_telemetry(tmp_path: Path
     assert telemetry.observations[0].event_name == "attempt_started"
 
 
-def test_parallel_product_attempts_keep_attempt_scoped_paths_distinct(tmp_path: Path) -> None:
+def test_parallel_product_attempts_keep_attempt_scoped_paths_distinct(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     source, revision, content_hash = _frozen_source(tmp_path)
     provider = TemporaryWorktreeWorkspaceProvider()
     first_workspace, second_workspace = asyncio.run(
@@ -244,12 +276,16 @@ def test_parallel_product_attempts_keep_attempt_scoped_paths_distinct(tmp_path: 
         )
         first_handle = asyncio.run(
             first_treatment.provision(
-                _request_from_workspace(first_workspace, attempt_id="attempt-a")
+                _request_from_workspace(
+                    first_workspace, frozen_embedding_artifact, attempt_id="attempt-a"
+                )
             )
         )
         second_handle = asyncio.run(
             second_treatment.provision(
-                _request_from_workspace(second_workspace, attempt_id="attempt-b")
+                _request_from_workspace(
+                    second_workspace, frozen_embedding_artifact, attempt_id="attempt-b"
+                )
             )
         )
 

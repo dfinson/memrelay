@@ -78,12 +78,18 @@ class _CrashedLauncher(_Launcher):
         return launched
 
 
-def _request(tmp_path: Path, **overrides: object) -> ProductProvisionRequest:
+def _request(
+    tmp_path: Path, frozen_embedding_artifact, **overrides: object
+) -> ProductProvisionRequest:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     home.mkdir()
     workspace.mkdir()
-    (home / "config.toml").write_text("", encoding="utf-8")
+    (home / "config.toml").write_text(
+        '[embeddings]\nprovider = "local"\nmodel = "BAAI/bge-small-en-v1.5"\n',
+        encoding="utf-8",
+    )
+    frozen_embedding_artifact(home)
     (home / "spool").mkdir()
     (home / "spool" / "spool.db").write_bytes(b"canonical fake observation")
     daemon, agent, mcp = build_framework_process_environments()
@@ -100,14 +106,16 @@ def _request(tmp_path: Path, **overrides: object) -> ProductProvisionRequest:
     return ProductProvisionRequest(**values)  # type: ignore[arg-type]
 
 
-def test_provision_uses_shipped_foreground_serve_and_live_health(tmp_path: Path) -> None:
+def test_provision_uses_shipped_foreground_serve_and_live_health(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     launcher = _Launcher()
     treatment = MemrelayProductTreatment(
         artifact_store=InMemoryArtifactStore(),
         launcher=launcher,  # type: ignore[arg-type]
         health_client_factory=lambda _: _LiveHealthClient(),
     )
-    handle = asyncio.run(treatment.provision(_request(tmp_path)))
+    handle = asyncio.run(treatment.provision(_request(tmp_path, frozen_embedding_artifact)))
 
     assert launcher.request.command[-1] == "_serve"
     assert "DaemonServer" not in type(treatment).__module__
@@ -124,13 +132,15 @@ def test_provision_uses_shipped_foreground_serve_and_live_health(tmp_path: Path)
     assert launcher.cancelled
 
 
-def test_collect_state_rejects_missing_observation_path(tmp_path: Path) -> None:
+def test_collect_state_rejects_missing_observation_path(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     treatment = MemrelayProductTreatment(
         artifact_store=InMemoryArtifactStore(),
         launcher=_Launcher(),  # type: ignore[arg-type]
         health_client_factory=lambda _: _LiveHealthClient(),
     )
-    handle = asyncio.run(treatment.provision(_request(tmp_path)))
+    handle = asyncio.run(treatment.provision(_request(tmp_path, frozen_embedding_artifact)))
     handle.paths.observation_path.unlink()
 
     with pytest.raises(ConformancePauseError, match="canonical observation artifact"):
@@ -139,23 +149,29 @@ def test_collect_state_rejects_missing_observation_path(tmp_path: Path) -> None:
     asyncio.run(treatment.close(handle))
 
 
-def test_preflight_failure_does_not_launch_a_process(tmp_path: Path) -> None:
+def test_preflight_failure_does_not_launch_a_process(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     launcher = _Launcher()
     treatment = MemrelayProductTreatment(
         launcher=launcher,  # type: ignore[arg-type]
         health_client_factory=lambda _: _LiveHealthClient(),
     )
     with pytest.raises(ConformancePauseError):
-        asyncio.run(treatment.provision(_request(tmp_path, llm_strategy="azure")))
+        asyncio.run(
+            treatment.provision(_request(tmp_path, frozen_embedding_artifact, llm_strategy="azure"))
+        )
     assert launcher.request is None
 
 
-def test_crashed_foreground_daemon_is_cleaned_up_before_exposure(tmp_path: Path) -> None:
+def test_crashed_foreground_daemon_is_cleaned_up_before_exposure(
+    tmp_path: Path, frozen_embedding_artifact
+) -> None:
     launcher = _CrashedLauncher()
     treatment = MemrelayProductTreatment(
         launcher=launcher,  # type: ignore[arg-type]
         health_client_factory=lambda _: _LiveHealthClient(),
     )
     with pytest.raises(ConformancePauseError):
-        asyncio.run(treatment.provision(_request(tmp_path)))
+        asyncio.run(treatment.provision(_request(tmp_path, frozen_embedding_artifact)))
     assert launcher.cancelled

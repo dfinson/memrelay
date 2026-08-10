@@ -16,10 +16,13 @@ from __future__ import annotations
 
 import sys
 import types
+from dataclasses import replace
+from hashlib import sha256
 
 import pytest
 
 from memrelay.config import Config, EmbeddingsConfig
+from memrelay.engine import model_lock
 from memrelay.engine.embedder import LocalEmbedder
 
 #: The generic error fastembed raises once every source (HF + GCS) fails while offline.
@@ -44,10 +47,32 @@ def _install_fake_fastembed(monkeypatch, *, raises=None, factory=None):
     monkeypatch.setitem(sys.modules, "fastembed", module)
 
 
+def _install_frozen_model_artifact(monkeypatch, cache_dir) -> None:
+    payloads = {
+        name: f"unit-fake-bge-artifact:{name}\n".encode()
+        for name in model_lock.EMBEDDING_MODEL_LOCK.files
+    }
+    lock = replace(
+        model_lock.EMBEDDING_MODEL_LOCK,
+        files={name: sha256(payload).hexdigest() for name, payload in payloads.items()},
+    )
+    monkeypatch.setattr(model_lock, "EMBEDDING_MODEL_LOCK", lock)
+    directory = (
+        cache_dir
+        / f"models--{lock.source_repository.replace('/', '--')}"
+        / "snapshots"
+        / lock.source_revision
+    )
+    directory.mkdir(parents=True)
+    for name, payload in payloads.items():
+        (directory / name).write_bytes(payload)
+
+
 def test_local_embedder_offline_raises_actionable_error(monkeypatch, tmp_path):
     """An offline fetch failure surfaces the model, cache dir, and both remediations."""
     _install_fake_fastembed(monkeypatch, raises=ValueError(_OPAQUE))
     cache_dir = tmp_path / "models"
+    _install_frozen_model_artifact(monkeypatch, cache_dir)
 
     # ``LocalEmbedderError`` subclasses ``RuntimeError``; pre-fix code raised a bare
     # ``ValueError`` here, so this ``raises(RuntimeError)`` fails against the unfixed embedder.
@@ -67,6 +92,7 @@ def test_local_embedder_offline_error_type_and_chains(monkeypatch, tmp_path):
     """The clear error is ``LocalEmbedderError`` and preserves the opaque original as its cause."""
     original = ValueError(_OPAQUE)
     _install_fake_fastembed(monkeypatch, raises=original)
+    _install_frozen_model_artifact(monkeypatch, tmp_path / "models")
 
     with pytest.raises(RuntimeError) as excinfo:
         LocalEmbedder(model_name="BAAI/bge-small-en-v1.5", cache_dir=tmp_path / "models")
@@ -83,6 +109,7 @@ def test_build_embedder_local_offline_surfaces_actionable_error(monkeypatch, tmp
     from memrelay.engine.graphiti import build_embedder
 
     cfg = Config(home=str(tmp_path), embeddings=EmbeddingsConfig(provider="local"))
+    _install_frozen_model_artifact(monkeypatch, cfg.home_path / "models")
 
     with pytest.raises(RuntimeError) as excinfo:
         build_embedder(cfg)
@@ -98,6 +125,7 @@ def test_local_embedder_success_path_unaffected(monkeypatch, tmp_path):
     """When fastembed constructs cleanly (online/cached), the embedder is built unchanged."""
     sentinel = object()
     _install_fake_fastembed(monkeypatch, factory=lambda: sentinel)
+    _install_frozen_model_artifact(monkeypatch, tmp_path / "models")
 
     embedder = LocalEmbedder(model_name="BAAI/bge-small-en-v1.5", cache_dir=tmp_path / "models")
 

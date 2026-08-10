@@ -43,7 +43,7 @@ So that measured outcomes include the actual product lifecycle and transport ove
   - [x] Supply the live agent only the shipped `memrelay mcp` command and exact `memory_recall`, `memory_detail`, `memory_note` contract; reject extra tools.
   - [x] Prove the task-agent/MCP process has no normalized or case-variant OpenAI credential.
 - [x] Enforce framework provider/model/embedding strategy (AC: 2)
-  - [x] Require local `BAAI/bge-small-en-v1.5`, direct OpenAI `byo-key`, dated model, daemon-only key.
+  - [x] Require local `BAAI/bge-small-en-v1.5` from the frozen artifact lock, direct OpenAI `byo-key`, dated model, daemon-only key.
   - [x] Pause before launch on borrow-host, LiteLLM, local/unknown fallback, missing key, or alternate endpoint/provider.
 - [x] Route product process startup through the Story 1.1 ledger claim and telemetry ports using deterministic fakes for unpaid conformance (AC: 4)
 - [x] Create product-stratum identity chain and non-pooling guards at orchestration aggregation (Architecture: AD-03, AD-20)
@@ -128,12 +128,15 @@ OpenAI coding agent
 - Replaced the in-process daemon shortcut with evaluator-owned `memrelay _serve` process-tree supervision, pinned config delivery, `LiveHealthBackend` readiness, cleanup evidence, and canonical spool-artifact verification.
 - Added the daemon-only OpenAI environment boundary and shipped `memrelay mcp` agent command; evaluator self-probes do not stand in for task-agent evidence.
 - Added fake-only evaluator contract/integration coverage for strategy and URL rejection, normalized credential leaks, fourth-tool spoofing, crash cleanup, observation evidence, ledger claim/telemetry wiring, and product/engine aggregation denial.
+- Added a product-owned BGE artifact authority: the evaluator snapshots and rechecks its fixed source revision and complete SHA-256 file set before launch; the daemon loads only that verified snapshot and rechecks it before readiness.
 
 ### File List
 
 - `evaluation/src/memrelay_eval/adapters/memrelay/__init__.py`
 - `evaluation/src/memrelay_eval/adapters/memrelay/controls.py`
 - `evaluation/src/memrelay_eval/adapters/memrelay/product.py`
+- `src/memrelay/engine/model_lock.py`
+- `src/memrelay/engine/embedder.py`
 - `evaluation/src/memrelay_eval/domain/entities.py`
 - `evaluation/src/memrelay_eval/domain/ids.py`
 - `evaluation/src/memrelay_eval/domain/policies.py`
@@ -143,6 +146,8 @@ OpenAI coding agent
 - `evaluation/tests/contract/memrelay/test_daemon.py`
 - `evaluation/tests/contract/memrelay/test_mcp_tools.py`
 - `evaluation/tests/contract/memrelay/test_provider_strategy.py`
+- `evaluation/tests/contract/memrelay/test_embedding_model_lock.py`
+- `evaluation/tests/conftest.py`
 - `evaluation/tests/integration/test_product_stratum_fake.py`
 - `_bmad-output/implementation-artifacts/2-6-run-the-shipped-daemon-and-mcp-product-stratum.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
