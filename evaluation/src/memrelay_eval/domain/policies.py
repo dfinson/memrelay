@@ -6,14 +6,16 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from .errors import (
+    ControlledHistoryViolationError,
     IneligibleEnrollmentError,
     InvalidLifecycleTransitionError,
     SecretConfigurationError,
 )
-from .states import AttemptTerminalKind, RunState
+from .states import AttemptTerminalKind, ProbeWriteDisposition, RunState
 
 if TYPE_CHECKING:
     from .entities import (
+        ArtifactRef,
         AttemptTerminal,
         ExposureDecision,
         FreshIsolationAttestation,
@@ -80,6 +82,30 @@ def require_eligible_disposition(disposition: Mapping[str, object]) -> None:
     """Honor a precomputed Story 1.4 disposition without reimplementing its policy."""
     if disposition.get("disposition") != "eligible":
         raise IneligibleEnrollmentError(IneligibleEnrollmentError.code)
+
+
+def enforce_probe_write_disposition(
+    disposition: ProbeWriteDisposition,
+    *,
+    write_attempted: bool,
+    write_persisted: bool,
+    recorded_evidence: ArtifactRef | None,
+) -> None:
+    """Enforce the frozen controlled-history probe-write handling; nothing is inferred.
+
+    ``disabled`` forbids any attempted write. ``discarded`` permits an attempt but the
+    write must never observably persist. ``recorded_separately`` permits an attempt only
+    when it is backed by its own immutable evidence, never folded into the source bundle.
+    """
+
+    if not write_attempted:
+        return
+    if disposition is ProbeWriteDisposition.DISABLED:
+        raise ControlledHistoryViolationError("controlled_probe_write_disabled")
+    if disposition is ProbeWriteDisposition.DISCARDED and write_persisted:
+        raise ControlledHistoryViolationError("controlled_probe_write_not_discarded")
+    if disposition is ProbeWriteDisposition.RECORDED_SEPARATELY and recorded_evidence is None:
+        raise ControlledHistoryViolationError("controlled_probe_write_not_separately_recorded")
 
 
 def _walk_treatment_neutral(value: object) -> None:

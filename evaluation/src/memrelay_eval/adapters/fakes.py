@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from threading import Lock
 from types import MappingProxyType
@@ -559,3 +560,55 @@ class FakeMemrelayPort:
 
     def health(self) -> object:
         raise RuntimeError("FakeMemrelayPort: no real memrelay calls during offline planning")
+
+
+class InMemoryTreatmentPort:
+    """Deterministic unpaid-conformance ``TreatmentPort`` used only by fake restoration.
+
+    Restoration is modeled as copying each ``ControlledHistoryItem`` artifact into an
+    opaque per-handle slot. An optional ``tamper`` hook lets tests simulate missing,
+    extra, partial, reordered, aliased, or byte-tampered restores without touching any
+    real filesystem, product daemon, or direct-engine adapter.
+    """
+
+    provenance = "unpaid_conformance"
+    eligible_for_paid_or_study = False
+
+    def __init__(
+        self,
+        *,
+        tamper: Callable[[tuple[ArtifactRef, ...]], tuple[ArtifactRef, ...]] | None = None,
+        fail_on_restore: bool = False,
+    ) -> None:
+        self._state: dict[int, tuple[ArtifactRef, ...]] = {}
+        self._tamper = tamper
+        self._fail_on_restore = fail_on_restore
+        self._closed: set[int] = set()
+
+    async def provision(self, spec: object) -> object:
+        del spec
+        handle = object()
+        self._state[id(handle)] = ()
+        return handle
+
+    async def restore_history(self, handle: object, history: object) -> None:
+        if id(handle) not in self._state:
+            raise RuntimeError("restore_history requires a handle from provision()")
+        if self._fail_on_restore:
+            raise RuntimeError("InMemoryTreatmentPort: simulated pre-exposure restore failure")
+        items = getattr(history, "ordered_items", ())
+        collected = tuple(item.artifact for item in items)
+        if self._tamper is not None:
+            collected = self._tamper(collected)
+        self._state[id(handle)] = collected
+
+    async def collect_state(self, handle: object) -> tuple[ArtifactRef, ...]:
+        return self._state.get(id(handle), ())
+
+    async def close(self, handle: object) -> None:
+        self._closed.add(id(handle))
+        self._state.pop(id(handle), None)
+
+    @property
+    def closed_handles(self) -> int:
+        return len(self._closed)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from memrelay_eval.domain.entities import (
+    ArtifactRef,
     AttemptTerminal,
     InternalRetryPolicy,
     InternalRetryRecord,
@@ -18,9 +19,34 @@ from memrelay_eval.domain.errors import (
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType
 from memrelay_eval.domain.ports import LedgerPort, TelemetryPort
-from memrelay_eval.domain.states import InternalRetrySubsystem
+from memrelay_eval.domain.states import AttemptTerminalKind, InternalRetrySubsystem
 
 from .worker import WorkerIntentEmitter
+
+
+def controlled_restore_failure_terminal(
+    attempt_id: AttemptId,
+    run_id: RunId,
+    reason: str,
+    evidence_refs: tuple[ArtifactRef, ...],
+) -> AttemptTerminal:
+    """Build the immutable pre-exposure terminal for a blocked controlled restore.
+
+    A controlled-history restore always runs before task delivery or inference, so
+    any divergence, partial restore, or transport failure it raises is classified as
+    ``infrastructure_failed_pre_exposure``: it remains the sole terminal classification
+    the frozen Story 1.7 retry policy may authorize a single fresh-root retry from, and
+    it always carries the immutable evidence that recorded the failure.
+    """
+
+    return AttemptTerminal(
+        attempt_id,
+        run_id,
+        AttemptTerminalKind.INFRASTRUCTURE_FAILED_PRE_EXPOSURE,
+        datetime.now(UTC),
+        reason,
+        evidence_refs,
+    )
 
 
 class AttemptTerminalRecorder:

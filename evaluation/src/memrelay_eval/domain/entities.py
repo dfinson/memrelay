@@ -42,6 +42,7 @@ from .states import (
     HistoryMode,
     InclusionStatus,
     InternalRetrySubsystem,
+    ProbeWriteDisposition,
     RunState,
     SequenceState,
 )
@@ -147,6 +148,174 @@ class DynamicSequenceCleanup:
         if not self.evidence_refs:
             raise InvalidAttemptTerminalError("sequence cleanup requires evidence")
         object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+
+GOLDEN_SETUP_PROVENANCE = "golden_setup_source"
+"""The sole provenance a controlled-history item may declare; never treatment-generated."""
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledHistoryItem:
+    """One immutable, ordered pre-treatment episode inside a controlled bundle."""
+
+    position: int
+    artifact: ArtifactRef
+    actor_id: str
+    scope: str
+    revision: str
+    provenance: str
+    valid_from: datetime
+    valid_to: datetime | None
+    expected_graph_input_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.position < 1:
+            raise InvalidArtifactManifestError("controlled history item position must start at 1")
+        if not self.actor_id or not self.scope or not self.revision:
+            raise InvalidArtifactManifestError(
+                "controlled history item requires actor_id, scope, and revision"
+            )
+        if self.provenance != GOLDEN_SETUP_PROVENANCE:
+            raise InvalidArtifactManifestError(
+                "controlled history items must declare golden-setup provenance only; "
+                "no treatment-generated content may enter the source bundle"
+            )
+        _utc_z(self.valid_from)
+        if self.valid_to is not None:
+            _utc_z(self.valid_to)
+            if self.valid_to < self.valid_from:
+                raise InvalidArtifactManifestError(
+                    "controlled history item validity window is inverted"
+                )
+        if not _SHA256.fullmatch(self.expected_graph_input_sha256):
+            raise InvalidArtifactManifestError(
+                "expected graph input hash must be a lowercase SHA-256 digest"
+            )
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "position": self.position,
+            "artifact_sha256": self.artifact.sha256,
+            "actor_id": self.actor_id,
+            "scope": self.scope,
+            "revision": self.revision,
+            "provenance": self.provenance,
+            "valid_from": _utc_z(self.valid_from),
+            "valid_to": _utc_z(self.valid_to) if self.valid_to is not None else None,
+            "expected_graph_input_sha256": self.expected_graph_input_sha256,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledHistoryBundle:
+    """The frozen, immutable pre-treatment bundle shared by every controlled arm."""
+
+    history_id: HistoryId
+    protocol_id: ProtocolId
+    stratum: EvaluationStratum
+    ordered_items: tuple[ControlledHistoryItem, ...]
+    content_sha256: str
+    schema_version: str = "1.0.0"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1.0.0":
+            raise InvalidArtifactManifestError(
+                "unsupported controlled history bundle schema version"
+            )
+        if not self.ordered_items:
+            raise InvalidArtifactManifestError("controlled history bundle requires ordered items")
+        object.__setattr__(self, "ordered_items", tuple(self.ordered_items))
+        positions = [item.position for item in self.ordered_items]
+        if positions != list(range(1, len(positions) + 1)):
+            raise InvalidArtifactManifestError(
+                "controlled history items must be contiguously ordered starting at 1"
+            )
+        if not _SHA256.fullmatch(self.content_sha256):
+            raise InvalidArtifactManifestError(
+                "controlled history bundle digest must be a lowercase SHA-256 digest"
+            )
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "history_id": str(self.history_id),
+            "protocol_id": str(self.protocol_id),
+            "mode": HistoryMode.CONTROLLED.value,
+            "stratum": self.stratum.value,
+            "ordered_items": [item.to_record() for item in self.ordered_items],
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledProbeWritePolicy:
+    """The frozen, protocol-declared probe-write handling for one controlled history."""
+
+    history_id: HistoryId
+    disposition: ProbeWriteDisposition
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.disposition, ProbeWriteDisposition):
+            raise InvalidArtifactManifestError(
+                "controlled probe-write policy requires a frozen disposition"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledRestoreManifest:
+    """Immutable, per-attempt evidence that a restore produced byte-identical inputs."""
+
+    attempt_id: AttemptId
+    history_id: HistoryId
+    bundle_content_sha256: str
+    restored_content_sha256: str
+    parity_hash: str
+    verified_at: datetime
+
+    def __post_init__(self) -> None:
+        for digest in (
+            self.bundle_content_sha256,
+            self.restored_content_sha256,
+            self.parity_hash,
+        ):
+            if not _SHA256.fullmatch(digest):
+                raise InvalidArtifactManifestError(
+                    "controlled restore manifest digests must be lowercase SHA-256"
+                )
+        _utc_z(self.verified_at)
+
+    @property
+    def is_byte_identical(self) -> bool:
+        return self.restored_content_sha256 == self.bundle_content_sha256
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "attempt_id": str(self.attempt_id),
+            "history_id": str(self.history_id),
+            "bundle_content_sha256": self.bundle_content_sha256,
+            "restored_content_sha256": self.restored_content_sha256,
+            "parity_hash": self.parity_hash,
+            "verified_at": _utc_z(self.verified_at),
+            "byte_identical": self.is_byte_identical,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ControlledAnalysisIdentity:
+    """Identity required to aggregate controlled-effect estimands without pooling."""
+
+    history_mode: HistoryMode
+    stratum: EvaluationStratum
+    history_content_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.history_mode is not HistoryMode.CONTROLLED:
+            raise InvalidArtifactManifestError(
+                "controlled analysis identity requires controlled history mode"
+            )
+        if not _SHA256.fullmatch(self.history_content_sha256):
+            raise InvalidArtifactManifestError(
+                "controlled analysis identity digest must be lowercase SHA-256"
+            )
 
 
 @dataclass(frozen=True, slots=True)
