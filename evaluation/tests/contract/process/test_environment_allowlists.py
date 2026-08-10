@@ -94,3 +94,13 @@ def test_observed_prohibited_canary_fails_without_echoing_value() -> None:
 
     assert canary.value not in repr(raised.value.evidence)
     assert raised.value.evidence[0].verdict == "prohibited_observed"
+
+
+def test_subprocess_environment_rejects_encoded_provider_material_outside_its_boundary() -> None:
+    with pytest.raises(ProcessBoundaryConformanceError) as raised:
+        build_process_environment(
+            ProcessRole.GRADER,
+            runtime_environment={"PATH": "sk-" + ("x" * 24)},
+        )
+
+    assert "sk-" not in repr(raised.value.evidence)

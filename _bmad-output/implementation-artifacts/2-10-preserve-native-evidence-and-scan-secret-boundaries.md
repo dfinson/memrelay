@@ -1,6 +1,6 @@
 # Story 2.10: Preserve Native Evidence and Scan Secret Boundaries
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -39,21 +39,21 @@ So that contaminated or incomplete trials cannot proceed to grading.
 
 ## Tasks / Subtasks
 
-- [ ] Define typed artifact manifest and native execution/timing inventory (AC: 1)
-  - [ ] Reference immutable `.eval`, Inspect JSON, SDK events, memrelay provenance, provider usage/cost, grader/judge, trace/log artifacts.
-  - [ ] Record content hashes, media/schema types, producer/authority, attempt/stratum/regime IDs, and redacted locations.
-- [ ] Normalize only treatment-neutral domain fields and retain capped/failed attempts (AC: 1)
-  - [ ] Preserve native payloads byte-for-byte; keep summaries/projections derived and independently hashed.
-- [ ] Implement the pre-grading native-authority consistency gate (Architecture: AD-15)
-  - [ ] Compare terminal state, usage, retries, costs, and artifact completeness across applicable sources.
-  - [ ] Record all conflicts and prevent grading or automated success/inclusion; leave complete terminal reconciliation and inclusion decisions to Story 4.5.
-- [ ] Implement fail-closed process-specific secret/canary scanning before grading (AC: 2)
-  - [ ] Scan environment projections, logs, traces, artifacts, manifests, and serialized telemetry.
-  - [ ] Preserve only redacted finding evidence; never echo matched values.
-- [ ] Enforce raw telemetry/log default omission and treatment-label concealment (AC: 3)
-- [ ] Enforce fake `ArtifactStorePort` provenance and study-ineligibility before Story 4.1 (AC: 4)
-- [ ] Enforce fake `LedgerPort`/`TelemetryPort` provenance and study-ineligibility before Stories 4.2/4.3 (AC: 5)
-- [ ] Add tamper, disagreement, hidden-retry, secret-format, encoding/archive, and grading-gate tests (AC: 1-5)
+- [x] Define typed artifact manifest and native execution/timing inventory (AC: 1)
+  - [x] Reference immutable `.eval`, Inspect JSON, SDK events, memrelay provenance, provider usage/cost, grader/judge, trace/log artifacts.
+  - [x] Record content hashes, media/schema types, producer/authority, attempt/stratum/regime IDs, and redacted locations.
+- [x] Normalize only treatment-neutral domain fields and retain capped/failed attempts (AC: 1)
+  - [x] Preserve native payloads byte-for-byte; keep summaries/projections derived and independently hashed.
+- [x] Implement the pre-grading native-authority consistency gate (Architecture: AD-15)
+  - [x] Compare terminal state, usage, retries, costs, and artifact completeness across applicable sources.
+  - [x] Record all conflicts and prevent grading or automated success/inclusion; leave complete terminal reconciliation and inclusion decisions to Story 4.5.
+- [x] Implement fail-closed process-specific secret/canary scanning before grading (AC: 2)
+  - [x] Scan environment projections, logs, traces, artifacts, manifests, and serialized telemetry.
+  - [x] Preserve only redacted finding evidence; never echo matched values.
+- [x] Enforce raw telemetry/log default omission and treatment-label concealment (AC: 3)
+- [x] Enforce fake `ArtifactStorePort` provenance and study-ineligibility before Story 4.1 (AC: 4)
+- [x] Enforce fake `LedgerPort`/`TelemetryPort` provenance and study-ineligibility before Stories 4.2/4.3 (AC: 5)
+- [x] Add tamper, disagreement, hidden-retry, secret-format, encoding/archive, and grading-gate tests (AC: 1-5)
 
 ## Developer Context
 
@@ -119,12 +119,32 @@ Native sources remain separate authorities; normalized domain records are treatm
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable native terminal inventory and fail-closed authority reconciliation.
+- Added value-free secret boundary scanning for structured, encoded, archived, environment, temporary, and cleanup evidence.
+- Preserved fake-only provenance and blocked qualified/durable evidence ports before Epic 4.
+- Preserved the full native SDK terminal payload as a separately hashed event artifact and block-recorded persistence conflicts.
+- Validated with Python 3.13 fake-only suites: evaluator 776 passed / 4 skipped and product 1303 passed / 4 skipped.
 
 ### File List
+
+- evaluation/src/memrelay_eval/adapters/inspect/export.py
+- evaluation/src/memrelay_eval/adapters/inspect/task.py
+- evaluation/src/memrelay_eval/adapters/copilot/session.py
+- evaluation/src/memrelay_eval/adapters/process/environment.py
+- evaluation/src/memrelay_eval/domain/errors.py
+- evaluation/src/memrelay_eval/evidence/required.py
+- evaluation/src/memrelay_eval/evidence/secret_scan.py
+- evaluation/src/memrelay_eval/orchestration/attempt.py
+- evaluation/src/memrelay_eval/orchestration/inspect.py
+- evaluation/tests/contract/evidence/test_native_inventory.py
+- evaluation/tests/contract/inspect/test_inspect_copilot_contract.py
+- evaluation/tests/contract/process/test_environment_allowlists.py
+- evaluation/tests/fault/test_inspect_execution_terminal_paths.py
+- evaluation/tests/security/test_secret_boundaries.py

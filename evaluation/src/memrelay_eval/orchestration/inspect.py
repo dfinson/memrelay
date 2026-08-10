@@ -7,7 +7,9 @@ from typing import Protocol
 
 from memrelay_eval.adapters.inspect.export import (
     ExecutionEvidence,
+    persist_execution_conflict_finding,
     persist_execution_evidence,
+    persist_secret_boundary_findings,
     reconcile_execution_evidence,
 )
 from memrelay_eval.adapters.inspect.task import InspectTaskRequest, NativeTerminalRecord
@@ -16,10 +18,13 @@ from memrelay_eval.domain.errors import (
     AgentParityMismatchError,
     ExecutionAdapterError,
     ExecutionEvidenceConflictError,
+    SecretBoundaryViolationError,
 )
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import AttemptTerminalKind
+from memrelay_eval.evidence.required import require_unpaid_conformance_ports
+from memrelay_eval.evidence.secret_scan import require_secret_boundary_clear
 
 from .attempt import AttemptTerminalRecorder
 from .parity import ParityPreflightEvidence, persist_parity_preflight
@@ -43,6 +48,7 @@ class InspectAttemptController:
         self._scheduler = scheduler
         self._store = store
         self._recorder = recorder
+        require_unpaid_conformance_ports(store, recorder.ledger, recorder.telemetry)
 
     async def execute(
         self,
@@ -53,6 +59,8 @@ class InspectAttemptController:
         inspect_state: str,
         eval_bytes: bytes,
         inspect_export: dict[str, object],
+        native_evidence: dict[str, object] | None = None,
+        secret_boundaries: dict[str, object] | None = None,
     ) -> ExecutionEvidence:
         self._recorder.claim_execution(attempt_id, run_id)
         return await self._execute_claimed(
@@ -62,6 +70,8 @@ class InspectAttemptController:
             inspect_state=inspect_state,
             eval_bytes=eval_bytes,
             inspect_export=inspect_export,
+            native_evidence=native_evidence,
+            secret_boundaries=secret_boundaries,
         )
 
     async def _execute_claimed(
@@ -73,7 +83,31 @@ class InspectAttemptController:
         inspect_state: str,
         eval_bytes: bytes,
         inspect_export: dict[str, object],
+        native_evidence: dict[str, object] | None = None,
+        secret_boundaries: dict[str, object] | None = None,
     ) -> ExecutionEvidence:
+        agent_visible = {
+            "prompt": task.prompt,
+            "metadata": task.metadata,
+            "capabilities": task.capabilities,
+            "tools": task.tools,
+            "permissions": task.permissions,
+        }
+        try:
+            require_secret_boundary_clear({"agent_visible.task": agent_visible})
+        except SecretBoundaryViolationError as error:
+            finding_ref = persist_secret_boundary_findings(self._store, error.findings)
+            self._recorder.append(
+                AttemptTerminal(
+                    attempt_id,
+                    run_id,
+                    AttemptTerminalKind.EVIDENCE_INCOMPLETE,
+                    datetime.now(UTC),
+                    error.code,
+                    (finding_ref,),
+                )
+            )
+            raise SecretBoundaryViolationError(error.findings, (finding_ref,)) from error
         try:
             native = await self._scheduler.execute(task)
         except ExecutionAdapterError as error:
@@ -84,13 +118,41 @@ class InspectAttemptController:
                 {},
                 error.code,
             )
-        evidence = persist_execution_evidence(
-            self._store,
-            inspect_state=inspect_state,
-            eval_bytes=eval_bytes,
-            inspect_export=inspect_export,
-            native_terminal=native,
-        )
+        try:
+            evidence = persist_execution_evidence(
+                self._store,
+                inspect_state=inspect_state,
+                eval_bytes=eval_bytes,
+                inspect_export=inspect_export,
+                native_terminal=native,
+                native_evidence=native_evidence,
+                secret_boundaries=secret_boundaries,
+            )
+        except SecretBoundaryViolationError as error:
+            self._recorder.append(
+                AttemptTerminal(
+                    attempt_id,
+                    run_id,
+                    AttemptTerminalKind.EVIDENCE_INCOMPLETE,
+                    datetime.now(UTC),
+                    error.code,
+                    tuple(error.evidence_refs),
+                )
+            )
+            raise
+        except ExecutionEvidenceConflictError:
+            conflict_ref = persist_execution_conflict_finding(self._store)
+            self._recorder.append(
+                AttemptTerminal(
+                    attempt_id,
+                    run_id,
+                    AttemptTerminalKind.EVIDENCE_INCOMPLETE,
+                    datetime.now(UTC),
+                    ExecutionEvidenceConflictError.code,
+                    (conflict_ref,),
+                )
+            )
+            raise
         try:
             reconcile_execution_evidence(evidence, inspect_export)
         except ExecutionEvidenceConflictError:
@@ -101,11 +163,7 @@ class InspectAttemptController:
                     AttemptTerminalKind.EVIDENCE_INCOMPLETE,
                     datetime.now(UTC),
                     ExecutionEvidenceConflictError.code,
-                    (
-                        evidence.eval_artifact,
-                        evidence.inspect_json_artifact,
-                        evidence.native_terminal_artifact,
-                    ),
+                    (*evidence.inventory.artifacts.values(),),
                 )
             )
             raise
@@ -121,11 +179,7 @@ class InspectAttemptController:
                 classification,
                 datetime.now(UTC),
                 native.failure_code or native.state,
-                (
-                    evidence.eval_artifact,
-                    evidence.inspect_json_artifact,
-                    evidence.native_terminal_artifact,
-                ),
+                (*evidence.inventory.artifacts.values(),),
             )
         )
         return evidence
@@ -140,6 +194,8 @@ class InspectAttemptController:
         eval_bytes: bytes,
         inspect_export: dict[str, object],
         parity_preflight: ParityPreflightEvidence,
+        native_evidence: dict[str, object] | None = None,
+        secret_boundaries: dict[str, object] | None = None,
     ) -> ExecutionEvidence:
         """Deny mismatched pairs before the scheduler can deliver a task or infer."""
         from memrelay_eval.domain.entities import Attempt
@@ -167,4 +223,6 @@ class InspectAttemptController:
             inspect_state=inspect_state,
             eval_bytes=eval_bytes,
             inspect_export=inspect_export,
+            native_evidence=native_evidence,
+            secret_boundaries=secret_boundaries,
         )

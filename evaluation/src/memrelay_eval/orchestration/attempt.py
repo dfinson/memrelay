@@ -80,6 +80,16 @@ class AttemptTerminalRecorder:
         ):
             raise AttemptExecutionClaimDeniedError(AttemptExecutionClaimDeniedError.code)
 
+    @property
+    def ledger(self) -> LedgerPort:
+        """Expose the injected port only to the control-owned orchestration layer."""
+        return self._ledger
+
+    @property
+    def telemetry(self) -> TelemetryPort:
+        """Expose the injected port only to the control-owned orchestration layer."""
+        return self._telemetry
+
 
 class DirectEngineAttemptController:
     """Reachable orchestration seam for one separately governed engine treatment."""

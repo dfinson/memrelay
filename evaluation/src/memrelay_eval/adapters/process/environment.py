@@ -9,7 +9,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ...domain.errors import ProcessBoundaryConformanceError, ProcessEnvironmentError
+from ...domain.errors import (
+    ProcessBoundaryConformanceError,
+    ProcessEnvironmentError,
+    SecretBoundaryViolationError,
+)
+from ...evidence.secret_scan import require_secret_boundary_clear
 
 
 class CredentialDomain(StrEnum):
@@ -142,6 +147,21 @@ def build_process_environment(
         if not isinstance(value, str) or not value:
             raise ProcessEnvironmentError("credential_value_invalid")
         environment[reference.variable_name] = value
+    allowed_names = {
+        reference.variable_name
+        for reference in references
+        if reference.domain is allowed_domain and reference.target_role is role
+    }
+    try:
+        require_secret_boundary_clear(
+            {
+                "subprocess_environment": {
+                    name: value for name, value in environment.items() if name not in allowed_names
+                }
+            }
+        )
+    except SecretBoundaryViolationError as error:
+        raise ProcessBoundaryConformanceError(error.findings) from error
     return environment
 
 

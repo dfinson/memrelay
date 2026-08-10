@@ -254,6 +254,27 @@ class ExecutionEvidenceConflictError(DomainError):
     code = "execution_evidence_conflict"
 
 
+class SecretBoundaryViolationError(DomainError):
+    """A scan found credential material without retaining or rendering its value."""
+
+    code = "secret_boundary_violation"
+
+    def __init__(
+        self,
+        findings: tuple[object, ...],
+        evidence_refs: tuple[object, ...] = (),
+    ) -> None:
+        self.findings = findings
+        self.evidence_refs = evidence_refs
+        super().__init__(self.code)
+
+
+class UnqualifiedEvidencePortError(IneligibleEvidenceError):
+    """Only deterministic unpaid ports may carry Story 2 evidence."""
+
+    code = "unqualified_evidence_port"
+
+
 class ExecutionAdapterError(DomainError):
     """The Inspect-to-SDK adapter returned a typed terminal failure."""
 
