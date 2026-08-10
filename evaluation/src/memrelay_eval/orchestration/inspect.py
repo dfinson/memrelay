@@ -24,7 +24,7 @@ from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import AttemptTerminalKind
 from memrelay_eval.evidence.required import require_unpaid_conformance_ports
-from memrelay_eval.evidence.secret_scan import require_secret_boundary_clear
+from memrelay_eval.evidence.secret_scan import SecretScanFinding, require_secret_boundary_clear
 
 from .attempt import AttemptTerminalRecorder
 from .parity import ParityPreflightEvidence, persist_parity_preflight
@@ -103,7 +103,7 @@ class InspectAttemptController:
                     run_id,
                     AttemptTerminalKind.EVIDENCE_INCOMPLETE,
                     datetime.now(UTC),
-                    error.code,
+                    _secret_terminal_code(error.findings),
                     (finding_ref,),
                 )
             )
@@ -135,7 +135,7 @@ class InspectAttemptController:
                     run_id,
                     AttemptTerminalKind.EVIDENCE_INCOMPLETE,
                     datetime.now(UTC),
-                    error.code,
+                    _secret_terminal_code(error.findings),
                     tuple(error.evidence_refs),
                 )
             )
@@ -226,3 +226,15 @@ class InspectAttemptController:
             native_evidence=native_evidence,
             secret_boundaries=secret_boundaries,
         )
+
+
+def _secret_terminal_code(findings: tuple[object, ...]) -> str:
+    typed = tuple(finding for finding in findings if isinstance(finding, SecretScanFinding))
+    if any(
+        finding.detector.startswith("scan_")
+        or finding.detector.endswith("_scan_failed")
+        or finding.detector == "base64_scan_limit_exceeded"
+        for finding in typed
+    ):
+        return "evidence_scan_failed"
+    return SecretBoundaryViolationError.code

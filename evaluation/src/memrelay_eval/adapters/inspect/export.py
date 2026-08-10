@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, fields, is_dataclass
 
 from memrelay_eval.adapters.inspect.task import NativeTerminalRecord
 from memrelay_eval.canonical import canonical_bytes
@@ -15,7 +15,7 @@ from memrelay_eval.domain.errors import (
 )
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.evidence.required import NativeEvidenceInventory
-from memrelay_eval.evidence.secret_scan import SecretScanFinding, require_secret_boundary_clear
+from memrelay_eval.evidence.secret_scan import SecretBoundaryScanner, SecretScanFinding
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,44 +43,64 @@ def persist_execution_evidence(
     """Persist all authority records independently before any terminal decision."""
 
     payloads = _native_payloads(inspect_export, native_terminal, native_evidence)
-    boundaries = {
-        "inspect.eval": eval_bytes,
-        "inspect.export": inspect_export,
-        "native.terminal": _terminal_projection(native_terminal),
-        "native.evidence": payloads,
-    }
-    if secret_boundaries:
-        boundaries["supplemental"] = secret_boundaries
-    try:
-        require_secret_boundary_clear(boundaries)
-    except SecretBoundaryViolationError as error:
-        finding_ref = persist_secret_boundary_findings(store, error.findings)
-        raise SecretBoundaryViolationError(error.findings, (finding_ref,)) from error
-
-    export_bytes = canonical_bytes(dict(inspect_export))
-    native_bytes = canonical_bytes(_terminal_projection(native_terminal))
-    artifacts = {
-        "inspect_eval": store.put_bytes(
-            bytes(eval_bytes),
-            media_type="application/x-inspect-eval",
-            classification="execution_evidence",
+    artifact_values: dict[str, tuple[object, str, str, str]] = {
+        "inspect_eval": (
+            eval_bytes,
+            "inspect.eval",
+            "application/x-inspect-eval",
+            "execution_evidence",
         ),
-        "inspect_json": store.put_bytes(
-            export_bytes, media_type="application/json", classification="execution_evidence"
+        "inspect_json": (
+            inspect_export,
+            "inspect.export",
+            "application/json",
+            "execution_evidence",
         ),
-        "sdk_terminal": store.put_bytes(
-            native_bytes, media_type="application/json", classification="execution_evidence"
+        "sdk_terminal": (
+            _terminal_projection(native_terminal),
+            "native.terminal",
+            "application/json",
+            "execution_evidence",
         ),
     }
     for kind, payload in payloads.items():
-        artifacts[kind] = store.put_bytes(
-            canonical_bytes(payload),
-            media_type="application/json",
-            classification="execution_evidence",
+        artifact_values[kind] = (
+            payload,
+            f"native.evidence.{kind}",
+            "application/json",
+            "execution_evidence",
         )
+
+    findings: list[SecretScanFinding] = []
+    artifacts: dict[str, ArtifactRef] = {}
+    scanner = SecretBoundaryScanner()
+    for kind, (value, location, media_type, classification) in artifact_values.items():
+        safe_value, value_findings = _omit_unsafe_values(value, location, scanner)
+        findings.extend(value_findings)
+        artifact_bytes = (
+            bytes(safe_value)
+            if kind == "inspect_eval" and isinstance(safe_value, bytes)
+            else canonical_bytes(safe_value)
+        )
+        artifacts[kind] = store.put_bytes(
+            artifact_bytes,
+            media_type=media_type,
+            classification=classification,
+        )
+
+    if secret_boundaries:
+        findings.extend(scanner.scan({"supplemental": secret_boundaries}))
+
     inventory = NativeEvidenceInventory(artifacts)
     inventory.require_complete()
     _verify_artifacts(store, inventory)
+    if findings:
+        typed_findings = tuple(findings)
+        finding_ref = persist_secret_boundary_findings(store, typed_findings)
+        raise SecretBoundaryViolationError(
+            typed_findings,
+            (*inventory.artifacts.values(), finding_ref),
+        )
     evidence = ExecutionEvidence(
         inspect_state=inspect_state,
         eval_artifact=artifacts["inspect_eval"],
@@ -90,6 +110,87 @@ def persist_execution_evidence(
         inventory=inventory,
     )
     return evidence
+
+
+def _omit_unsafe_values(
+    value: object,
+    location: str,
+    scanner: SecretBoundaryScanner,
+    depth: int = 0,
+) -> tuple[object, tuple[SecretScanFinding, ...]]:
+    if depth > 8:
+        findings = scanner.scan({location: value})
+        return _omission(findings), findings
+    if isinstance(value, Mapping):
+        safe: dict[str, object] = {}
+        findings: list[SecretScanFinding] = []
+        omitted_keys: list[dict[str, str]] = []
+        for key, nested in value.items():
+            key_text = str(key)
+            key_location = f"{location}.{key_text}"
+            key_findings = scanner.scan({f"{key_location}.name": key_text})
+            if key_findings:
+                findings.extend(key_findings)
+                omitted_keys.extend(item.to_dict() for item in key_findings)
+                continue
+            pair_findings = ()
+            if isinstance(nested, (str, bytes, bytearray)):
+                pair_findings = scanner.scan({key_location: {key_text: nested}})
+            if pair_findings:
+                safe[key_text] = _omission(pair_findings)
+                findings.extend(pair_findings)
+                continue
+            if isinstance(nested, (str, bytes, bytearray)):
+                safe[key_text] = nested
+                continue
+            safe_nested, nested_findings = _omit_unsafe_values(
+                nested, key_location, scanner, depth + 1
+            )
+            safe[key_text] = safe_nested
+            findings.extend(nested_findings)
+        if omitted_keys:
+            safe["__memrelay_omitted_keys__"] = omitted_keys
+        return safe, tuple(findings)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _omit_unsafe_values(
+            {item.name: getattr(value, item.name) for item in fields(value)},
+            location,
+            scanner,
+            depth,
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        safe_items: list[object] = []
+        findings: list[SecretScanFinding] = []
+        for index, nested in enumerate(value):
+            safe_nested, nested_findings = _omit_unsafe_values(
+                nested, f"{location}[{index}]", scanner, depth + 1
+            )
+            safe_items.append(safe_nested)
+            findings.extend(nested_findings)
+        return safe_items, tuple(findings)
+    value_findings = scanner.scan({location: value})
+    if value_findings:
+        return _omission(value_findings), value_findings
+    return value, ()
+
+
+def _omission(findings: tuple[SecretScanFinding, ...]) -> dict[str, object]:
+    return {
+        "status": "omitted",
+        "code": _finding_terminal_code(findings),
+        "findings": [finding.to_dict() for finding in findings],
+    }
+
+
+def _finding_terminal_code(findings: tuple[SecretScanFinding, ...]) -> str:
+    if any(
+        finding.detector.startswith("scan_")
+        or finding.detector.endswith("_scan_failed")
+        or finding.detector == "base64_scan_limit_exceeded"
+        for finding in findings
+    ):
+        return "evidence_scan_failed"
+    return SecretBoundaryViolationError.code
 
 
 def reconcile_execution_evidence(
