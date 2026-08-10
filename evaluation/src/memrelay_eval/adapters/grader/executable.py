@@ -459,7 +459,7 @@ def _network_sandbox_command(
         if bubblewrap is None:
             raise NetworkSandboxUnavailableError()
         prefix = () if kind == "bubblewrap" else (shutil.which("sudo"), "-n")
-        user_namespace = ("--unshare-user",) if kind == "bubblewrap" else ()
+        user_namespace = ("--unshare-user",)
         if any(value is None for value in prefix):
             raise NetworkSandboxUnavailableError()
         sandboxed_command = _remap_sandbox_command(command, cwd)
