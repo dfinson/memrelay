@@ -239,7 +239,11 @@ def _raise_if_redacted_text(text: str) -> None:
 
 
 def _redaction_match_text(text: str) -> str:
-    """Return a detection-only skeleton without changing emitted manifest bytes."""
+    """Return a detection-only skeleton without changing emitted manifest bytes.
+
+    NFKD exposes decomposed marks, which are removed with default-ignorables
+    before casefolding into the reviewed lowercase confusable skeleton.
+    """
     normalized = unicodedata.normalize("NFKD", text)
     visible = "".join(
         character
@@ -247,7 +251,7 @@ def _redaction_match_text(text: str) -> str:
         if not _is_default_ignorable(character)
         and not unicodedata.category(character).startswith("M")
     )
-    return visible.translate(_REDACTION_CONFUSABLES).casefold()
+    return visible.casefold().translate(_REDACTION_CONFUSABLES)
 
 
 def _is_default_ignorable(character: str) -> bool:

@@ -151,6 +151,8 @@ class TestRedactionEnforcement:
             '{"note":"cred\u2060ential store"}',
             '{"note":"cred\ufeffential store"}',
             '{"note":"cre\u0301dential store"}',
+            '{"note":"cred\u030aential store"}',
+            '{"note":"cred\u20d0ential store"}',
         ),
     )
     def test_default_ignorables_cannot_split_prohibited_json_terms(self, payload: str) -> None:
@@ -165,6 +167,8 @@ class TestRedactionEnforcement:
             "cred\u2060ential store",
             "cred\ufeffential store",
             "cre\u0301dential store",
+            "cred\u030aential store",
+            "cred\u20d0ential store",
         ),
     )
     def test_normalization_cannot_split_prohibited_plaintext_terms(self, payload: str) -> None:
@@ -194,6 +198,49 @@ class TestRedactionEnforcement:
         ),
     )
     def test_confusable_prohibited_plaintext_terms_fail_closed(self, payload: str) -> None:
+        with pytest.raises(RedactionViolationError):
+            redaction_scan(payload.encode("utf-8"))
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            '{"note":"\u0391rm"}',
+            '{"note":"\u0410rm"}',
+            '{"note":"\u0421ode payload"}',
+            '{"note":"cr\u0415dential store"}',
+            '{"note":"prov\u0406der payload"}',
+            '{"note":"ar\u041c payload"}',
+            '{"note":"c\u041ede payload"}',
+            '{"note":"\u03a1rompt payload"}',
+            '{"note":"\u03a3ecret payload"}',
+            '{"note":"\u0422reatment payload"}',
+            '{"note":"repositor\u0423 payload"}',
+        ),
+    )
+    def test_uppercase_confusable_prohibited_json_terms_fail_closed(self, payload: str) -> None:
+        with pytest.raises(RedactionViolationError):
+            redaction_scan(payload.encode("utf-8"))
+
+    @pytest.mark.parametrize(
+        "payload",
+        (
+            "\u0391rm",
+            "\u0410rm",
+            "\u0421ode payload",
+            "cr\u0415dential store",
+            "prov\u0406der payload",
+            "ar\u041c payload",
+            "c\u041ede payload",
+            "\u03a1rompt payload",
+            "\u03a3ecret payload",
+            "\u0422reatment payload",
+            "repositor\u0423 payload",
+        ),
+    )
+    def test_uppercase_confusable_prohibited_plaintext_terms_fail_closed(
+        self,
+        payload: str,
+    ) -> None:
         with pytest.raises(RedactionViolationError):
             redaction_scan(payload.encode("utf-8"))
 
