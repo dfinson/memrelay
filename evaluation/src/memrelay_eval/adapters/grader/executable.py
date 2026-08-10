@@ -615,7 +615,7 @@ def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
     if sys.platform != "linux":
         raise NetworkSandboxUnavailableError()
     probe = (str(Path(sys.executable).resolve()), "-c", "pass")
-    for kind in ("sudo_bubblewrap", "bubblewrap", "unshare"):
+    for kind in ("bubblewrap", "sudo_bubblewrap", "unshare"):
         try:
             completed = subprocess.run(
                 _network_sandbox_command(probe, cwd=cwd, kind=kind),
