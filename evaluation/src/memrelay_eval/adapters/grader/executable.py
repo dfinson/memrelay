@@ -136,11 +136,14 @@ class CredentialFreeExecutableGrader:
                     kind=sandbox_kind,
                 )
             except NetworkSandboxUnavailableError:
+                diagnostic = self._sandbox_diagnostic(
+                    "unavailable", "selection_probe", "authority_unavailable"
+                )
                 return self._unavailable_result(
                     snapshot,
                     contract_sha256,
                     "network_sandbox_unavailable",
-                    input_evidence,
+                    (*input_evidence, diagnostic),
                 )
             raw_output = completed.stdout + b"\n--- stderr ---\n" + completed.stderr
             findings = scan_secret_boundaries({"grader_output": raw_output})
@@ -288,6 +291,21 @@ class CredentialFreeExecutableGrader:
             {},
             None,
             (*evidence, marker),
+        )
+
+    def _sandbox_diagnostic(self, authority: str, phase: str, code: str) -> ArtifactRef:
+        """Persist a bounded value-free sandbox failure projection."""
+        return self._artifact_store.put_bytes(
+            canonical_bytes(
+                {
+                    "schema_version": "1.0.0",
+                    "authority": authority,
+                    "phase": phase,
+                    "code": code,
+                }
+            ),
+            media_type="application/json",
+            classification="grader_sandbox_diagnostic",
         )
 
     def _result(
