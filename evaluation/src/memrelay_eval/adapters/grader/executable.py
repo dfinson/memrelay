@@ -483,6 +483,24 @@ def _network_sandbox_command(
         if unshare is None:
             raise NetworkSandboxUnavailableError()
         return (unshare, "--user", "--map-root-user", "--net", "--", *command)
+    if kind == "sudo_unshare":
+        sudo = shutil.which("sudo")
+        unshare = shutil.which("unshare")
+        if sudo is None or unshare is None:
+            raise NetworkSandboxUnavailableError()
+        return (
+            sudo,
+            "-n",
+            unshare,
+            "--net",
+            "--",
+            sudo,
+            "-n",
+            "-u",
+            _current_username(),
+            "--",
+            *command,
+        )
     raise NetworkSandboxUnavailableError()
 
 
@@ -559,6 +577,24 @@ def _network_sandbox_kind() -> str | None:
                 "pass",
             ),
         ),
+        (
+            "sudo_unshare",
+            (
+                shutil.which("sudo"),
+                "-n",
+                shutil.which("unshare"),
+                "--net",
+                "--",
+                shutil.which("sudo"),
+                "-n",
+                "-u",
+                _current_username(),
+                "--",
+                sys.executable,
+                "-c",
+                "pass",
+            ),
+        ),
     )
     for kind, command in candidates:
         if command[0] is None:
@@ -576,6 +612,12 @@ def _network_sandbox_kind() -> str | None:
         if completed.returncode == 0:
             return kind
     return None
+
+
+def _current_username() -> str:
+    import pwd
+
+    return pwd.getpwuid(os.getuid()).pw_name
 
 
 def _resolve_command(
