@@ -8,8 +8,8 @@ from types import MappingProxyType
 
 from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.entities import ArtifactRef
-from memrelay_eval.domain.identity import PROVIDER_IDENTITY_SCHEMA_VERSION, ProviderIdentity
 from memrelay_eval.domain.errors import AuthorityConflictError, SecretBoundaryViolationError
+from memrelay_eval.domain.identity import PROVIDER_IDENTITY_SCHEMA_VERSION, ProviderIdentity
 from memrelay_eval.domain.ids import AttemptId, IntentId, RunId
 from memrelay_eval.domain.intents import AuthorityConflictIntent, IntentMetadata
 from memrelay_eval.domain.ports import LedgerPort
@@ -31,7 +31,9 @@ class IdentityEvidence:
 
     def __post_init__(self) -> None:
         if self.source_kind not in {"telemetry", "manifest", "cost"} or not self.source_ref:
-            raise AuthorityConflictError("authority_conflict", ("invalid_identity_evidence_source",))
+            raise AuthorityConflictError(
+                "authority_conflict", ("invalid_identity_evidence_source",)
+            )
         object.__setattr__(self, "findings", tuple(self.findings))
         if self.findings:
             raise SecretBoundaryViolationError(self.findings)
@@ -58,10 +60,16 @@ class CostRecord:
     schema_version: str = PROVIDER_IDENTITY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if self.schema_version != PROVIDER_IDENTITY_SCHEMA_VERSION or not self.cost_entry_id or not self.attempt_id:
+        if (
+            self.schema_version != PROVIDER_IDENTITY_SCHEMA_VERSION
+            or not self.cost_entry_id
+            or not self.attempt_id
+        ):
             raise AuthorityConflictError("authority_conflict", ("invalid_cost_identity_record",))
         if self.quantity != "unavailable" and (
-            not isinstance(self.quantity, int) or isinstance(self.quantity, bool) or self.quantity < 0
+            not isinstance(self.quantity, int)
+            or isinstance(self.quantity, bool)
+            or self.quantity < 0
         ):
             raise AuthorityConflictError("authority_conflict", ("invalid_cost_quantity",))
         _require_safe_identity_boundary(self.to_record())
@@ -78,7 +86,9 @@ class CostRecord:
         }
 
 
-def validate_identity_evidence(records: tuple[IdentityEvidence, ...]) -> tuple[IdentityEvidence, ...]:
+def validate_identity_evidence(
+    records: tuple[IdentityEvidence, ...],
+) -> tuple[IdentityEvidence, ...]:
     """Preserve each source claim and fail if a source ref changes authority."""
     by_source: dict[tuple[str, str], IdentityEvidence] = {}
     for record in records:
@@ -126,13 +136,17 @@ def append_authority_conflict(
     return ledger.submit_intent(intent)
 
 
-def environment_identity_projection(environment: dict[str, str], identity: ProviderIdentity) -> dict[str, object]:
+def environment_identity_projection(
+    environment: dict[str, str], identity: ProviderIdentity
+) -> dict[str, object]:
     """Project only variable names and identity metadata; credential values never leave a child."""
     findings = scan_secret_boundaries(
         {
             "process_environment_names": tuple(environment),
             "noncredential_environment_values": {
-                name: value for name, value in environment.items() if name not in _CREDENTIAL_VARIABLE_NAMES
+                name: value
+                for name, value in environment.items()
+                if name not in _CREDENTIAL_VARIABLE_NAMES
             },
         }
     )

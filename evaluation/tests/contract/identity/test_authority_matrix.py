@@ -57,5 +57,7 @@ def test_cost_and_telemetry_evidence_preserve_source_disagreement_without_substi
             )
         )
     assert conflict.value.code == "authority_conflict"
-    cost = CostRecord("cost_opaque", "attempt_" + "1" * 32, local_identity("local_cpu"), "usage_opaque")
+    cost = CostRecord(
+        "cost_opaque", "attempt_" + "1" * 32, local_identity("local_cpu"), "usage_opaque"
+    )
     assert cost.identity.logical_ledger == "local_resources"

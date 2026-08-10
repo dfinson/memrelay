@@ -7,11 +7,14 @@ from memrelay_eval.adapters.process.environment import (
     ProcessRole,
     SyntheticCanary,
     build_process_environment,
-    inject_synthetic_canaries,
     verify_canary_conformance,
 )
 from memrelay_eval.domain.errors import ProcessBoundaryConformanceError
-from memrelay_eval.domain.identity import copilot_identity, framework_openai_identity, local_identity
+from memrelay_eval.domain.identity import (
+    copilot_identity,
+    framework_openai_identity,
+    local_identity,
+)
 from memrelay_eval.evidence.costs import environment_identity_projection
 from memrelay_eval.evidence.secret_scan import SecretBoundaryViolationError
 

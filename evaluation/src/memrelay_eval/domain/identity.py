@@ -39,7 +39,10 @@ class ProviderIdentity:
             self.logical_ledger,
             self.source_provider_label,
         )
-        if any(not isinstance(value, str) or not value.isascii() or not _SAFE_CODE.fullmatch(value) for value in fields):
+        if any(
+            not isinstance(value, str) or not value.isascii() or not _SAFE_CODE.fullmatch(value)
+            for value in fields
+        ):
             raise AuthorityConflictError("authority_conflict", ("invalid_identity_field",))
         expected = _IDENTITY_MATRIX.get(
             (
@@ -53,7 +56,9 @@ class ProviderIdentity:
             )
         )
         if expected != self.source_provider_label:
-            raise AuthorityConflictError("authority_conflict", ("provider_credential_resource_mismatch",))
+            raise AuthorityConflictError(
+                "authority_conflict", ("provider_credential_resource_mismatch",)
+            )
 
     def to_record(self) -> dict[str, str]:
         return {
@@ -189,7 +194,9 @@ def source_provider_to_canonical(value: str) -> str:
     try:
         return _SOURCE_PROVIDER_ALIASES[value]
     except KeyError as error:
-        raise AuthorityConflictError("authority_conflict", ("unknown_source_provider_label",)) from error
+        raise AuthorityConflictError(
+            "authority_conflict", ("unknown_source_provider_label",)
+        ) from error
 
 
 def copilot_identity() -> ProviderIdentity:
