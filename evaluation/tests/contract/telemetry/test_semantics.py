@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -21,7 +22,8 @@ from memrelay_eval.adapters.telemetry.semantics import (
     TelemetrySpan,
     map_genai_development_fields,
 )
-from memrelay_eval.domain.errors import TelemetryConformanceError
+from memrelay_eval.domain.errors import AuthorityConflictError, TelemetryConformanceError
+from memrelay_eval.domain.identity import copilot_identity, identity_for_span_class
 
 
 def _context(**overrides: str) -> TelemetryContext:
@@ -33,9 +35,7 @@ def _context(**overrides: str) -> TelemetryContext:
         "scenario_id": "scenario_" + "5" * 32,
         "stratum_id": "product",
         "history_mode": "controlled",
-        "provider": "github_copilot_sdk",
-        "credential_domain": "github_copilot_subscription",
-        "cost_source": "copilot_subscription_usage",
+        "identity": copilot_identity(),
         "evidence_class": "native_evidence",
         "exposure_state": "unexposed",
         "environment_fingerprint_sha256": "a" * 64,
@@ -50,7 +50,11 @@ def _span(
     values: dict[str, object] = {
         "span_id": "span-1",
         "span_class": span_class,
-        "context": _context(),
+        "context": _context(
+            identity=identity_for_span_class(span_class.value)
+            if isinstance(span_class, SpanClass)
+            else identity_for_span_class(SpanClass.CONTROL_ASSIGNMENT.value)
+        ),
         "started_at": datetime(2026, 8, 10, tzinfo=UTC),
         "ended_at": datetime(2026, 8, 10, tzinfo=UTC) + timedelta(milliseconds=10),
         "attributes": {"duration_ms": 10, "input_tokens": 4, "output_tokens": 2},
@@ -94,8 +98,6 @@ def test_required_span_registry_and_canonical_schema_are_frozen() -> None:
         ("schema_version", "1.0.1", "unknown_telemetry_schema_version"),
         ("attempt_id", "run_" + "4" * 32, "invalid_telemetry_identity"),
         ("history_mode", "CONTROLLED", "invalid_telemetry_field"),
-        ("provider", "GitHub_Copilot_SDK", "invalid_telemetry_field"),
-        ("provider", "tr\u0435atment", "invalid_telemetry_field"),
         ("failure_code", "sk-" + "a" * 32, "secret_or_treatment_in_telemetry"),
     ],
 )
@@ -105,6 +107,15 @@ def test_context_rejects_version_identity_and_unicode_alias_drift(
     with pytest.raises(TelemetryConformanceError) as error:
         _context(**{field: value})
     assert error.value.code == code
+
+
+def test_identity_matrix_rejects_alias_case_and_cross_domain_substitution() -> None:
+    with pytest.raises(AuthorityConflictError) as alias:
+        replace(copilot_identity(), source_provider_label="GitHub_Copilot_SDK")
+    assert alias.value.code == "authority_conflict"
+    with pytest.raises(AuthorityConflictError) as substitution:
+        replace(copilot_identity(), credential_domain="framework_openai_api")
+    assert substitution.value.code == "authority_conflict"
 
 
 def test_span_rejects_class_unit_confusion_duplicate_links_and_secret_attributes() -> None:

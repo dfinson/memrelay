@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/provider-identity-1.0.0.json",
+  "title": "Provider Identity Authority",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "service_name", "provider", "credential_domain",
+    "cost_source", "resource_identity", "operation", "logical_ledger",
+    "source_provider_label"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "service_name": {"enum": ["memrelay.eval.copilot.worker", "memrelay.eval.framework.daemon", "memrelay.eval.local.resource", "memrelay.eval.local.control"]},
+    "provider": {"enum": ["github_copilot", "openai", "local"]},
+    "credential_domain": {"enum": ["copilot_subscription", "framework_openai_api", "none"]},
+    "cost_source": {"enum": ["copilot_subscription_usage", "openai_api_metered", "local_resource"]},
+    "resource_identity": {"enum": ["github_copilot_sdk_session", "framework_openai_client", "local_embedding", "local_cpu", "local_memory", "local_disk", "local_collector", "local_storage", "local_control"]},
+    "operation": {"enum": ["copilot_inference", "framework_inference", "local_embedding", "local_resource", "local_control"]},
+    "logical_ledger": {"enum": ["copilot_subscription", "framework_openai", "local_resources"]},
+    "source_provider_label": {"enum": ["github_copilot_sdk", "openai", "local"]}
+  }
+}

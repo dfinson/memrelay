@@ -15,6 +15,7 @@ from memrelay_eval.domain.errors import (
     ExecutionEvidenceConflictError,
     SecretBoundaryViolationError,
 )
+from memrelay_eval.domain.identity import copilot_identity
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.states import AttemptTerminalKind
 from memrelay_eval.evidence.required import REQUIRED_NATIVE_EVIDENCE_KINDS
@@ -47,9 +48,7 @@ def _telemetry_context(attempt_id: AttemptId, run_id: RunId) -> TelemetryContext
         scenario_id="scenario_" + "3" * 32,
         stratum_id="product",
         history_mode="controlled",
-        provider="github_copilot_sdk",
-        credential_domain="github_copilot_subscription",
-        cost_source="copilot_subscription_usage",
+        identity=copilot_identity(),
         evidence_class="native_evidence",
         exposure_state="unexposed",
         environment_fingerprint_sha256="a" * 64,

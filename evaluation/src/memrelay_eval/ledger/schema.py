@@ -217,6 +217,25 @@ MIGRATIONS = (
             """,
         ),
     ),
+    Migration(
+        version=4,
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS authority_conflicts (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id TEXT NOT NULL UNIQUE REFERENCES intent_receipts(intent_id),
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                conflict_fields TEXT NOT NULL,
+                occurred_at TEXT NOT NULL
+            )
+            """,
+            (
+                "CREATE INDEX IF NOT EXISTS authority_conflicts_by_attempt "
+                "ON authority_conflicts(attempt_id, sequence)"
+            ),
+        ),
+    ),
 )
 
 

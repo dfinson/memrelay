@@ -1,6 +1,6 @@
 # Story 4.4: Separate Provider and Credential-Domain Identities
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -34,27 +34,27 @@ So that Copilot, framework OpenAI, and local resources cannot be conflated.
 
 ## Tasks / Subtasks
 
-- [ ] Define a versioned identity vocabulary and compatibility matrix (AC: 1, 2)
-  - [ ] Distinguish `service_name`, provider, credential domain, cost source, resource identity, operation, and logical ledger.
-  - [ ] Define separate Copilot subscription, framework-internal OpenAI, and local/credential-free combinations.
-  - [ ] Reject unknown or cross-authority combinations with stable `authority_conflict` reasons; never coerce.
-- [ ] Apply identities to telemetry, manifests, and cost record contracts (AC: 1, 2)
-  - [ ] Copilot: SDK-specific service/resource, canonical provider, Copilot-subscription credential domain, and `copilot_subscription_usage`; preserve any native `github_copilot_sdk` labels as source fields rather than aliases for OpenAI.
-  - [ ] Framework: separate daemon/framework service/resource, `framework_internal_openai`, framework OpenAI credential domain, and `openai_api_metered`.
-  - [ ] Local embedding/CPU/memory/disk/Collector/storage: explicit local/no-credential identity and local-resource cost source, with no external credential/provider claim.
-  - [ ] Freeze canonical enum values and source-to-canonical aliases in the versioned compatibility matrix; do not let service name, provider, or model name infer another field.
-- [ ] Enforce process environment allowlists (AC: 3)
-  - [ ] Task-agent/judge processes receive only host Copilot authentication and no OpenAI key/base URL.
-  - [ ] Framework daemon receives only its configured OpenAI credential and no GitHub/Copilot token.
-  - [ ] Collector, grader, MCP thin client, evidence, analysis, and local resource processes receive neither.
-- [ ] Integrate secret-safe native evidence checks (AC: 3)
-  - [ ] Scan environment projections and emitted telemetry/manifests with Story 2.10 canaries.
-  - [ ] Persist only redacted finding type/location/hash; never serialize or echo a credential value.
-- [ ] Gate run eligibility on identity conflicts (AC: 2)
-  - [ ] Preserve all conflicting source refs and append a typed ineligibility fact through the control-owned ledger.
-  - [ ] Do not let favorable telemetry, cost, or aggregate outcomes waive the conflict.
-- [ ] Add matrix, boundary, canary, and negative tests (AC: 1-3)
-  - [ ] Cover every valid/invalid provider×credential×cost-source×resource combination and inherited environment path.
+- [x] Define a versioned identity vocabulary and compatibility matrix (AC: 1, 2)
+  - [x] Distinguish `service_name`, provider, credential domain, cost source, resource identity, operation, and logical ledger.
+  - [x] Define separate Copilot subscription, framework-internal OpenAI, and local/credential-free combinations.
+  - [x] Reject unknown or cross-authority combinations with stable `authority_conflict` reasons; never coerce.
+- [x] Apply identities to telemetry, manifests, and cost record contracts (AC: 1, 2)
+  - [x] Copilot: SDK-specific service/resource, canonical provider, Copilot-subscription credential domain, and `copilot_subscription_usage`; preserve any native `github_copilot_sdk` labels as source fields rather than aliases for OpenAI.
+  - [x] Framework: separate daemon/framework service/resource, canonical OpenAI provider, framework OpenAI credential domain, and `openai_api_metered`.
+  - [x] Local embedding/CPU/memory/disk/Collector/storage: explicit local/no-credential identity and local-resource cost source, with no external credential/provider claim.
+  - [x] Freeze canonical enum values and source-to-canonical aliases in the versioned compatibility matrix; do not let service name, provider, or model name infer another field.
+- [x] Enforce process environment allowlists (AC: 3)
+  - [x] Task-agent/judge processes receive only host Copilot authentication and no OpenAI key/base URL.
+  - [x] Framework daemon receives only its configured OpenAI credential and no GitHub/Copilot token.
+  - [x] Collector, grader, MCP thin client, evidence, analysis, and local resource processes receive neither.
+- [x] Integrate secret-safe native evidence checks (AC: 3)
+  - [x] Scan environment projections and emitted telemetry/manifests with Story 2.10 canaries.
+  - [x] Persist only redacted finding type/location/hash; never serialize or echo a credential value.
+- [x] Gate run eligibility on identity conflicts (AC: 2)
+  - [x] Preserve all conflicting source refs and append a typed ineligibility fact through the control-owned ledger.
+  - [x] Do not let favorable telemetry, cost, or aggregate outcomes waive the conflict.
+- [x] Add matrix, boundary, canary, and negative tests (AC: 1-3)
+  - [x] Cover every valid/invalid provider×credential×cost-source×resource combination and inherited environment path.
 
 ## Developer Context
 
@@ -116,12 +116,31 @@ The current shipped product keeps the MCP process credential-free and routes fra
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- `py -3.13 -m pytest evaluation\tests -q`
+- `py -3.13 -m pytest -q`
+- `py -3.13 -m ruff check evaluation\src evaluation\tests`
+- `py -3.13 -m ruff format --check evaluation\src evaluation\tests`
+- `uv lock --project evaluation --check`
+- `git diff --check`
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a frozen provider-identity matrix with exact source labels, service/resource identity,
+  credential domain, cost source, operation, and separate logical ledgers.
+- Versioned telemetry evidence to 1.1.0 and bind each span class to its owning provider or
+  local-resource authority; invalid aliases and substitutions fail closed.
+- Added cost/identity evidence contracts, secret-safe environment projections, and a
+  control-owned append-only authority-conflict ledger fact.
+- Preserved Story 4.3 telemetry drop behavior while emitting direct-engine outcome spans on
+  failed, timed-out, and cancelled boundaries.
 
 ### File List
+
+- `evaluation/{collector/semantic-map.yaml,schemas/{provider-identity,telemetry-evidence}.schema.json}`
+- `evaluation/src/memrelay_eval/{domain/{identity,errors,intents,states}.py,evidence/costs.py}`
+- `evaluation/src/memrelay_eval/{adapters/{fakes,memrelay/engine,process/environment,telemetry/semantics}.py,ledger/{repository,schema}.py,orchestration/inspect.py}`
+- `evaluation/tests/{contract/identity/test_authority_matrix.py,security/test_provider_credential_boundaries.py}`

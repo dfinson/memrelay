@@ -12,11 +12,16 @@ from hashlib import sha256
 from types import MappingProxyType
 
 from memrelay_eval.canonical import CanonicalizationError, canonical_bytes
-from memrelay_eval.domain.errors import TelemetryConformanceError
+from memrelay_eval.domain.errors import AuthorityConflictError, TelemetryConformanceError
+from memrelay_eval.domain.identity import (
+    PROVIDER_IDENTITY_SCHEMA_VERSION,
+    ProviderIdentity,
+    identity_for_span_class,
+)
 from memrelay_eval.domain.states import EvaluationStratum, ExposureClassification, HistoryMode
 from memrelay_eval.evidence.secret_scan import scan_secret_boundaries
 
-TELEMETRY_SCHEMA_VERSION = "1.0.0"
+TELEMETRY_SCHEMA_VERSION = "1.1.0"
 GENAI_MAP_VERSION = "memrelay.eval.genai-map/1.0.0"
 _SAFE_CODE = re.compile(r"^[a-z0-9][a-z0-9_.:-]{0,127}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -105,9 +110,7 @@ class TelemetryContext:
     scenario_id: str
     stratum_id: str
     history_mode: str
-    provider: str
-    credential_domain: str
-    cost_source: str
+    identity: ProviderIdentity
     evidence_class: str
     exposure_state: str
     failure_code: str = "none"
@@ -125,14 +128,10 @@ class TelemetryContext:
             raise TelemetryConformanceError("invalid_telemetry_field", ("history_mode",))
         if self.exposure_state not in {item.value for item in ExposureClassification}:
             raise TelemetryConformanceError("invalid_telemetry_field", ("exposure_state",))
-        for field_name in (
-            "provider",
-            "credential_domain",
-            "cost_source",
-            "evidence_class",
-            "failure_code",
-        ):
+        for field_name in ("evidence_class", "failure_code"):
             _require_code(getattr(self, field_name), field_name)
+        if self.identity.schema_version != PROVIDER_IDENTITY_SCHEMA_VERSION:
+            raise TelemetryConformanceError("unknown_identity_schema_version")
         if not isinstance(self.environment_fingerprint_sha256, str) or not _SHA256.fullmatch(
             self.environment_fingerprint_sha256
         ):
@@ -151,9 +150,15 @@ class TelemetryContext:
             "memrelay.eval.scenario_id": self.scenario_id,
             "memrelay.eval.stratum_id": self.stratum_id,
             "memrelay.eval.history_mode": self.history_mode,
-            "memrelay.eval.provider": self.provider,
-            "memrelay.eval.credential_domain": self.credential_domain,
-            "memrelay.eval.cost_source": self.cost_source,
+            "memrelay.eval.identity_schema_version": self.identity.schema_version,
+            "memrelay.eval.service_name": self.identity.service_name,
+            "memrelay.eval.provider": self.identity.provider,
+            "memrelay.eval.credential_domain": self.identity.credential_domain,
+            "memrelay.eval.cost_source": self.identity.cost_source,
+            "memrelay.eval.resource_identity": self.identity.resource_identity,
+            "memrelay.eval.operation": self.identity.operation,
+            "memrelay.eval.logical_ledger": self.identity.logical_ledger,
+            "memrelay.eval.source_provider_label": self.identity.source_provider_label,
             "memrelay.eval.evidence_class": self.evidence_class,
             "memrelay.eval.exposure_state": self.exposure_state,
             "memrelay.eval.failure_code": self.failure_code,
@@ -189,6 +194,11 @@ class TelemetrySpan:
         _require_code(self.span_id, "span_id")
         if not isinstance(self.span_class, SpanClass):
             raise TelemetryConformanceError("unknown_span_class")
+        try:
+            if self.context.identity != identity_for_span_class(self.span_class.value):
+                raise TelemetryConformanceError("authority_conflict")
+        except AuthorityConflictError as error:
+            raise TelemetryConformanceError(error.code) from error
         started_at = _require_utc(self.started_at, "started_at")
         ended_at = _require_utc(self.ended_at, "ended_at")
         if ended_at < started_at:
@@ -242,10 +252,13 @@ class TelemetryAttemptEmitter:
         attributes: Mapping[str, object] | None = None,
         failure_code: str | None = None,
         links: Sequence[SpanLink] = (),
+        identity: ProviderIdentity | None = None,
     ) -> TelemetrySpan:
         context = self.context
         if failure_code is not None:
             context = replace(context, failure_code=failure_code)
+        if identity is not None:
+            context = replace(context, identity=identity)
         span_id = sha256(
             f"{context.attempt_id}:{span_class.value}:{len(self._spans)}".encode("ascii")
         ).hexdigest()[:32]

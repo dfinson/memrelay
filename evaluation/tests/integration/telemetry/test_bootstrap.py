@@ -12,6 +12,7 @@ from memrelay_eval.adapters.telemetry.otel import (
     CollectorArchive,
     verify_telemetry_bootstrap,
 )
+from memrelay_eval.adapters.telemetry.semantics import TELEMETRY_SCHEMA_VERSION
 from memrelay_eval.cli.commands import bootstrap
 from memrelay_eval.domain.errors import TelemetryConformanceError
 
@@ -42,7 +43,7 @@ service:
     )
     semantic_map.write_text(
         """
-schema_version: "1.0.0"
+schema_version: "{TELEMETRY_SCHEMA_VERSION}"
 genai_map_version: "memrelay.eval.genai-map/1.0.0"
 source: "otel-genai-development"
 mapping:
@@ -51,7 +52,7 @@ mapping:
   gen_ai.response.model: memrelay.eval.genai.response_model
   gen_ai.usage.input_tokens: memrelay.eval.genai.input_tokens
   gen_ai.usage.output_tokens: memrelay.eval.genai.output_tokens
-""".strip(),
+""".strip().format(TELEMETRY_SCHEMA_VERSION=TELEMETRY_SCHEMA_VERSION),
         encoding="utf-8",
     )
     return collector, semantic_map

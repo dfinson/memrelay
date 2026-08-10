@@ -48,6 +48,7 @@ from memrelay_eval.domain.ids import (
 from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
+    AuthorityConflictIntent,
     CreateAttemptIntent,
     CreateExperimentIntent,
     CreateRunIntent,
@@ -502,6 +503,23 @@ class SqliteLedger:
             return
         if isinstance(intent, InclusionDecisionIntent):
             self._append_inclusion_intent(intent, occurred_at)
+            return
+        if isinstance(intent, AuthorityConflictIntent):
+            self._require_attempt_for_run(intent.attempt_id, intent.run_id)
+            self.__connection.execute(
+                """
+                INSERT INTO authority_conflicts
+                    (intent_id, run_id, attempt_id, conflict_fields, occurred_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    str(intent.intent_id),
+                    str(intent.run_id),
+                    str(intent.attempt_id),
+                    ",".join(intent.conflict_fields),
+                    occurred_at,
+                ),
+            )
             return
         raise _RejectIntent("unknown_intent_kind")
 
