@@ -78,8 +78,10 @@ class CredentialFreeExecutableGrader:
         input_evidence = self._input_evidence(snapshot, contract)
         with tempfile.TemporaryDirectory(prefix="memrelay-grader-") as temporary:
             root = Path(temporary)
+            root.chmod(0o755)
             snapshot_root = root / "snapshot"
             snapshot_root.mkdir()
+            snapshot_root.chmod(0o755)
             _materialize_files(self._load_files(snapshot.terminal_files_artifact), snapshot_root)
             native_tests = root / "native_tests.py"
             hidden_tests = root / "hidden_tests.py"
