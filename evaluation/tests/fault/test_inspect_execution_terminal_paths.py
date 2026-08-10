@@ -14,6 +14,7 @@ from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.states import AttemptTerminalKind
 from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder
 from memrelay_eval.orchestration.inspect import InspectAttemptController
+from memrelay_eval.orchestration.parity import ParityPreflightEvidence
 
 
 def _task() -> InspectTaskRequest:
@@ -34,11 +35,27 @@ def _task() -> InspectTaskRequest:
 class FakeScheduler:
     def __init__(self, record: NativeTerminalRecord | Exception) -> None:
         self.record = record
+        self.calls = 0
 
     async def execute(self, task: InspectTaskRequest) -> NativeTerminalRecord:
+        self.calls += 1
         if isinstance(self.record, Exception):
             raise self.record
         return self.record
+
+
+def _preflight(
+    attempt_id: AttemptId, *, mismatched_fields: tuple[str, ...] = ()
+) -> ParityPreflightEvidence:
+    return ParityPreflightEvidence(
+        (str(attempt_id), str(AttemptId.new())),
+        "a" * 64,
+        "b" * 64,
+        "c" * 64,
+        "d" * 64,
+        mismatched_fields,
+        runtime_model_locks_verified=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -181,3 +198,110 @@ def test_malformed_native_terminal_blocks_reconciliation_with_partial_evidence(
     assert terminal is not None
     assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
     assert len(terminal.evidence_refs) == 3
+
+
+def test_terminal_parity_failure_refuses_a_passing_replay_before_scheduler_execution() -> None:
+    scheduler = FakeScheduler(NativeTerminalRecord("succeeded", (), (), {}))
+    ledger = InMemoryLedger()
+    controller = InspectAttemptController(
+        scheduler,
+        InMemoryArtifactStore(),
+        AttemptTerminalRecorder(ledger, InMemoryTelemetry()),
+    )
+    attempt_id = AttemptId.new()
+    run_id = RunId.new()
+
+    from memrelay_eval.domain.errors import (
+        AgentParityMismatchError,
+        AttemptExecutionClaimDeniedError,
+    )
+
+    with pytest.raises(AgentParityMismatchError):
+        asyncio.run(
+            controller.execute_after_parity(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=run_id,
+                inspect_state="succeeded",
+                eval_bytes=b"must-not-run",
+                inspect_export={"status": "succeeded"},
+                parity_preflight=_preflight(attempt_id, mismatched_fields=("network_policy",)),
+            )
+        )
+    assert scheduler.calls == 0
+    assert ledger.attempt_terminal_for(attempt_id) is not None
+
+    with pytest.raises(AttemptExecutionClaimDeniedError):
+        asyncio.run(
+            controller.execute_after_parity(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=run_id,
+                inspect_state="succeeded",
+                eval_bytes=b"must-not-run",
+                inspect_export={"status": "succeeded"},
+                parity_preflight=_preflight(attempt_id),
+            )
+        )
+
+    assert scheduler.calls == 0
+
+
+def test_concurrent_replays_claim_at_most_one_execution_before_scheduler_execution() -> None:
+    class BlockingScheduler:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.entered = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def execute(self, task: InspectTaskRequest) -> NativeTerminalRecord:
+            del task
+            self.calls += 1
+            self.entered.set()
+            await self.release.wait()
+            return NativeTerminalRecord("succeeded", (), (), {})
+
+    scheduler = BlockingScheduler()
+    controller = InspectAttemptController(
+        scheduler,
+        InMemoryArtifactStore(),
+        AttemptTerminalRecorder(InMemoryLedger(), InMemoryTelemetry()),
+    )
+    attempt_id = AttemptId.new()
+    run_id = RunId.new()
+    preflight = _preflight(attempt_id)
+
+    async def race() -> tuple[object, object]:
+        first = asyncio.create_task(
+            controller.execute_after_parity(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=run_id,
+                inspect_state="succeeded",
+                eval_bytes=b"concurrent-replay",
+                inspect_export={"status": "succeeded"},
+                parity_preflight=preflight,
+            )
+        )
+        await scheduler.entered.wait()
+        second = asyncio.create_task(
+            controller.execute_after_parity(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=run_id,
+                inspect_state="succeeded",
+                eval_bytes=b"concurrent-replay",
+                inspect_export={"status": "succeeded"},
+                parity_preflight=preflight,
+            )
+        )
+        await asyncio.sleep(0)
+        scheduler.release.set()
+        return tuple(await asyncio.gather(first, second, return_exceptions=True))  # type: ignore[return-value]
+
+    outcomes = asyncio.run(race())
+
+    from memrelay_eval.domain.errors import AttemptExecutionClaimDeniedError
+
+    assert scheduler.calls == 1
+    assert sum(isinstance(outcome, AttemptExecutionClaimDeniedError) for outcome in outcomes) == 1

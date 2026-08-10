@@ -54,6 +54,26 @@ class InspectAttemptController:
         eval_bytes: bytes,
         inspect_export: dict[str, object],
     ) -> ExecutionEvidence:
+        self._recorder.claim_execution(attempt_id, run_id)
+        return await self._execute_claimed(
+            task,
+            attempt_id=attempt_id,
+            run_id=run_id,
+            inspect_state=inspect_state,
+            eval_bytes=eval_bytes,
+            inspect_export=inspect_export,
+        )
+
+    async def _execute_claimed(
+        self,
+        task: InspectTaskRequest,
+        *,
+        attempt_id: AttemptId,
+        run_id: RunId,
+        inspect_state: str,
+        eval_bytes: bytes,
+        inspect_export: dict[str, object],
+    ) -> ExecutionEvidence:
         try:
             native = await self._scheduler.execute(task)
         except ExecutionAdapterError as error:
@@ -124,6 +144,7 @@ class InspectAttemptController:
         """Deny mismatched pairs before the scheduler can deliver a task or infer."""
         from memrelay_eval.domain.entities import Attempt
 
+        self._recorder.claim_execution(attempt_id, run_id)
         try:
             parity_preflight.require_execution_ready_for(Attempt(attempt_id, run_id))
         except AgentParityMismatchError as error:
@@ -139,7 +160,7 @@ class InspectAttemptController:
                 )
             )
             raise
-        return await self.execute(
+        return await self._execute_claimed(
             task,
             attempt_id=attempt_id,
             run_id=run_id,

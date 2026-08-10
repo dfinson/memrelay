@@ -12,9 +12,10 @@ from memrelay_eval.adapters.inspect.task import (
     NativeTerminalRecord,
     SessionLimits,
 )
-from memrelay_eval.canonical import canonical_bytes, verify_digest
+from memrelay_eval.canonical import attach_digest, canonical_bytes, verify_digest
 from memrelay_eval.domain.entities import (
     Attempt,
+    FrozenArtifactInput,
     NativeModel,
     NativeModelCatalog,
     Protocol,
@@ -24,9 +25,12 @@ from memrelay_eval.domain.environment import (
     AgentEnvironmentParityRecord,
     EnvironmentFingerprint,
     PromptByteHashes,
-    ProtocolDeltaAllowance,
 )
-from memrelay_eval.domain.errors import AgentParityMismatchError, ConformancePauseError
+from memrelay_eval.domain.errors import (
+    AgentParityMismatchError,
+    ConformancePauseError,
+    ProtocolDeltaAuthorityError,
+)
 from memrelay_eval.domain.ids import AttemptId, ProtocolId, RunId
 from memrelay_eval.domain.states import AttemptTerminalKind
 from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder
@@ -34,6 +38,8 @@ from memrelay_eval.orchestration.inspect import InspectAttemptController
 from memrelay_eval.orchestration.parity import (
     EnrollmentParityBinding,
     PairedParityAttempt,
+    SealedProtocolDeltaAuthority,
+    derive_sealed_protocol_delta_authority,
     persist_parity_preflight,
     preflight_paired_execution,
     verify_locked_parity_record,
@@ -127,39 +133,93 @@ def _record(
     )
 
 
-def _binding(record: AgentEnvironmentParityRecord) -> EnrollmentParityBinding:
+def _pair_id(name: bytes = b"sealed-pair") -> str:
+    return _sha(name)
+
+
+def _protocol_input(
+    store: InMemoryArtifactStore, section: object, *, revision: str = "fixture-v1"
+) -> FrozenArtifactInput:
+    document = attach_digest(
+        {
+            "artifact_type": "protocol_lock",
+            "schema_version": "1.0.0",
+            "revision": revision,
+            "agent_parity_delta_pairs": section,
+        }
+    )
+    artifact = store.put_bytes(
+        canonical_bytes(document),
+        media_type="application/json",
+        classification="synthetic",
+    )
+    return FrozenArtifactInput(artifact, "1.0.0", "fixture_protocol")
+
+
+def _authority(
+    store: InMemoryArtifactStore,
+    left: AgentEnvironmentParityRecord,
+    right: AgentEnvironmentParityRecord,
+    *,
+    pair_id: str | None = None,
+    revision: str = "fixture-v1",
+) -> tuple[SealedProtocolDeltaAuthority, str]:
+    identifier = pair_id or _pair_id()
+    authority = derive_sealed_protocol_delta_authority(
+        _protocol_input(
+            store,
+            {
+                "schema_version": "1.0.0",
+                "pairs": [
+                    {
+                        "pair_id": identifier,
+                        "delta_commitments": [left.delta_commitment, right.delta_commitment],
+                    }
+                ],
+            },
+            revision=revision,
+        ),
+        store,
+    )
+    return authority, identifier
+
+
+def _binding(
+    record: AgentEnvironmentParityRecord, authority: SealedProtocolDeltaAuthority
+) -> EnrollmentParityBinding:
     return EnrollmentParityBinding(
         record.enrollment_parity_inputs_digest,
         record.effective_configuration_digest,
         record.environment_fingerprint_digest,
-        _sha(b"protocol-projection"),
-    )
-
-
-def _allowance(record: AgentEnvironmentParityRecord) -> ProtocolDeltaAllowance:
-    return ProtocolDeltaAllowance(
-        _sha(b"protocol-projection"),
-        record.system_prompt.allowed_delta_bytes_sha256,
-        record.user_prompt.allowed_delta_bytes_sha256,
-        record.access_delta_sha256,
+        authority,
     )
 
 
 def _paired(
-    left: AgentEnvironmentParityRecord, right: AgentEnvironmentParityRecord
+    left: AgentEnvironmentParityRecord,
+    right: AgentEnvironmentParityRecord,
+    *,
+    store: InMemoryArtifactStore | None = None,
+    authority: SealedProtocolDeltaAuthority | None = None,
+    pair_id: str | None = None,
 ) -> tuple[PairedParityAttempt, PairedParityAttempt]:
+    store = store or InMemoryArtifactStore()
+    if authority is None:
+        authority, pair_id = _authority(store, left, right, pair_id=pair_id)
+    elif pair_id is None:
+        pair_id = _pair_id()
     return (
         PairedParityAttempt(
             Attempt(AttemptId.new(), RunId.new()),
             left,
-            _allowance(left),
-            _binding(left),
+            pair_id,
+            _binding(left, authority),
         ),
         PairedParityAttempt(
             Attempt(AttemptId.new(), RunId.new()),
             right,
-            _allowance(right),
-            _binding(right),
+            pair_id,
+            _binding(right, authority),
         ),
     )
 
@@ -304,23 +364,14 @@ def test_each_neutral_field_mutation_is_a_pre_exposure_mismatch(field: str, chan
 def test_undeclared_delta_is_denied_without_normalizing_it() -> None:
     left = _record()
     right = replace(_record(), access_delta_sha256=_sha(b"undeclared"))
-    first = PairedParityAttempt(
-        Attempt(AttemptId.new(), RunId.new()),
-        left,
-        _allowance(left),
-        _binding(left),
-    )
-    second = PairedParityAttempt(
-        Attempt(AttemptId.new(), RunId.new()),
-        right,
-        _allowance(_record()),
-        _binding(right),
-    )
+    store = InMemoryArtifactStore()
+    authority, pair_id = _authority(store, left, _record())
+    first, second = _paired(left, right, authority=authority, pair_id=pair_id)
 
     evidence = verify_paired_parity(first, second)
 
     assert evidence.is_verified is False
-    assert "access_delta" in evidence.mismatched_fields
+    assert "protocol_delta_commitment" in evidence.mismatched_fields
 
 
 def test_execution_record_must_reproduce_the_frozen_enrollment_binding() -> None:
@@ -429,3 +480,170 @@ def test_pre_exposure_parity_failure_does_not_authorize_an_automatic_retry() -> 
         evidence.require_execution_ready_for(first.attempt)
 
     assert protocol.allows_pre_exposure_infrastructure_retry is True
+
+
+def test_access_delta_requires_the_exact_protocol_sealed_commitment() -> None:
+    left = _record(access_delta=b'{"grant":"none"}')
+    right = _record(access_delta=b'{"grant":"shell_exec_unrestricted","scope":"host"}')
+    sealed_store = InMemoryArtifactStore()
+    authority, pair_id = _authority(sealed_store, left, right)
+    first, second = _paired(left, right, authority=authority, pair_id=pair_id)
+
+    assert verify_paired_parity(first, second).is_verified
+
+    forged_store = InMemoryArtifactStore()
+    forged_authority, forged_pair_id = _authority(
+        forged_store,
+        left,
+        _record(access_delta=b'{"grant":"read_only"}'),
+        pair_id=pair_id,
+    )
+    forged_first, forged_second = _paired(
+        left,
+        right,
+        authority=forged_authority,
+        pair_id=forged_pair_id,
+    )
+
+    evidence = verify_paired_parity(forged_first, forged_second)
+
+    assert evidence.is_verified is False
+    assert evidence.mismatched_fields == ("protocol_delta_commitment",)
+
+
+@pytest.mark.parametrize(
+    "right",
+    (
+        _record(system_delta=b"forged-system"),
+        _record(user_delta=b"forged-user"),
+    ),
+)
+def test_prompt_delta_forgery_requires_the_exact_protocol_sealed_commitment(
+    right: AgentEnvironmentParityRecord,
+) -> None:
+    left = _record()
+    store = InMemoryArtifactStore()
+    authority, pair_id = _authority(store, left, _record())
+    first, second = _paired(left, right, authority=authority, pair_id=pair_id)
+
+    evidence = verify_paired_parity(first, second)
+
+    assert evidence.is_verified is False
+    assert evidence.mismatched_fields == ("protocol_delta_commitment",)
+
+
+def test_protocol_authority_swap_and_enrollment_replay_are_denied() -> None:
+    left = _record()
+    right = _record(access_delta=b"other-access")
+    store = InMemoryArtifactStore()
+    left_authority, pair_id = _authority(store, left, right, revision="protocol-a")
+    right_authority, _ = _authority(
+        store,
+        left,
+        right,
+        pair_id=pair_id,
+        revision="protocol-b",
+    )
+    first, _ = _paired(left, right, authority=left_authority, pair_id=pair_id)
+    _, swapped = _paired(left, right, authority=right_authority, pair_id=pair_id)
+    replayed = replace(
+        swapped,
+        enrollment=replace(
+            swapped.enrollment,
+            enrollment_parity_inputs_digest=_sha(b"other-enrollment"),
+        ),
+    )
+
+    swapped_evidence = verify_paired_parity(first, swapped)
+    replayed_evidence = verify_paired_parity(first, replayed)
+
+    assert swapped_evidence.is_verified is False
+    assert "protocol_delta_authority_binding" in swapped_evidence.mismatched_fields
+    assert replayed_evidence.is_verified is False
+    assert "enrollment_parity_inputs" in replayed_evidence.mismatched_fields
+
+
+@pytest.mark.parametrize(
+    "section, expected_code",
+    (
+        (
+            {
+                "schema_version": "1.0.0",
+                "pairs": [],
+            },
+            "protocol_delta_authority_missing_pairs",
+        ),
+        (
+            {
+                "schema_version": "1.0.0",
+                "pairs": [
+                    {
+                        "pair_id": _pair_id(b"duplicate"),
+                        "delta_commitments": ["a" * 64, "b" * 64],
+                    },
+                    {
+                        "pair_id": _pair_id(b"duplicate"),
+                        "delta_commitments": ["c" * 64, "d" * 64],
+                    },
+                ],
+            },
+            "protocol_delta_authority_duplicate_pair",
+        ),
+        (
+            {
+                "schema_version": "1.0.0",
+                "pairs": [{"pair_id": _pair_id(b"malformed"), "delta_commitments": ["a" * 64]}],
+            },
+            "protocol_delta_authority_invalid_pair",
+        ),
+    ),
+)
+def test_sealed_protocol_delta_authority_rejects_missing_duplicate_and_malformed_pairs(
+    section: object, expected_code: str
+) -> None:
+    store = InMemoryArtifactStore()
+
+    with pytest.raises(ProtocolDeltaAuthorityError) as raised:
+        derive_sealed_protocol_delta_authority(_protocol_input(store, section), store)
+
+    assert raised.value.code == expected_code
+
+
+def test_sealed_protocol_delta_authority_rejects_duplicate_json_fields() -> None:
+    store = InMemoryArtifactStore()
+    payload = (
+        b'{"artifact_type":"protocol_lock","schema_version":"1.0.0",'
+        b'"agent_parity_delta_pairs":{},"agent_parity_delta_pairs":{},"digest":"'
+        + b"0" * 64
+        + b'"}'
+    )
+    artifact = store.put_bytes(
+        payload,
+        media_type="application/json",
+        classification="synthetic",
+    )
+
+    with pytest.raises(ProtocolDeltaAuthorityError) as raised:
+        derive_sealed_protocol_delta_authority(
+            FrozenArtifactInput(artifact, "1.0.0", "fixture"), store
+        )
+
+    assert raised.value.code == "protocol_delta_authority_duplicate_field"
+
+
+def test_sealed_protocol_delta_authority_is_immutable_after_source_alias_mutation() -> None:
+    left = _record()
+    right = _record(access_delta=b"other-access")
+    pair_id = _pair_id()
+    commitments = [left.delta_commitment, right.delta_commitment]
+    section = {
+        "schema_version": "1.0.0",
+        "pairs": [{"pair_id": pair_id, "delta_commitments": commitments}],
+    }
+    store = InMemoryArtifactStore()
+    authority = derive_sealed_protocol_delta_authority(_protocol_input(store, section), store)
+    commitments[1] = _sha(b"forged")
+    section["pairs"].clear()
+    first, second = _paired(left, right, authority=authority, pair_id=pair_id)
+
+    assert verify_paired_parity(first, second).is_verified

@@ -934,6 +934,38 @@ class SqliteLedger:
         with self.__lock:
             return self._attempt_terminal_for_locked(attempt_id)
 
+    def claim_attempt_execution(self, attempt_id: AttemptId, run_id: RunId) -> bool:
+        """Atomically reserve a nonterminal attempt before its scheduler can run."""
+
+        self._ensure_open()
+        with self.__lock:
+            self.__connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._require_attempt_for_run(attempt_id, run_id)
+                if self._attempt_terminal_for_locked(attempt_id) is not None:
+                    self.__connection.execute("COMMIT")
+                    return False
+                existing = self.__connection.execute(
+                    "SELECT 1 FROM attempt_execution_claims WHERE attempt_id = ?",
+                    (str(attempt_id),),
+                ).fetchone()
+                if existing is not None:
+                    self.__connection.execute("COMMIT")
+                    return False
+                self.__connection.execute(
+                    """
+                    INSERT INTO attempt_execution_claims (attempt_id, run_id, claimed_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (str(attempt_id), str(run_id), _utc_z(datetime.now(UTC))),
+                )
+                self.__connection.execute("COMMIT")
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self.__connection.execute("ROLLBACK")
+                raise
+        return True
+
     def _attempt_terminal_for_locked(self, attempt_id: AttemptId) -> AttemptTerminal | None:
         row = self.__connection.execute(
             """

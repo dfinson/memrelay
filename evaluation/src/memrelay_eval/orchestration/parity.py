@@ -2,47 +2,136 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 
-from memrelay_eval.canonical import attach_digest, canonical_bytes
+from memrelay_eval.canonical import attach_digest, canonical_bytes, verify_digest
 from memrelay_eval.domain.entities import (
     ArtifactRef,
     Attempt,
     EffectiveConfigurationArtifact,
     EnrollmentPlan,
+    FrozenArtifactInput,
 )
 from memrelay_eval.domain.environment import (
     AgentEnvironmentParityRecord,
     EnvironmentFingerprint,
-    ProtocolDeltaAllowance,
     verify_agent_environment_parity,
 )
-from memrelay_eval.domain.errors import AgentParityMismatchError, FrozenInputMutationError
+from memrelay_eval.domain.errors import (
+    AgentParityMismatchError,
+    FrozenInputMutationError,
+    ProtocolDeltaAuthorityError,
+)
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.orchestration.stages import verify_stage_locks
 
 PARITY_EVIDENCE_SCHEMA_VERSION = "1.0.0"
+_PROTOCOL_DELTA_SCHEMA_VERSION = "1.0.0"
+_SEAL = object()
+
+
+class SealedProtocolDeltaAuthority:
+    """Verified opaque delta pairs derived only from a sealed protocol artifact."""
+
+    __slots__ = ("_protocol_artifact_sha256", "_protocol_document_digest", "_pairs")
+
+    def __init__(
+        self,
+        seal: object,
+        protocol_artifact_sha256: str,
+        protocol_document_digest: str,
+        pairs: Mapping[str, tuple[str, str]],
+    ) -> None:
+        if seal is not _SEAL:
+            raise TypeError("sealed protocol delta authority must be derived from an artifact")
+        self._protocol_artifact_sha256 = protocol_artifact_sha256
+        self._protocol_document_digest = protocol_document_digest
+        self._pairs = MappingProxyType(dict(pairs))
+
+    @property
+    def protocol_artifact_sha256(self) -> str:
+        return self._protocol_artifact_sha256
+
+    @property
+    def protocol_document_digest(self) -> str:
+        return self._protocol_document_digest
+
+    def equivalent_to(self, other: object) -> bool:
+        return (
+            isinstance(other, SealedProtocolDeltaAuthority)
+            and self._protocol_artifact_sha256 == other._protocol_artifact_sha256
+            and self._protocol_document_digest == other._protocol_document_digest
+            and self._pairs == other._pairs
+        )
+
+    def require_exact_pair(
+        self,
+        pair_id: str,
+        left: AgentEnvironmentParityRecord,
+        right: AgentEnvironmentParityRecord,
+    ) -> tuple[str, ...]:
+        """Authenticate both delta triples against one sealed opaque pair."""
+
+        expected = self._pairs.get(pair_id)
+        if expected is None:
+            return ("protocol_delta_pair_missing",)
+        if tuple(sorted((left.delta_commitment, right.delta_commitment))) != tuple(
+            sorted(expected)
+        ):
+            return ("protocol_delta_commitment",)
+        return ()
+
+
+def derive_sealed_protocol_delta_authority(
+    protocol: FrozenArtifactInput, artifact_store: ArtifactStorePort
+) -> SealedProtocolDeltaAuthority:
+    """Load strict protocol delta commitments through the verified artifact port."""
+
+    raw = artifact_store.open_verified(protocol.artifact)
+    try:
+        document = json.loads(raw, object_pairs_hook=_unique_json_object)
+    except json.JSONDecodeError as error:
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_json") from error
+    if not isinstance(document, dict):
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_document")
+    if raw != canonical_bytes(document) or not verify_digest(document):
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_integrity_failure")
+    if document.get("artifact_type") != "protocol_lock":
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_artifact")
+    section = document.get("agent_parity_delta_pairs")
+    pairs = _parse_protocol_delta_pairs(section)
+    return SealedProtocolDeltaAuthority(
+        _SEAL,
+        protocol.artifact.sha256,
+        str(document["digest"]),
+        pairs,
+    )
 
 
 @dataclass(frozen=True, slots=True)
 class EnrollmentParityBinding:
-    """The immutable enrollment values that execution parity must reproduce."""
+    """The immutable enrollment values and sealed protocol authority at execution."""
 
     enrollment_parity_inputs_digest: str
     effective_configuration_digest: str
     environment_fingerprint_digest: str
-    protocol_projection_sha256: str
+    protocol_delta_authority: SealedProtocolDeltaAuthority
 
 
 @dataclass(frozen=True, slots=True)
 class PairedParityAttempt:
-    """One opaque attempt's parity record and its protocol-declared delta allowance."""
+    """One opaque attempt's parity record bound to a sealed opaque pair identifier."""
 
     attempt: Attempt
     record: AgentEnvironmentParityRecord
-    allowance: ProtocolDeltaAllowance
+    protocol_delta_pair_id: str
     enrollment: EnrollmentParityBinding
+
+    def __post_init__(self) -> None:
+        _require_sha256(self.protocol_delta_pair_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +188,7 @@ def bind_enrollment_parity(
     plan: EnrollmentPlan,
     configuration: EffectiveConfigurationArtifact,
     environment: EnvironmentFingerprint,
+    artifact_store: ArtifactStorePort,
 ) -> EnrollmentParityBinding:
     """Prove execution derives its parity inputs from the frozen enrollment plan."""
     configuration_input = plan.inputs.get("effective_configuration")
@@ -115,7 +205,7 @@ def bind_enrollment_parity(
         plan.parity_inputs_digest,
         configuration.document_digest,
         environment.digest,
-        plan.inputs["protocol"].artifact.sha256,
+        derive_sealed_protocol_delta_authority(plan.inputs["protocol"], artifact_store),
     )
 
 
@@ -123,14 +213,7 @@ def verify_paired_parity(
     left: PairedParityAttempt, right: PairedParityAttempt
 ) -> ParityPreflightEvidence:
     """Produce evidence for both arms before either task is delivered."""
-    mismatches = list(
-        verify_agent_environment_parity(
-            left.record,
-            left.allowance,
-            right.record,
-            right.allowance,
-        )
-    )
+    mismatches = list(verify_agent_environment_parity(left.record, right.record))
     for paired in (left, right):
         if (
             paired.record.enrollment_parity_inputs_digest
@@ -147,11 +230,18 @@ def verify_paired_parity(
             != paired.enrollment.environment_fingerprint_digest
         ):
             mismatches.append("environment_binding")
-        if (
-            paired.allowance.protocol_projection_sha256
-            != paired.enrollment.protocol_projection_sha256
-        ):
-            mismatches.append("protocol_delta_binding")
+    left_authority = left.enrollment.protocol_delta_authority
+    right_authority = right.enrollment.protocol_delta_authority
+    if not left_authority.equivalent_to(right_authority):
+        mismatches.append("protocol_delta_authority_binding")
+    elif left.protocol_delta_pair_id != right.protocol_delta_pair_id:
+        mismatches.append("protocol_delta_pair_binding")
+    else:
+        mismatches.extend(
+            left_authority.require_exact_pair(
+                left.protocol_delta_pair_id, left.record, right.record
+            )
+        )
     return ParityPreflightEvidence(
         (str(left.attempt.id), str(right.attempt.id)),
         left.record.digest,
@@ -260,3 +350,50 @@ def require_single_preflight(
     if len(attempts) != 2:
         raise AgentParityMismatchError("paired_agent_parity_required", ("pair_cardinality",))
     return verify_paired_parity(attempts[0], attempts[1])
+
+
+def _parse_protocol_delta_pairs(value: object) -> Mapping[str, tuple[str, str]]:
+    if not isinstance(value, Mapping) or set(value) != {"schema_version", "pairs"}:
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_schema")
+    if value["schema_version"] != _PROTOCOL_DELTA_SCHEMA_VERSION:
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_schema")
+    entries = value["pairs"]
+    if not isinstance(entries, list) or not entries:
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_missing_pairs")
+    pairs: dict[str, tuple[str, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping) or set(entry) != {"pair_id", "delta_commitments"}:
+            raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_pair")
+        pair_id = entry["pair_id"]
+        commitments = entry["delta_commitments"]
+        if not isinstance(pair_id, str) or not isinstance(commitments, list):
+            raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_pair")
+        _require_sha256(pair_id)
+        if len(commitments) != 2 or any(
+            not isinstance(commitment, str) for commitment in commitments
+        ):
+            raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_pair")
+        for commitment in commitments:
+            _require_sha256(commitment)
+        if pair_id in pairs:
+            raise ProtocolDeltaAuthorityError("protocol_delta_authority_duplicate_pair")
+        pairs[pair_id] = (commitments[0], commitments[1])
+    return MappingProxyType(pairs)
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProtocolDeltaAuthorityError("protocol_delta_authority_duplicate_field")
+        result[key] = value
+    return result
+
+
+def _require_sha256(value: object) -> None:
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or any(character not in "0123456789abcdef" for character in value)
+    ):
+        raise ProtocolDeltaAuthorityError("protocol_delta_authority_invalid_digest")

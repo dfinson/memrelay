@@ -156,25 +156,6 @@ class PromptByteHashes:
 
 
 @dataclass(frozen=True, slots=True)
-class ProtocolDeltaAllowance:
-    """Opaque protocol evidence for the only two intervention-specific deltas."""
-
-    protocol_projection_sha256: str
-    system_prompt_delta_sha256: str
-    user_prompt_delta_sha256: str
-    access_delta_sha256: str
-
-    def __post_init__(self) -> None:
-        for digest in (
-            self.protocol_projection_sha256,
-            self.system_prompt_delta_sha256,
-            self.user_prompt_delta_sha256,
-            self.access_delta_sha256,
-        ):
-            _require_sha256(digest)
-
-
-@dataclass(frozen=True, slots=True)
 class AgentEnvironmentParityRecord:
     """Canonical pre-exposure execution substrate record for one opaque attempt."""
 
@@ -242,6 +223,19 @@ class AgentEnvironmentParityRecord:
     @property
     def neutral_digest(self) -> str:
         return canonical_digest(self._document(include_allowed_deltas=False))
+
+    @property
+    def delta_commitment(self) -> str:
+        """Commit the only permitted differences without retaining their bytes."""
+
+        return canonical_digest(
+            {
+                "schema_version": AGENT_PARITY_SCHEMA_VERSION,
+                "system_prompt_delta_sha256": self.system_prompt.allowed_delta_bytes_sha256,
+                "user_prompt_delta_sha256": self.user_prompt.allowed_delta_bytes_sha256,
+                "access_delta_sha256": self.access_delta_sha256,
+            }
+        )
 
     def neutral_document(self) -> dict[str, object]:
         return attach_digest(self._document(include_allowed_deltas=False))
@@ -328,32 +322,12 @@ def require_single_environment_stratum(
     return next(iter(strata))
 
 
-def require_declared_delta(
-    record: AgentEnvironmentParityRecord, allowance: ProtocolDeltaAllowance
-) -> tuple[str, ...]:
-    """Return stable mismatch fields when an opaque protocol has not declared a delta."""
-    differences: list[str] = []
-    if record.system_prompt.allowed_delta_bytes_sha256 != allowance.system_prompt_delta_sha256:
-        differences.append("system_prompt_delta")
-    if record.user_prompt.allowed_delta_bytes_sha256 != allowance.user_prompt_delta_sha256:
-        differences.append("user_prompt_delta")
-    if record.access_delta_sha256 != allowance.access_delta_sha256:
-        differences.append("access_delta")
-    return tuple(differences)
-
-
 def verify_agent_environment_parity(
     left: AgentEnvironmentParityRecord,
-    left_allowance: ProtocolDeltaAllowance,
     right: AgentEnvironmentParityRecord,
-    right_allowance: ProtocolDeltaAllowance,
 ) -> tuple[str, ...]:
-    """Return every pre-exposure mismatch without normalizing or substituting inputs."""
-    differences = list(require_declared_delta(left, left_allowance))
-    differences.extend(require_declared_delta(right, right_allowance))
-    if left_allowance.protocol_projection_sha256 != right_allowance.protocol_projection_sha256:
-        differences.append("protocol_delta_projection")
-
+    """Return neutral pre-exposure mismatches without normalizing any input."""
+    differences: list[str] = []
     left_document = left._document(include_allowed_deltas=False)
     right_document = right._document(include_allowed_deltas=False)
     for field in sorted(set(left_document) | set(right_document)):
@@ -364,12 +338,10 @@ def verify_agent_environment_parity(
 
 def require_agent_environment_parity(
     left: AgentEnvironmentParityRecord,
-    left_allowance: ProtocolDeltaAllowance,
     right: AgentEnvironmentParityRecord,
-    right_allowance: ProtocolDeltaAllowance,
 ) -> None:
     """Raise the typed denial used before task delivery or inference."""
-    if differences := verify_agent_environment_parity(left, left_allowance, right, right_allowance):
+    if differences := verify_agent_environment_parity(left, right):
         raise AgentParityMismatchError("agent_environment_parity_mismatch", differences)
 
 

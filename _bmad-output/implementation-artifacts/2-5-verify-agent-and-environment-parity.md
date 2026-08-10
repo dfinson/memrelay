@@ -111,24 +111,38 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - `py -3.13 -m ruff check .\evaluation\src .\evaluation\tests; py -3.13 -m ruff format --check .\evaluation\src .\evaluation\tests` — passed.
 - `$env:PYTHONPATH = (Resolve-Path .\evaluation\src).Path; py -3.13 -m pytest .\evaluation\tests` — 784 passed, 4 platform-capability skips.
 - `$env:PYTHONPATH = (Resolve-Path .\src).Path; py -3.13 -m pytest .\tests` — 1303 passed, 4 optional-backend skips.
+- `$env:PYTHONPATH = (Resolve-Path .\evaluation\src).Path; py -3.13 -m pytest .\evaluation\tests\unit\orchestration\test_parity.py .\evaluation\tests\fault\test_inspect_execution_terminal_paths.py .\evaluation\tests\contract\ledger\test_repository.py` — 107 passed, 1 POSIX-only skip.
+- `py -3.13 -m ruff format .\evaluation\src .\evaluation\tests; py -3.13 -m ruff check .\evaluation\src .\evaluation\tests; py -3.13 -m ruff format --check .\evaluation\src .\evaluation\tests` — passed.
+- `$env:PYTHONPATH = (Resolve-Path .\evaluation\src).Path; py -3.13 -m pytest .\evaluation\tests` — 796 passed, 4 platform-capability skips.
+- `$env:PYTHONPATH = (Resolve-Path .\src).Path; py -3.13 -m pytest .\tests` — 1303 passed, 4 optional-backend skips.
+- `git diff --check` — passed.
 
 ### Completion Notes List
 
 - Added canonical, lower-case SHA-256 parity records for locked SDK/runtime/model controls, prompt-component bytes, tool schemas, policies, limits, workspace topology, memory/store settings, frozen configuration, and host strata.
-- Added opaque protocol delta allowances, frozen enrollment bindings, typed pre-exposure parity evidence, and a scheduler gate that records infrastructure failure before task delivery or inference.
+- Added sealed protocol delta commitments, frozen enrollment bindings, typed pre-exposure parity evidence, and a scheduler gate that records infrastructure failure before task delivery or inference.
 - Added environment-stratum linkage and ordinary aggregation denial, preserving distinct host strata instead of pooling changed fingerprints.
 - Added fake-only unit, contract, fault, and existing workspace contract coverage; no provider or paid call is made by CI.
+- Remediated review blocker B1: the execution path no longer trusts caller-supplied delta allowances. It derives opaque system-prompt, user-prompt, and access delta commitments from verified canonical protocol-lock bytes, binds both arms to one sealed pair, and rejects forged, swapped, replayed, malformed, duplicate, missing, and mutable-alias inputs.
+- Remediated review blocker B2: the sole ledger authority atomically claims each open attempt before either parity handling or scheduler invocation. A terminal or competing claim is denied before task delivery or inference; an authorized retry still requires a fresh attempt ID.
 
 ### File List
 
 - `evaluation/src/memrelay_eval/domain/environment.py`
 - `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
 - `evaluation/src/memrelay_eval/orchestration/parity.py`
+- `evaluation/src/memrelay_eval/orchestration/attempt.py`
 - `evaluation/src/memrelay_eval/orchestration/inspect.py`
+- `evaluation/src/memrelay_eval/adapters/fakes.py`
 - `evaluation/src/memrelay_eval/adapters/workspace/base.py`
+- `evaluation/src/memrelay_eval/ledger/repository.py`
+- `evaluation/src/memrelay_eval/ledger/schema.py`
 - `evaluation/tests/unit/orchestration/test_parity.py`
 - `evaluation/tests/contract/test_environment_strata.py`
+- `evaluation/tests/contract/ledger/test_repository.py`
 - `evaluation/tests/contract/workspace/test_isolation.py`
+- `evaluation/tests/fault/test_inspect_execution_terminal_paths.py`
 - `evaluation/README.md`
 - `_bmad-output/implementation-artifacts/2-5-verify-agent-and-environment-parity.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
