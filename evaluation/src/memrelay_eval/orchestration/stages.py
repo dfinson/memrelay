@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
-from memrelay_eval.domain.entities import NativeModelCatalog, RuntimeIdentity
+from memrelay_eval.domain.entities import (
+    ArtifactRef,
+    ControlledAnalysisIdentity,
+    NativeModelCatalog,
+    RuntimeIdentity,
+)
 from memrelay_eval.domain.errors import ConformancePauseError
 from memrelay_eval.domain.governance import (
     EvaluationStage,
@@ -22,7 +27,14 @@ from memrelay_eval.domain.ids import (
     PurposeVersionId,
     RepositoryId,
 )
+from memrelay_eval.domain.policies import enforce_probe_write_disposition
+from memrelay_eval.domain.states import ProbeWriteDisposition
 from memrelay_eval.orchestration.control import CrossRepositoryAdmissionController
+from memrelay_eval.orchestration.history import (
+    SequenceAnalysisIdentity,
+    require_no_cross_regime_pooling,
+    require_same_controlled_analysis_identity,
+)
 
 
 def refuse_cross_repository_stage() -> None:
@@ -99,3 +111,29 @@ def verify_stage_locks(
                 raise ConformancePauseError(
                     "model_capability_drift", f"locked model field changed: {key}"
                 )
+
+
+def enforce_controlled_effect_boundary(
+    probe_disposition: ProbeWriteDisposition,
+    *,
+    write_attempted: bool,
+    write_persisted: bool,
+    recorded_evidence: ArtifactRef | None,
+    controlled_identities: Sequence[ControlledAnalysisIdentity],
+    dynamic_identities: Sequence[SequenceAnalysisIdentity] = (),
+) -> ControlledAnalysisIdentity:
+    """Enforce Story 2.8 AC3 in one place: probe writes, estimands, and non-pooling.
+
+    Only controlled-effect estimands are permitted here; any dynamic identity present
+    alongside a controlled one means the query is combining history modes and is
+    rejected before any aggregation runs.
+    """
+
+    enforce_probe_write_disposition(
+        probe_disposition,
+        write_attempted=write_attempted,
+        write_persisted=write_persisted,
+        recorded_evidence=recorded_evidence,
+    )
+    require_no_cross_regime_pooling(controlled_identities, dynamic_identities)
+    return require_same_controlled_analysis_identity(controlled_identities)

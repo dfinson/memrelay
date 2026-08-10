@@ -2,19 +2,31 @@
 
 Only this module has treatment-aware state.  Generic execution receives an
 ``AttemptSpecification`` and remains unable to observe arm meanings.
+
+The same module also owns Story 2.8 controlled-history restoration: building one
+frozen golden checkpoint per protocol/stratum before assignment exposure, and
+restoring it byte-identically into every fresh attempt-local root.  Controlled and
+dynamic histories are separate, never-pooled regimes that happen to share this file
+because both are treatment-aware history orchestration, matching Story 2.9's layout.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from threading import Lock
 
-from memrelay_eval.canonical import canonical_digest
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.assignment import AttemptSpecification
 from memrelay_eval.domain.entities import (
+    ArtifactManifest,
     ArtifactRef,
     AttemptTerminal,
+    ControlledAnalysisIdentity,
+    ControlledHistoryBundle,
+    ControlledHistoryItem,
+    ControlledRestoreManifest,
     DynamicEpisode,
     DynamicSequence,
     DynamicSequenceCleanup,
@@ -22,12 +34,25 @@ from memrelay_eval.domain.entities import (
 )
 from memrelay_eval.domain.errors import (
     AnalysisBoundaryError,
+    ControlledEstimandPoolingError,
+    ControlledHistoryMutationError,
+    ControlledHistoryViolationError,
+    ControlledRestoreMismatchError,
     DynamicHistoryViolationError,
     UnsupportedArmError,
 )
-from memrelay_eval.domain.ids import AttemptId, EpisodeId, ExperimentId, RunId, SequenceId
-from memrelay_eval.domain.ports import LedgerPort
-from memrelay_eval.domain.states import EvaluationStratum, HistoryMode, SequenceState
+from memrelay_eval.domain.ids import (
+    AttemptId,
+    EpisodeId,
+    ExperimentId,
+    HistoryId,
+    ProtocolId,
+    RetentionPolicyId,
+    RunId,
+    SequenceId,
+)
+from memrelay_eval.domain.ports import ArtifactStorePort, LedgerPort, TreatmentPort
+from memrelay_eval.domain.states import ArtifactScope, EvaluationStratum, HistoryMode, SequenceState
 from memrelay_eval.orchestration.assignment import (
     AssignmentRequest,
     ConcealedAssignmentService,
@@ -400,3 +425,260 @@ def _resource_values(resources: SequenceResourceIdentity) -> tuple[str, ...]:
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+# ---------------------------------------------------------------------------
+# Story 2.8: controlled immutable history restoration.
+#
+# A controlled history is the opposite of a dynamic sequence: its bytes are frozen
+# once, before any assignment exposure, and every arm must restore the identical
+# bytes into a fresh attempt-local root.  No episode may consume a prior attempt's
+# outcome and a failed restore is never repaired; a retry (governed entirely by the
+# existing Story 1.7 ``RetryAuthorizer``/``retry_eligibility_denial_code`` policy)
+# only ever gets a brand-new attempt ID and a brand-new root.
+# ---------------------------------------------------------------------------
+
+
+class ControlledHistoryBuilder:
+    """Builds the one frozen golden checkpoint per protocol/stratum, never mid-trial.
+
+    This is deliberately a nonstudy operation: it never touches assignment, exposure,
+    or any treatment-aware state.  It only freezes immutable CAS bytes that every arm
+    will later restore identically.
+    """
+
+    def __init__(self, artifact_store: ArtifactStorePort) -> None:
+        self._artifact_store = artifact_store
+        self._bundles: dict[HistoryId, ControlledHistoryBundle] = {}
+        self._lock = Lock()
+
+    def build_golden_checkpoint(
+        self,
+        history_id: HistoryId,
+        protocol_id: ProtocolId,
+        stratum: EvaluationStratum,
+        experiment_id: ExperimentId,
+        items: Sequence[ControlledHistoryItem],
+    ) -> ControlledHistoryBundle:
+        """Freeze ``items`` as the sole golden checkpoint for ``history_id``.
+
+        Calling this again for the same ``history_id`` with identical bytes is an
+        idempotent no-op; calling it with different bytes is a protocol-freeze
+        mutation and is rejected closed.
+        """
+
+        record = {
+            "schema_version": "1.0.0",
+            "history_id": str(history_id),
+            "protocol_id": str(protocol_id),
+            "mode": HistoryMode.CONTROLLED.value,
+            "stratum": stratum.value,
+            "ordered_items": [item.to_record() for item in items],
+        }
+        content_sha256 = canonical_digest(record)
+        bundle = ControlledHistoryBundle(
+            history_id, protocol_id, stratum, tuple(items), content_sha256
+        )
+        with self._lock:
+            existing = self._bundles.get(history_id)
+            if existing is not None:
+                if existing.content_sha256 != bundle.content_sha256:
+                    raise ControlledHistoryMutationError()
+                return existing
+        # Evidence is frozen (immutably content-addressed, so re-attempts are safe)
+        # before the bundle is ever committed as authoritative; a failed evidence
+        # write must never leave an in-memory "frozen" bundle with no CAS record.
+        self._freeze_evidence(bundle, experiment_id)
+        with self._lock:
+            existing = self._bundles.get(history_id)
+            if existing is not None:
+                if existing.content_sha256 != bundle.content_sha256:
+                    raise ControlledHistoryMutationError()
+                return existing
+            self._bundles[history_id] = bundle
+        return bundle
+
+    def frozen_bundle(self, history_id: HistoryId) -> ControlledHistoryBundle | None:
+        with self._lock:
+            return self._bundles.get(history_id)
+
+    def _freeze_evidence(
+        self, bundle: ControlledHistoryBundle, experiment_id: ExperimentId
+    ) -> None:
+        payload = canonical_bytes(bundle.to_record())
+        artifact = self._artifact_store.put_bytes(
+            payload,
+            media_type="application/json",
+            classification="controlled_history_bundle",
+        )
+        manifest = ArtifactManifest(
+            artifact_id=artifact.artifact_id,
+            kind="controlled_history_bundle",
+            sha256=artifact.sha256,
+            size_bytes=artifact.size_bytes,
+            media_type="application/json",
+            created_at=datetime.now(UTC),
+            producer_component="memrelay_eval.orchestration.history",
+            producer_version=bundle.schema_version,
+            classification="controlled_history_bundle",
+            contains_secrets=False,
+            source_artifact_ids=tuple(item.artifact.artifact_id for item in bundle.ordered_items),
+            retention_policy_id=RetentionPolicyId.new(),
+            encryption=None,
+            scope=ArtifactScope.EXPERIMENT,
+            experiment_id=experiment_id,
+        )
+        self._artifact_store.write_manifest(manifest)
+
+
+class ControlledHistoryCoordinator:
+    """Restores one frozen bundle into a fresh attempt-local root, proving parity."""
+
+    def __init__(
+        self,
+        builder: ControlledHistoryBuilder,
+        artifact_store: ArtifactStorePort,
+        ledger: LedgerPort,
+    ) -> None:
+        self._builder = builder
+        self._artifact_store = artifact_store
+        self._ledger = ledger
+        # Restore-once-per-attempt is enforced by this single trusted instance, the
+        # same single-control-process-owned-authority pattern already used by the
+        # sibling `DynamicHistoryCoordinator._provisioned_episodes` (Story 2.9) and by
+        # `ConcealedAssignmentService._records` (Story 1.6): exactly one coordinator
+        # instance is constructed per experiment/control process (AD-08) and is the
+        # sole caller of `restore()`. Constructing a second coordinator instance over
+        # the same ledger/store is a composition-root misuse, not a supported entry
+        # point, and is called out as a disclosed residual risk in the story record.
+        self._restored_attempts: set[AttemptId] = set()
+        self._lock = Lock()
+
+    async def restore(
+        self,
+        attempt_id: AttemptId,
+        run_id: RunId,
+        history_id: HistoryId,
+        stratum: EvaluationStratum,
+        handle: object,
+        treatment: TreatmentPort,
+    ) -> ControlledRestoreManifest:
+        """Restore the frozen bundle and block exposure on any divergence.
+
+        Every call re-verifies bytes from scratch on the caller's fresh root; a
+        retry (a new ``attempt_id``, per AD-11/AD-18) can never repair a genuinely
+        divergent source, because it re-runs this exact same closed verification.
+        """
+
+        bundle = self._builder.frozen_bundle(history_id)
+        if bundle is None:
+            raise ControlledHistoryViolationError("controlled_history_not_frozen")
+        if bundle.stratum is not stratum:
+            raise ControlledHistoryViolationError("controlled_history_stratum_mismatch")
+        with self._lock:
+            if attempt_id in self._restored_attempts:
+                raise ControlledHistoryViolationError("controlled_restore_already_consumed")
+            self._restored_attempts.add(attempt_id)
+        await treatment.restore_history(handle, bundle)
+        collected = await treatment.collect_state(handle)
+        restored_content_sha256 = self._verify_restoration(bundle, collected)
+        parity_hash = canonical_digest(
+            {
+                "history_id": str(history_id),
+                "bundle_content_sha256": bundle.content_sha256,
+                "restored_content_sha256": restored_content_sha256,
+            }
+        )
+        manifest = ControlledRestoreManifest(
+            attempt_id,
+            history_id,
+            bundle.content_sha256,
+            restored_content_sha256,
+            parity_hash,
+            datetime.now(UTC),
+        )
+        self._record_manifest_evidence(manifest, run_id)
+        return manifest
+
+    def analysis_identity(self, history_id: HistoryId) -> ControlledAnalysisIdentity:
+        bundle = self._builder.frozen_bundle(history_id)
+        if bundle is None:
+            raise ControlledHistoryViolationError("controlled_history_not_frozen")
+        return ControlledAnalysisIdentity(
+            HistoryMode.CONTROLLED, bundle.stratum, bundle.content_sha256
+        )
+
+    def _verify_restoration(
+        self, bundle: ControlledHistoryBundle, collected: Sequence[ArtifactRef]
+    ) -> str:
+        expected = bundle.ordered_items
+        if len(collected) != len(expected):
+            raise ControlledRestoreMismatchError(
+                "controlled_restore_missing_all_items"
+                if not collected
+                else "controlled_restore_item_count_mismatch"
+            )
+        for item, actual in zip(expected, collected, strict=True):
+            if not isinstance(actual, ArtifactRef):
+                raise ControlledRestoreMismatchError("controlled_restore_content_mismatch")
+            if (
+                actual.sha256 != item.artifact.sha256
+                or actual.size_bytes != item.artifact.size_bytes
+            ):
+                raise ControlledRestoreMismatchError("controlled_restore_content_mismatch")
+        return canonical_digest(
+            {
+                "schema_version": bundle.schema_version,
+                "history_id": str(bundle.history_id),
+                "protocol_id": str(bundle.protocol_id),
+                "mode": HistoryMode.CONTROLLED.value,
+                "stratum": bundle.stratum.value,
+                "ordered_items": [
+                    {**item.to_record(), "artifact_sha256": actual.sha256}
+                    for item, actual in zip(expected, collected, strict=True)
+                ],
+            }
+        )
+
+    def _record_manifest_evidence(self, manifest: ControlledRestoreManifest, run_id: RunId) -> None:
+        from memrelay_eval.domain.entities import ArtifactLink
+
+        payload = canonical_bytes(manifest.to_record())
+        artifact = self._artifact_store.put_bytes(
+            payload,
+            media_type="application/json",
+            classification="controlled_restore_manifest",
+        )
+        self._ledger.append_artifact_link(
+            ArtifactLink(
+                artifact,
+                purpose="controlled_restore_manifest",
+                run_id=run_id,
+                attempt_id=manifest.attempt_id,
+            )
+        )
+
+
+def require_same_controlled_analysis_identity(
+    identities: Sequence[ControlledAnalysisIdentity],
+) -> ControlledAnalysisIdentity:
+    """Reject cross-stratum/history pooling; only one controlled identity may aggregate."""
+
+    if not identities:
+        raise ControlledEstimandPoolingError()
+    first = identities[0]
+    if any(identity != first for identity in identities[1:]):
+        raise ControlledEstimandPoolingError()
+    if first.history_mode is not HistoryMode.CONTROLLED:
+        raise ControlledEstimandPoolingError()
+    return first
+
+
+def require_no_cross_regime_pooling(
+    controlled_identities: Sequence[ControlledAnalysisIdentity],
+    dynamic_identities: Sequence[SequenceAnalysisIdentity],
+) -> None:
+    """Reject any query that would combine controlled and dynamic outcomes."""
+
+    if controlled_identities and dynamic_identities:
+        raise ControlledEstimandPoolingError()

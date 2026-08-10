@@ -41,6 +41,14 @@ class SequenceState(StrEnum):
     CLEANED_UP = "cleaned_up"
 
 
+class ProbeWriteDisposition(StrEnum):
+    """The frozen, protocol-declared handling of a controlled-history probe write."""
+
+    DISABLED = "disabled"
+    DISCARDED = "discarded"
+    RECORDED_SEPARATELY = "recorded_separately"
+
+
 class AttemptTerminalKind(StrEnum):
     SUCCEEDED = "succeeded"
     AGENT_FAILED = "agent_failed"

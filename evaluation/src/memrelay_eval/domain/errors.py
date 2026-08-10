@@ -283,3 +283,29 @@ class AnalysisBoundaryError(DynamicHistoryViolationError):
 
     def __init__(self) -> None:
         super().__init__("sequence_analysis_pooling_forbidden")
+
+
+class ControlledHistoryViolationError(DomainError):
+    """A controlled-history operation attempted to cross a frozen immutability boundary."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
+class ControlledHistoryMutationError(ControlledHistoryViolationError):
+    """A golden checkpoint was rebuilt with different bytes after protocol freeze."""
+
+    def __init__(self) -> None:
+        super().__init__("controlled_history_mutation_after_freeze")
+
+
+class ControlledRestoreMismatchError(ControlledHistoryViolationError):
+    """A restore did not produce byte-identical content for its frozen bundle."""
+
+
+class ControlledEstimandPoolingError(ControlledHistoryViolationError):
+    """An analysis requested pooling across controlled/dynamic regimes or strata."""
+
+    def __init__(self) -> None:
+        super().__init__("controlled_estimand_pooling_forbidden")
