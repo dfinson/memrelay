@@ -563,6 +563,19 @@ def _network_sandbox_kind() -> str | None:
         return None
     candidates = (
         (
+            "sudo_bubblewrap",
+            (
+                shutil.which("sudo"),
+                "-n",
+                shutil.which("bwrap"),
+                "--unshare-net",
+                "--",
+                sys.executable,
+                "-c",
+                "pass",
+            ),
+        ),
+        (
             "bubblewrap",
             (
                 shutil.which("bwrap"),
@@ -579,19 +592,6 @@ def _network_sandbox_kind() -> str | None:
                 "/proc",
                 "--dev",
                 "/dev",
-                "--",
-                sys.executable,
-                "-c",
-                "pass",
-            ),
-        ),
-        (
-            "sudo_bubblewrap",
-            (
-                shutil.which("sudo"),
-                "-n",
-                shutil.which("bwrap"),
-                "--unshare-net",
                 "--",
                 sys.executable,
                 "-c",
