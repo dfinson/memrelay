@@ -1,0 +1,9 @@
+schema_version: "1.0.0"
+genai_map_version: "memrelay.eval.genai-map/1.0.0"
+source: "otel-genai-development"
+mapping:
+  gen_ai.operation.name: memrelay.eval.genai.operation
+  gen_ai.request.model: memrelay.eval.genai.request_model
+  gen_ai.response.model: memrelay.eval.genai.response_model
+  gen_ai.usage.input_tokens: memrelay.eval.genai.input_tokens
+  gen_ai.usage.output_tokens: memrelay.eval.genai.output_tokens

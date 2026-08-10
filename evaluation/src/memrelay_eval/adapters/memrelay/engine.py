@@ -12,6 +12,11 @@ from importlib import import_module
 from pathlib import Path
 from typing import Protocol
 
+from memrelay_eval.adapters.telemetry.semantics import (
+    SpanClass,
+    TelemetryAttemptEmitter,
+    TelemetryContext,
+)
 from memrelay_eval.canonical import attach_digest, canonical_bytes, canonical_digest
 from memrelay_eval.domain.engine import (
     DirectEngineExecutionMode,
@@ -116,6 +121,7 @@ class DirectEngineAttempt:
     search_prefer_repo: str | None = None
     search_prefer_agent: str | None = None
     detail_node_uuid: str | None = None
+    telemetry_context: TelemetryContext | None = None
 
     def __post_init__(self) -> None:
         if self.authority.stratum is not EvaluationStratum.DIRECT_ENGINE:
@@ -171,8 +177,13 @@ class DirectEngineAdapter:
         self._graphs = graph_registry
         self._unpaid_runtime = unpaid_runtime
         self._live_usage_meter = live_usage_meter
+        self._telemetry_emitters: dict[AttemptId, TelemetryAttemptEmitter] = {}
 
     async def execute(self, attempt: DirectEngineAttempt) -> DirectEngineEvidence:
+        if attempt.telemetry_context is not None:
+            self._telemetry_emitters[attempt.attempt_id] = TelemetryAttemptEmitter(
+                attempt.telemetry_context, self._telemetry
+            )
         self._preflight_execution_mode(attempt)
         claim = getattr(self._graphs, "claim", None)
         if claim is None:
@@ -457,6 +468,20 @@ class DirectEngineAdapter:
             artifacts,
             result=result,
         )
+        span_class = {
+            "construction": SpanClass.FRAMEWORK_EXTRACTION,
+            "health": SpanClass.DAEMON_DISPATCH,
+            "note": SpanClass.MEMORY_WRITE,
+            "search": SpanClass.MEMORY_RETRIEVAL,
+            "detail": SpanClass.MEMORY_RETRIEVAL,
+            "close": SpanClass.CLEANUP,
+        }.get(method)
+        if span_class is not None:
+            self._emit_span(
+                attempt,
+                span_class,
+                duration_ms=max(0, round((time.monotonic() - started) * 1000)),
+            )
         return result, artifact
 
     async def _close_engine(
@@ -656,7 +681,28 @@ class DirectEngineAdapter:
                 },
             )
         )
+        self._emit_span(
+            attempt,
+            SpanClass.ARTIFACT_PERSISTENCE,
+            attributes={"artifact_sha256": artifact.sha256},
+        )
         return artifact
+
+    def _emit_span(
+        self,
+        attempt: DirectEngineAttempt,
+        span_class: SpanClass,
+        *,
+        duration_ms: int = 0,
+        attributes: Mapping[str, object] | None = None,
+    ) -> None:
+        emitter = self._telemetry_emitters.get(attempt.attempt_id)
+        if emitter is None:
+            return
+        now = datetime.now(UTC)
+        values: dict[str, object] = {"duration_ms": duration_ms}
+        values.update(attributes or {})
+        emitter.record(span_class, started_at=now, ended_at=now, attributes=values)
 
 
 def _load_memory_engine() -> MemoryEngineType:

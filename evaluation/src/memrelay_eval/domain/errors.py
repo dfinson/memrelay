@@ -275,6 +275,15 @@ class UnqualifiedEvidencePortError(IneligibleEvidenceError):
     code = "unqualified_evidence_port"
 
 
+class TelemetryConformanceError(DomainError):
+    """A versioned telemetry contract, delivery, or Collector proof failed closed."""
+
+    def __init__(self, code: str, fields: tuple[str, ...] = ()) -> None:
+        self.code = code
+        self.fields = fields
+        super().__init__(code.replace("_", " "))
+
+
 class ExecutionAdapterError(DomainError):
     """The Inspect-to-SDK adapter returned a typed terminal failure."""
 

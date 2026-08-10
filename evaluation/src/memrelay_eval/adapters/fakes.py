@@ -475,6 +475,7 @@ class InMemoryTelemetry:
     def __init__(self) -> None:
         self._observations: list[TelemetryObservation] = []
         self._terminals: list[AttemptTerminal] = []
+        self._semantic_spans: list[object] = []
 
     def emit(self, observation: TelemetryObservation) -> None:
         name = self._safe_name(observation.event_name)
@@ -489,6 +490,15 @@ class InMemoryTelemetry:
         self._terminals.append(terminal)
         self.emit(TelemetryObservation("attempt_finished", terminal.occurred_at, {}))
 
+    def emit_span(self, span: object) -> None:
+        """Retain a prevalidated semantic span without importing any telemetry SDK."""
+
+        from memrelay_eval.adapters.telemetry.semantics import TelemetrySpan
+
+        if not isinstance(span, TelemetrySpan):
+            raise ValueError("deterministic telemetry requires a TelemetrySpan")
+        self._semantic_spans.append(span)
+
     @property
     def terminals(self) -> tuple[AttemptTerminal, ...]:
         return tuple(self._terminals)
@@ -496,11 +506,21 @@ class InMemoryTelemetry:
     def flush(self, timeout_seconds: float) -> MappingProxyType:
         if timeout_seconds < 0:
             raise ValueError("timeout_seconds must not be negative")
-        return MappingProxyType({"flushed": len(self._observations), "provenance": self.provenance})
+        return MappingProxyType(
+            {
+                "flushed": len(self._observations),
+                "semantic_flushed": len(self._semantic_spans),
+                "provenance": self.provenance,
+            }
+        )
 
     @property
     def observations(self) -> tuple[TelemetryObservation, ...]:
         return tuple(self._observations)
+
+    @property
+    def semantic_spans(self) -> tuple[object, ...]:
+        return tuple(self._semantic_spans)
 
     @staticmethod
     def _safe_name(name: str) -> str:

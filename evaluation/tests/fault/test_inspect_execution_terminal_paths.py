@@ -9,6 +9,7 @@ from memrelay_eval.adapters.inspect.task import (
     NativeTerminalRecord,
     SessionLimits,
 )
+from memrelay_eval.adapters.telemetry.semantics import SpanClass, TelemetryContext
 from memrelay_eval.domain.errors import (
     ExecutionAdapterError,
     ExecutionEvidenceConflictError,
@@ -34,6 +35,24 @@ def _task() -> InspectTaskRequest:
         ("terminal",),
         ("read",),
         SessionLimits(10, 10, 10),
+    )
+
+
+def _telemetry_context(attempt_id: AttemptId, run_id: RunId) -> TelemetryContext:
+    return TelemetryContext(
+        experiment_id="exp_" + "1" * 32,
+        protocol_id="protocol_" + "2" * 32,
+        run_id=str(run_id),
+        attempt_id=str(attempt_id),
+        scenario_id="scenario_" + "3" * 32,
+        stratum_id="product",
+        history_mode="controlled",
+        provider="github_copilot_sdk",
+        credential_domain="github_copilot_subscription",
+        cost_source="copilot_subscription_usage",
+        evidence_class="native_evidence",
+        exposure_state="unexposed",
+        environment_fingerprint_sha256="a" * 64,
     )
 
 
@@ -129,6 +148,74 @@ def test_crash_path_retains_partial_authority_evidence() -> None:
     )
 
     assert evidence.native_terminal.failure_code == "sdk_crash"
+
+
+def test_real_attempt_controller_emits_persists_and_reconciles_owned_spans() -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    telemetry = InMemoryTelemetry()
+    controller = InspectAttemptController(
+        FakeScheduler(NativeTerminalRecord("succeeded", ("event",), ("patch",), {})),
+        store,
+        AttemptTerminalRecorder(ledger, telemetry),
+    )
+    attempt_id = AttemptId.new()
+    run_id = RunId.new()
+    evidence = asyncio.run(
+        controller.execute(
+            _task(),
+            attempt_id=attempt_id,
+            run_id=run_id,
+            inspect_state="succeeded",
+            eval_bytes=b"inspect eval",
+            inspect_export={"status": "succeeded"},
+            telemetry_context=_telemetry_context(attempt_id, run_id),
+            expected_telemetry_classes=frozenset(
+                {
+                    SpanClass.CONTROL_ASSIGNMENT,
+                    SpanClass.COPILOT_SESSION,
+                    SpanClass.COPILOT_MODEL_REQUEST,
+                    SpanClass.INSPECT_EXPORT,
+                    SpanClass.ARTIFACT_PERSISTENCE,
+                    SpanClass.EVIDENCE_RECONCILIATION,
+                }
+            ),
+        )
+    )
+    assert len(telemetry.semantic_spans) == 6
+    assert ledger.attempt_terminal_for(attempt_id).classification is AttemptTerminalKind.SUCCEEDED
+    assert evidence.inventory.artifacts
+
+
+def test_missing_authority_derived_instrumentation_blocks_and_persists_partial_telemetry() -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    controller = InspectAttemptController(
+        FakeScheduler(NativeTerminalRecord("succeeded", ("event",), ("patch",), {})),
+        store,
+        AttemptTerminalRecorder(ledger, InMemoryTelemetry()),
+    )
+    attempt_id = AttemptId.new()
+    run_id = RunId.new()
+    with pytest.raises(ExecutionEvidenceConflictError, match="telemetry"):
+        asyncio.run(
+            controller.execute(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=run_id,
+                inspect_state="succeeded",
+                eval_bytes=b"inspect eval",
+                inspect_export={"status": "succeeded"},
+                telemetry_context=_telemetry_context(attempt_id, run_id),
+                expected_telemetry_classes=frozenset(
+                    {SpanClass.CONTROL_ASSIGNMENT, SpanClass.MCP_TOOL_REQUEST}
+                ),
+            )
+        )
+    assert (
+        ledger.attempt_terminal_for(attempt_id).classification
+        is AttemptTerminalKind.EVIDENCE_INCOMPLETE
+    )
 
 
 def test_agent_visible_treatment_label_is_blocked_before_scheduler_execution() -> None:
