@@ -345,3 +345,33 @@ class ControlledEstimandPoolingError(ControlledHistoryViolationError):
 
     def __init__(self) -> None:
         super().__init__("controlled_estimand_pooling_forbidden")
+
+
+class SnapshotIntegrityError(ArtifactIntegrityError):
+    """A supposedly frozen workspace snapshot is incomplete, corrupt, or mutable."""
+
+    code = "workspace_snapshot_integrity_failure"
+
+
+class GraderContractError(DomainError):
+    """A deterministic-grader contract is malformed or no longer matches its pins."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
+class GraderExecutionError(DomainError):
+    """A credential-free grader could not produce a complete executable outcome."""
+
+    def __init__(self, code: str, evidence: tuple[object, ...] = ()) -> None:
+        self.code = code
+        self.evidence = evidence
+        super().__init__(code.replace("_", " "))
+
+
+class GraderReplayMismatchError(GraderExecutionError):
+    """Repeated grading under an identical frozen contract produced different outcomes."""
+
+    def __init__(self) -> None:
+        super().__init__("grader_replay_mismatch")

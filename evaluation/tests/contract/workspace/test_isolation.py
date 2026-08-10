@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import socket
 import subprocess
 from hashlib import sha256
@@ -107,6 +108,18 @@ def test_providers_provision_identical_isolated_attempt_layout(
     assert snapshot.revision == revision
     assert snapshot.source_content_sha256 == content_hash
     assert snapshot.workspace_content_sha256 == content_hash
+    assert snapshot.baseline_revision == revision
+    assert snapshot.baseline_files_artifact is not None
+    assert snapshot.terminal_files_artifact is not None
+    assert snapshot.patch_artifact is not None
+    assert snapshot.canonical_artifact is not None
+    frozen_terminal = provider.artifact_store.open_verified(snapshot.terminal_files_artifact)
+    terminal_document = json.loads(frozen_terminal)
+    assert terminal_document["files"][0]["path"] == "README.md"
+    (handle.workspace_root / "README.md").write_text("mutated after freeze\n", encoding="utf-8")
+    assert (
+        provider.artifact_store.open_verified(snapshot.terminal_files_artifact) == frozen_terminal
+    )
     _git(handle.workspace_root, "config", "--local", "workspace.isolated", "true")
     assert (
         subprocess.run(

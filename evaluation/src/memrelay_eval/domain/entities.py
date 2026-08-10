@@ -39,6 +39,7 @@ from .states import (
     EvaluationStratum,
     ExposureClassification,
     ExposurePhase,
+    GraderTerminalKind,
     HistoryMode,
     InclusionStatus,
     InternalRetrySubsystem,
@@ -392,6 +393,162 @@ class ArtifactRef:
     def from_bytes(cls, data: bytes) -> ArtifactRef:
         digest = sha256(data).hexdigest()
         return cls(ArtifactId.from_digest(digest), digest, len(data))
+
+
+@dataclass(frozen=True, slots=True)
+class GraderContract:
+    """Pinned, treatment-blind executable-grader inputs and restrictions."""
+
+    grader_version: str
+    grader_sha256: str
+    native_tests_artifact: ArtifactRef
+    hidden_tests_artifact: ArtifactRef
+    dependencies_artifact: ArtifactRef
+    scope_policy_sha256: str
+    tamper_policy_sha256: str
+    command: tuple[str, ...]
+    allowed_paths: tuple[str, ...]
+    forbidden_paths: tuple[str, ...]
+    expected_baseline_revision: str
+    expected_baseline_files_sha256: str
+    network_policy: str = "deny"
+    maximum_regrades: int = 0
+    schema_version: str = "1.0.0"
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1.0.0" or not self.grader_version:
+            raise InvalidArtifactManifestError("grader contract schema and version are required")
+        for digest in (
+            self.grader_sha256,
+            self.scope_policy_sha256,
+            self.tamper_policy_sha256,
+            self.expected_baseline_files_sha256,
+        ):
+            if not _SHA256.fullmatch(digest):
+                raise InvalidArtifactManifestError(
+                    "grader contract digests must be lowercase SHA-256"
+                )
+        if not self.expected_baseline_revision or self.network_policy != "deny":
+            raise InvalidArtifactManifestError("grader contract requires a deny network policy")
+        if self.maximum_regrades < 0:
+            raise InvalidArtifactManifestError(
+                "grader contract maximum regrades cannot be negative"
+            )
+        command = tuple(self.command)
+        if not command or command[0] != "{python}":
+            raise InvalidArtifactManifestError(
+                "grader command must begin with the pinned Python placeholder"
+            )
+        if len(set(self.allowed_paths)) != len(self.allowed_paths) or len(
+            set(self.forbidden_paths)
+        ) != len(self.forbidden_paths):
+            raise InvalidArtifactManifestError("grader path rules must not duplicate")
+        for path in (*self.allowed_paths, *self.forbidden_paths):
+            if not path or "\\" in path or path.startswith("/") or ".." in path.split("/"):
+                raise InvalidArtifactManifestError(
+                    "grader path rules must be normalized relative paths"
+                )
+        object.__setattr__(self, "command", command)
+        object.__setattr__(self, "allowed_paths", tuple(self.allowed_paths))
+        object.__setattr__(self, "forbidden_paths", tuple(self.forbidden_paths))
+
+    def to_record(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version,
+            "grader_version": self.grader_version,
+            "grader_sha256": self.grader_sha256,
+            "native_tests_sha256": self.native_tests_artifact.sha256,
+            "hidden_tests_sha256": self.hidden_tests_artifact.sha256,
+            "dependencies_sha256": self.dependencies_artifact.sha256,
+            "scope_policy_sha256": self.scope_policy_sha256,
+            "tamper_policy_sha256": self.tamper_policy_sha256,
+            "command": list(self.command),
+            "allowed_paths": list(self.allowed_paths),
+            "forbidden_paths": list(self.forbidden_paths),
+            "expected_baseline_revision": self.expected_baseline_revision,
+            "expected_baseline_files_sha256": self.expected_baseline_files_sha256,
+            "network_policy": self.network_policy,
+            "maximum_regrades": self.maximum_regrades,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class GraderResult:
+    """Immutable normalized executable result; raw output stays in its artifact."""
+
+    snapshot_sha256: str
+    contract_sha256: str
+    terminal: GraderTerminalKind
+    binary_passed: bool | None
+    test_outcomes: Mapping[str, bool]
+    continuous_score: float | None
+    objective_components: Mapping[str, float]
+    raw_output_artifact: ArtifactRef | None
+    result_artifact: ArtifactRef
+    evidence_refs: tuple[ArtifactRef, ...] = ()
+
+    def __post_init__(self) -> None:
+        for digest in (self.snapshot_sha256, self.contract_sha256):
+            if not _SHA256.fullmatch(digest):
+                raise InvalidArtifactManifestError(
+                    "grader result digests must be lowercase SHA-256"
+                )
+        if self.terminal is GraderTerminalKind.PASSED and self.binary_passed is not True:
+            raise InvalidArtifactManifestError("passed grader results require a binary pass")
+        if self.terminal is GraderTerminalKind.FAILED and self.binary_passed is not False:
+            raise InvalidArtifactManifestError("failed grader results require a binary failure")
+        if self.terminal in {GraderTerminalKind.UNAVAILABLE, GraderTerminalKind.BLOCKED} and (
+            self.binary_passed is not None
+        ):
+            raise InvalidArtifactManifestError("blocked or unavailable grades cannot infer a pass")
+        if self.continuous_score is not None and not isinstance(self.continuous_score, float):
+            raise InvalidArtifactManifestError("continuous scores must be floats when available")
+        if any(
+            not isinstance(name, str) or not isinstance(value, bool)
+            for name, value in self.test_outcomes.items()
+        ):
+            raise InvalidArtifactManifestError("test outcomes must be named booleans")
+        if any(
+            not isinstance(name, str) or not isinstance(value, float)
+            for name, value in self.objective_components.items()
+        ):
+            raise InvalidArtifactManifestError("objective components must be named floats")
+        object.__setattr__(self, "test_outcomes", MappingProxyType(dict(self.test_outcomes)))
+        object.__setattr__(
+            self, "objective_components", MappingProxyType(dict(self.objective_components))
+        )
+        object.__setattr__(self, "evidence_refs", tuple(self.evidence_refs))
+
+
+@dataclass(frozen=True, slots=True)
+class FlakyTestClassification:
+    """A frozen aggregate from bounded candidate reruns, never a favorable selection."""
+
+    outcomes: tuple[bool, ...]
+    preregistered_signature: tuple[bool, ...] | None
+
+    def __post_init__(self) -> None:
+        if not self.outcomes or len(self.outcomes) > 3:
+            raise InvalidArtifactManifestError(
+                "candidate grading has one initial run and at most two reruns"
+            )
+        if self.preregistered_signature is not None and (
+            len(self.preregistered_signature) != len(self.outcomes)
+        ):
+            raise InvalidArtifactManifestError("flaky signature must cover every candidate grading")
+        object.__setattr__(self, "outcomes", tuple(self.outcomes))
+        if self.preregistered_signature is not None:
+            object.__setattr__(self, "preregistered_signature", tuple(self.preregistered_signature))
+
+    @property
+    def is_preregistered_flaky_signature(self) -> bool:
+        return self.preregistered_signature is not None and (
+            self.outcomes == self.preregistered_signature
+        )
+
+    @property
+    def aggregate_passed(self) -> bool:
+        return all(self.outcomes)
 
 
 @dataclass(frozen=True, slots=True)

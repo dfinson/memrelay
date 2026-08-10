@@ -1,6 +1,6 @@
 # Story 3.1: Freeze Snapshots and Run Deterministic Graders
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -36,23 +36,23 @@ so that executable correctness is reproducible and cannot be influenced by treat
 
 ## Tasks / Subtasks
 
-- [ ] Define immutable snapshot and frozen grader domain records (AC: 1, 2)
-  - [ ] Record baseline/terminal revisions, exact patch/files, canonical normalization policy, raw/canonical hashes, grader/dependency/network/scope/tamper contracts, and opaque attempt IDs.
-- [ ] Freeze workspace through the existing `WorkspacePort` and detach grading from the mutable workspace (AC: 1)
-  - [ ] Prove post-freeze file, clock, path, and workspace mutations cannot alter resolved grader bytes.
-- [ ] Implement the credential-free executable grader adapter (AC: 2)
-  - [ ] Launch with a minimal environment, no GitHub/Copilot/OpenAI credentials, assignment access, provider client, or unrestricted network.
-  - [ ] Run benchmark-native/hidden tests and objective tamper/patch-scope checks under the pinned contract; emit typed failures and partial evidence.
-- [ ] Implement deterministic replay comparison and authoritative hard outcome (AC: 3)
-  - [ ] Require exact binary/test equality and continuous-score tolerance `1e-6`; timing is evidence but excluded from equality.
-  - [ ] Preserve every result and disagreement; executable failure and categorical blockers are hard, non-overridable outcomes.
-  - [ ] Apply the frozen flaky-test policy without best-of-N: task intake requires five fresh baseline passes and five fresh gold-patch passes; a failing candidate may rerun at most twice only to classify a preregistered flaky signature, and the frozen aggregate—not the favorable run—determines the result.
-  - [ ] On grader failure, re-grade only the identical frozen snapshot under the identical contract and bounded retry count; unresolved grading remains `unavailable` plus a grading blocker, never pass or zero.
-- [ ] Route all artifacts through fake `ArtifactStorePort` until durable CAS qualification (AC: 4)
-  - [ ] Mark provenance `unpaid_conformance`; reject paid execution or inclusion before Story 4.1 conformance.
-  - [ ] Preserve the inherited fake-ledger/fake-telemetry barrier: Story 4.1 qualifies artifact durability only; paid/study eligibility still requires Stories 4.2 and 4.3 and later reconciliation.
-- [ ] Add unit, contract, fault, and no-network tests (AC: 1-4)
-  - [ ] Cover baseline/gold repeat stability, dependency outage, allowed/forbidden network, pre/post-start image drift, crash, tamper, patch scope, hash corruption, and fake-artifact gating.
+- [x] Define immutable snapshot and frozen grader domain records (AC: 1, 2)
+  - [x] Record baseline/terminal revisions, exact patch/files, canonical normalization policy, raw/canonical hashes, grader/dependency/network/scope/tamper contracts, and opaque attempt IDs.
+- [x] Freeze workspace through the existing `WorkspacePort` and detach grading from the mutable workspace (AC: 1)
+  - [x] Prove post-freeze file, clock, path, and workspace mutations cannot alter resolved grader bytes.
+- [x] Implement the credential-free executable grader adapter (AC: 2)
+  - [x] Launch with a minimal environment, no GitHub/Copilot/OpenAI credentials, assignment access, provider client, or unrestricted network.
+  - [x] Run benchmark-native/hidden tests and objective tamper/patch-scope checks under the pinned contract; emit typed failures and partial evidence.
+- [x] Implement deterministic replay comparison and authoritative hard outcome (AC: 3)
+  - [x] Require exact binary/test equality and continuous-score tolerance `1e-6`; timing is evidence but excluded from equality.
+  - [x] Preserve every result and disagreement; executable failure and categorical blockers are hard, non-overridable outcomes.
+  - [x] Apply the frozen flaky-test policy without best-of-N: task intake requires five fresh baseline passes and five fresh gold-patch passes; a failing candidate may rerun at most twice only to classify a preregistered flaky signature, and the frozen aggregate—not the favorable run—determines the result.
+  - [x] On grader failure, re-grade only the identical frozen snapshot under the identical contract and bounded retry count; unresolved grading remains `unavailable` plus a grading blocker, never pass or zero.
+- [x] Route all artifacts through fake `ArtifactStorePort` until durable CAS qualification (AC: 4)
+  - [x] Mark provenance `unpaid_conformance`; reject paid execution or inclusion before Story 4.1 conformance.
+  - [x] Preserve the inherited fake-ledger/fake-telemetry barrier: Story 4.1 qualifies artifact durability only; paid/study eligibility still requires Stories 4.2 and 4.3 and later reconciliation.
+- [x] Add unit, contract, fault, and no-network tests (AC: 1-4)
+  - [x] Cover baseline/gold repeat stability, dependency outage, allowed/forbidden network, pre/post-start image drift, crash, tamper, patch scope, hash corruption, and fake-artifact gating.
 
 ## Developer Context
 
@@ -103,6 +103,25 @@ TBD by implementation agent
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added detached canonical workspace snapshot artifacts for baseline/terminal files, patch, and
+  normalization policy; grader inputs are resolved only from verified artifact bytes.
+- Added a credential-free Python grader with provider-free environment, in-process deny-network guard,
+  hash-pinned native/hidden/dependency artifacts, scope/tamper gates, and preserved raw/normalized output.
+- Added replay equality, bounded no-best-of-N flaky classification, fake-provenance gating, and
+  adversarial snapshot, secret, path, crash, timeout, cancellation, and concurrent-isolation coverage.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/3-1-freeze-snapshots-and-run-deterministic-graders.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/src/memrelay_eval/adapters/grader/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/grader/executable.py`
+- `evaluation/src/memrelay_eval/adapters/workspace/base.py`
+- `evaluation/src/memrelay_eval/domain/entities.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/domain/states.py`
+- `evaluation/src/memrelay_eval/scoring/__init__.py`
+- `evaluation/src/memrelay_eval/scoring/service.py`
+- `evaluation/tests/contract/workspace/test_isolation.py`
+- `evaluation/tests/unit/scoring/test_deterministic_grader.py`

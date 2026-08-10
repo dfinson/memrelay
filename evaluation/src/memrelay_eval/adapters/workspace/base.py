@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ctypes
 import json
 import os
@@ -121,11 +122,19 @@ class WorkspaceHandle:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSnapshot:
-    """Immutable source/workspace identity taken before any execution."""
+    """Immutable detached snapshot identity; no mutable workspace path is retained."""
 
     revision: str
     source_content_sha256: str
     workspace_content_sha256: str
+    baseline_revision: str | None = None
+    baseline_files_artifact: ArtifactRef | None = None
+    terminal_files_artifact: ArtifactRef | None = None
+    patch_artifact: ArtifactRef | None = None
+    canonical_artifact: ArtifactRef | None = None
+    canonical_sha256: str | None = None
+    attempt_id: AttemptId | None = None
+    run_id: RunId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,10 +218,51 @@ class BaseWorkspaceProvider:
             raise WorkspaceProviderError("cannot freeze a cleaned workspace")
         revision = self._git(handle.workspace_root, "rev-parse", "HEAD")
         content_hash = self._archive_hash(handle.workspace_root, revision)
+        baseline_files = self._snapshot_file_bytes(handle.source_root)
+        terminal_files = self._snapshot_file_bytes(handle.workspace_root)
+        patch_bytes = self._git_bytes(
+            handle.workspace_root, "diff", "--binary", handle.frozen_revision
+        )
+        baseline_files_artifact = self.artifact_store.put_bytes(
+            baseline_files, media_type="application/json", classification="workspace_snapshot"
+        )
+        terminal_files_artifact = self.artifact_store.put_bytes(
+            terminal_files, media_type="application/json", classification="workspace_snapshot"
+        )
+        patch_artifact = self.artifact_store.put_bytes(
+            patch_bytes, media_type="text/x-diff", classification="workspace_patch"
+        )
+        snapshot_document = canonical_bytes(
+            {
+                "schema_version": "1.0.0",
+                "normalization": {
+                    "paths": "relative_posix",
+                    "timestamps": "omitted",
+                    "file_order": "codepoint",
+                    "reparse_points": "rejected",
+                },
+                "baseline_revision": handle.frozen_revision,
+                "terminal_revision": revision,
+                "baseline_files_sha256": baseline_files_artifact.sha256,
+                "terminal_files_sha256": terminal_files_artifact.sha256,
+                "patch_sha256": patch_artifact.sha256,
+            }
+        )
+        canonical_artifact = self.artifact_store.put_bytes(
+            snapshot_document, media_type="application/json", classification="workspace_snapshot"
+        )
         snapshot = WorkspaceSnapshot(
             revision=revision,
             source_content_sha256=handle.source_content_sha256,
             workspace_content_sha256=content_hash,
+            baseline_revision=handle.frozen_revision,
+            baseline_files_artifact=baseline_files_artifact,
+            terminal_files_artifact=terminal_files_artifact,
+            patch_artifact=patch_artifact,
+            canonical_artifact=canonical_artifact,
+            canonical_sha256=canonical_artifact.sha256,
+            attempt_id=handle.attempt_id,
+            run_id=handle.run_id,
         )
         self._record_evidence(handle, "workspace_snapshot")
         return snapshot
@@ -460,6 +510,59 @@ class BaseWorkspaceProvider:
         except subprocess.CalledProcessError as error:
             raise WorkspaceProviderError(error.stderr.decode(errors="replace").strip()) from error
         return sha256(archive).hexdigest()
+
+    @staticmethod
+    def _git_bytes(path: Path, *arguments: str) -> bytes:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(path), *arguments],
+                check=True,
+                capture_output=True,
+            ).stdout
+        except subprocess.CalledProcessError as error:
+            raise WorkspaceProviderError(error.stderr.decode(errors="replace").strip()) from error
+
+    def _snapshot_file_bytes(self, root: Path) -> bytes:
+        """Capture regular workspace files with no clock or host-path authority."""
+        self._assert_safe_authority_path(root, "workspace snapshot root")
+        files: list[dict[str, object]] = []
+        for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            retained_directories: list[str] = []
+            for directory in sorted(directories):
+                if directory == ".git":
+                    continue
+                if self._is_reparse_point(current_path / directory):
+                    raise WorkspacePathSafetyError(
+                        "workspace snapshot contains a symlink or reparse point: "
+                        f"{current_path / directory}"
+                    )
+                retained_directories.append(directory)
+            directories[:] = retained_directories
+            for filename in sorted(filenames):
+                candidate = current_path / filename
+                relative = candidate.relative_to(root)
+                if relative.parts and relative.parts[0] == ".git":
+                    continue
+                if self._is_reparse_point(candidate):
+                    raise WorkspacePathSafetyError(
+                        f"workspace snapshot contains a symlink or reparse point: {candidate}"
+                    )
+                status = candidate.stat()
+                if not stat.S_ISREG(status.st_mode):
+                    raise WorkspacePathSafetyError(
+                        f"workspace snapshot contains non-regular file: {candidate}"
+                    )
+                data = candidate.read_bytes()
+                files.append(
+                    {
+                        "path": relative.as_posix(),
+                        "mode": stat.S_IMODE(status.st_mode),
+                        "sha256": sha256(data).hexdigest(),
+                        "content_base64": base64.b64encode(data).decode("ascii"),
+                    }
+                )
+        return canonical_bytes({"schema_version": "1.0.0", "files": files})
 
     def _clear_readonly_and_retry(
         self,
