@@ -22,6 +22,7 @@ class ProcessRole(StrEnum):
     INSPECT_CONTROL = "inspect_control"
     COPILOT_WORKER = "copilot_worker"
     MEMRELAY_DAEMON = "memrelay_daemon"
+    DIRECT_ENGINE_WORKER = "direct_engine_worker"
     MCP_CLIENT = "mcp_client"
     GRADER = "grader"
     JUDGE = "judge"
@@ -33,6 +34,7 @@ _ROLE_DOMAINS: Mapping[ProcessRole, CredentialDomain] = {
     ProcessRole.INSPECT_CONTROL: CredentialDomain.NONE,
     ProcessRole.COPILOT_WORKER: CredentialDomain.COPILOT,
     ProcessRole.MEMRELAY_DAEMON: CredentialDomain.OPENAI,
+    ProcessRole.DIRECT_ENGINE_WORKER: CredentialDomain.OPENAI,
     ProcessRole.MCP_CLIENT: CredentialDomain.NONE,
     ProcessRole.GRADER: CredentialDomain.NONE,
     ProcessRole.JUDGE: CredentialDomain.COPILOT,
@@ -195,7 +197,7 @@ def _validate_runtime_name(role: ProcessRole, name: str, value: str) -> None:
     if name in _CREDENTIAL_VARIABLE_DOMAINS or _looks_secret_bearing(name):
         raise ProcessEnvironmentError("runtime_credential_denied")
     if name in _DAEMON_CONFIGURATION_NAMES:
-        if role is not ProcessRole.MEMRELAY_DAEMON:
+        if role not in {ProcessRole.MEMRELAY_DAEMON, ProcessRole.DIRECT_ENGINE_WORKER}:
             raise ProcessEnvironmentError("daemon_configuration_cross_boundary_denied")
         return
     if name not in _RUNTIME_BASELINE_NAMES:

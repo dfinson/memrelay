@@ -1,6 +1,6 @@
 # Story 2.7: Run the Direct-Engine Upper-Bound Stratum
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -31,17 +31,17 @@ So that I can estimate an upper bound without presenting it as shipped-product e
 
 ## Tasks / Subtasks
 
-- [ ] Implement direct-engine process adapter against public async API only (AC: 1)
-  - [ ] Construct with `MemoryEngine.from_config`; expose only `note`, `search`, `detail`, `health`, `close`.
-  - [ ] Own a unique graph and guarantee close/cleanup on every terminal path.
-  - [ ] Use the same frozen framework embedding/LLM configuration as the product stratum.
-- [ ] Convert external values into domain records and preserve complete engine/rendering evidence (AC: 2)
-- [ ] Define immutable direct-engine protocol/run/endpoint identities (AC: 3)
-  - [ ] Tag the stratum at first authority record and carry through usage/cost/analysis/report/claim artifacts.
-  - [ ] Reject joins, exports, or estimators that pool product and direct-engine strata.
-- [ ] Preserve upper-bound claim language (AC: 3)
-  - [ ] Mark outputs `mechanism_upper_bound`, never shipped-product efficacy.
-- [ ] Add API-surface, boundary-conversion, isolation, cleanup, credential, and non-pooling tests (AC: 1-3)
+- [x] Implement direct-engine process adapter against public async API only (AC: 1)
+  - [x] Construct with `MemoryEngine.from_config`; expose only `note`, `search`, `detail`, `health`, `close`.
+  - [x] Own a unique graph and guarantee close/cleanup on every terminal path.
+  - [x] Use the same frozen framework embedding/LLM configuration as the product stratum.
+- [x] Convert external values into domain records and preserve complete engine/rendering evidence (AC: 2)
+- [x] Define immutable direct-engine protocol/run/endpoint identities (AC: 3)
+  - [x] Tag the stratum at first authority record and carry through usage/cost/analysis/report/claim artifacts.
+  - [x] Reject joins, exports, or estimators that pool product and direct-engine strata.
+- [x] Preserve upper-bound claim language (AC: 3)
+  - [x] Mark outputs `mechanism_upper_bound`, never shipped-product efficacy.
+- [x] Add API-surface, boundary-conversion, isolation, cleanup, credential, and non-pooling tests (AC: 1-3)
 
 ## Developer Context
 
@@ -105,12 +105,45 @@ This is a distinct estimand: mechanism potential through the public engine API. 
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Sol (gpt-5.6-sol)
 
 ### Debug Log References
+
+- `$env:PYTHONPATH = ((Resolve-Path .\evaluation\src).Path + [IO.Path]::PathSeparator + (Resolve-Path .\src).Path); py -3.13 -m pytest .\evaluation\tests\contract\memrelay\test_engine_api.py .\evaluation\tests\integration\test_engine_stratum_fake.py .\evaluation\tests\unit\test_stratum_non_pooling.py .\evaluation\tests\contract\process\test_environment_allowlists.py` - 37 passed.
+- `$env:PYTHONPATH = ((Resolve-Path .\evaluation\src).Path + [IO.Path]::PathSeparator + (Resolve-Path .\src).Path); py -3.13 -m pytest .\evaluation\tests` - 921 passed, 4 platform-capability skips.
+- `$env:PYTHONPATH = (Resolve-Path .\src).Path; py -3.13 -m pytest .\tests` - 1303 passed, 4 optional-backend skips.
+- `py -3.13 -m ruff check .\evaluation\src .\evaluation\tests; py -3.13 -m ruff format --check .\evaluation\src .\evaluation\tests` - passed.
+- `uv lock --check` from `evaluation/` - passed.
+- `git diff --check` - passed.
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a direct-engine adapter that constructs `MemoryEngine` through its public configuration seam and invokes only public async health, note, search, detail, and close methods.
+- Added control-owned one-shot graph claims, isolated framework-worker credential routing, conservative treatment exposure, guaranteed close attempts, and partial evidence retention without creating a competing execution terminal.
+- Added domain-owned external records and immutable stratum authority across protocol, assignment, run/runtime, endpoint, cost, analysis, report, and claim identities.
+- Added explicit-only cross-stratum aggregation and frozen `mechanism_upper_bound` / `engine upper bound` claim language.
+- Added deterministic unpaid API, fault, isolation, configuration parity, credential, concealment, evidence, and non-pooling coverage; no provider call is made by tests.
+- Remediated review finding 1: every construction, health, note, search, detail, and close boundary now records a retrievable typed success, failure, timeout, or cancellation artifact with safe exception-type identity, timing, prior evidence references, and usage before propagation.
+- Remediated review finding 2: cancellation remains `asyncio.CancelledError`, records a cancelled operation artifact, runs close through a shielded bounded task, and returns cancellation classification to the upstream execution authority.
+- Remediated review finding 3: unpaid mode now requires an explicit `UnpaidEngineRuntime` whose engine advertises unpaid-conformance provenance and study ineligibility; absent, arbitrary unlabeled, real default, and live-mode fake capabilities fail before provider construction.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/2-7-run-the-direct-engine-upper-bound-stratum.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/src/memrelay_eval/adapters/memrelay/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/memrelay/engine.py`
+- `evaluation/src/memrelay_eval/adapters/process/environment.py`
+- `evaluation/src/memrelay_eval/domain/engine.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ids.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/orchestration/attempt.py`
+- `evaluation/src/memrelay_eval/orchestration/control.py`
+- `evaluation/src/memrelay_eval/orchestration/stages.py`
+- `evaluation/tests/architecture/test_process_boundary.py`
+- `evaluation/tests/contract/memrelay/test_engine_api.py`
+- `evaluation/tests/contract/process/test_environment_allowlists.py`
+- `evaluation/tests/integration/test_engine_stratum_fake.py`
+- `evaluation/tests/unit/test_stratum_non_pooling.py`

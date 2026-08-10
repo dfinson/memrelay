@@ -263,6 +263,21 @@ class ExecutionAdapterError(DomainError):
         self.evidence = evidence
 
 
+class DirectEngineBoundaryError(DomainError):
+    """The direct-engine treatment crossed its isolated public boundary."""
+
+    def __init__(self, code: str, evidence: tuple[object, ...] = ()) -> None:
+        self.code = code
+        self.evidence = evidence
+        super().__init__(code.replace("_", " "))
+
+
+class StratumPoolingError(DomainError):
+    """An operation attempted to combine independently governed strata."""
+
+    code = "explicit_stratified_operation_required"
+
+
 class DynamicHistoryViolationError(DomainError):
     """A sequence attempted to cross a frozen dynamic-history boundary."""
 
