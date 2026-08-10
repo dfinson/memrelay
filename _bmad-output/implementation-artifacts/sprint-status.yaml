@@ -67,7 +67,7 @@ development_status:
   2-5-verify-agent-and-environment-parity: review
   2-6-run-the-shipped-daemon-and-mcp-product-stratum: review
   2-7-run-the-direct-engine-upper-bound-stratum: ready-for-dev
-  2-8-restore-controlled-immutable-histories: ready-for-dev
+  2-8-restore-controlled-immutable-histories: review
   2-9-execute-dynamic-histories-and-protocol-defined-arms: done
   2-10-preserve-native-evidence-and-scan-secret-boundaries: ready-for-dev
   epic-2-retrospective: optional
