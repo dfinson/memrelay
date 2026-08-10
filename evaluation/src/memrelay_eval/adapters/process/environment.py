@@ -9,7 +9,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
-from ...domain.errors import ProcessBoundaryConformanceError, ProcessEnvironmentError
+from ...domain.errors import (
+    ProcessBoundaryConformanceError,
+    ProcessEnvironmentError,
+    SecretBoundaryViolationError,
+)
+from ...evidence.secret_scan import require_secret_boundary_clear
 
 
 class CredentialDomain(StrEnum):
@@ -22,6 +27,7 @@ class ProcessRole(StrEnum):
     INSPECT_CONTROL = "inspect_control"
     COPILOT_WORKER = "copilot_worker"
     MEMRELAY_DAEMON = "memrelay_daemon"
+    DIRECT_ENGINE_WORKER = "direct_engine_worker"
     MCP_CLIENT = "mcp_client"
     GRADER = "grader"
     JUDGE = "judge"
@@ -33,6 +39,7 @@ _ROLE_DOMAINS: Mapping[ProcessRole, CredentialDomain] = {
     ProcessRole.INSPECT_CONTROL: CredentialDomain.NONE,
     ProcessRole.COPILOT_WORKER: CredentialDomain.COPILOT,
     ProcessRole.MEMRELAY_DAEMON: CredentialDomain.OPENAI,
+    ProcessRole.DIRECT_ENGINE_WORKER: CredentialDomain.OPENAI,
     ProcessRole.MCP_CLIENT: CredentialDomain.NONE,
     ProcessRole.GRADER: CredentialDomain.NONE,
     ProcessRole.JUDGE: CredentialDomain.COPILOT,
@@ -140,6 +147,21 @@ def build_process_environment(
         if not isinstance(value, str) or not value:
             raise ProcessEnvironmentError("credential_value_invalid")
         environment[reference.variable_name] = value
+    allowed_names = {
+        reference.variable_name
+        for reference in references
+        if reference.domain is allowed_domain and reference.target_role is role
+    }
+    try:
+        require_secret_boundary_clear(
+            {
+                "subprocess_environment": {
+                    name: value for name, value in environment.items() if name not in allowed_names
+                }
+            }
+        )
+    except SecretBoundaryViolationError as error:
+        raise ProcessBoundaryConformanceError(error.findings) from error
     return environment
 
 
@@ -195,7 +217,7 @@ def _validate_runtime_name(role: ProcessRole, name: str, value: str) -> None:
     if name in _CREDENTIAL_VARIABLE_DOMAINS or _looks_secret_bearing(name):
         raise ProcessEnvironmentError("runtime_credential_denied")
     if name in _DAEMON_CONFIGURATION_NAMES:
-        if role is not ProcessRole.MEMRELAY_DAEMON:
+        if role not in {ProcessRole.MEMRELAY_DAEMON, ProcessRole.DIRECT_ENGINE_WORKER}:
             raise ProcessEnvironmentError("daemon_configuration_cross_boundary_denied")
         return
     if name not in _RUNTIME_BASELINE_NAMES:

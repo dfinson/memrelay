@@ -5,6 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 
+from memrelay_eval.domain.engine import (
+    FrameworkConfiguration,
+    StratumAuthority,
+    require_distinct_stratum_authorities,
+    require_framework_configuration_parity,
+)
 from memrelay_eval.domain.entities import (
     ArtifactRef,
     ControlledAnalysisIdentity,
@@ -62,6 +68,18 @@ def refuse_cross_repository_stage() -> None:
         stage=EvaluationStage.CROSS_REPOSITORY,
     )
     CrossRepositoryAdmissionController().authorize_at_entry(request, now)
+
+
+def verify_direct_engine_stage(
+    product_authority: StratumAuthority,
+    engine_authority: StratumAuthority,
+    product_framework: FrameworkConfiguration,
+    engine_framework: FrameworkConfiguration,
+) -> str:
+    """Gate engine provisioning on separate identities and equal framework settings."""
+
+    require_distinct_stratum_authorities(product_authority, engine_authority)
+    return require_framework_configuration_parity(product_framework, engine_framework)
 
 
 def verify_stage_locks(

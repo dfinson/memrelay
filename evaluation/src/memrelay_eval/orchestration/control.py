@@ -10,7 +10,7 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from memrelay_eval.application.copilot_catalog import (
     CatalogArchive,
@@ -25,7 +25,11 @@ from memrelay_eval.domain.entities import (
     QualificationUsage,
     RetryAuthorization,
 )
-from memrelay_eval.domain.errors import ConformancePauseError, CrossRepositoryDeniedError
+from memrelay_eval.domain.errors import (
+    ConformancePauseError,
+    CrossRepositoryDeniedError,
+    DirectEngineBoundaryError,
+)
 from memrelay_eval.domain.governance import (
     AuthorizationDecision,
     AuthorizationResult,
@@ -34,6 +38,7 @@ from memrelay_eval.domain.governance import (
     GovernanceDenialReason,
     RepositoryAccessRequest,
 )
+from memrelay_eval.domain.ids import AttemptId
 from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
@@ -54,7 +59,9 @@ from memrelay_eval.domain.ports import (
     TelemetryPort,
     TreatmentPort,
 )
-from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, ProductTreatmentAttempt
+
+if TYPE_CHECKING:
+    from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, ProductTreatmentAttempt
 
 _Result = TypeVar("_Result")
 
@@ -66,7 +73,23 @@ def build_product_treatment_attempt(
 ) -> ProductTreatmentAttempt:
     """Compose the product boundary without replacing Inspect or lifecycle authority."""
 
+    from memrelay_eval.orchestration.attempt import ProductTreatmentAttempt
+
     return ProductTreatmentAttempt(treatment, terminal_recorder, telemetry)
+
+
+class DirectEngineGraphClaimRegistry:
+    """Control-owned one-shot graph claims shared across all engine attempts."""
+
+    def __init__(self) -> None:
+        self._claims: dict[str, AttemptId] = {}
+        self._lock = Lock()
+
+    def claim(self, graph_path_digest: str, attempt_id: AttemptId) -> None:
+        with self._lock:
+            if graph_path_digest in self._claims:
+                raise DirectEngineBoundaryError("engine_graph_reuse_denied")
+            self._claims[graph_path_digest] = attempt_id
 
 
 class InMemoryDenialEvidenceSink:

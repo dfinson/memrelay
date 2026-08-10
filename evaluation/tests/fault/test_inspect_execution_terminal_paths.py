@@ -9,9 +9,14 @@ from memrelay_eval.adapters.inspect.task import (
     NativeTerminalRecord,
     SessionLimits,
 )
-from memrelay_eval.domain.errors import ExecutionAdapterError, ExecutionEvidenceConflictError
+from memrelay_eval.domain.errors import (
+    ExecutionAdapterError,
+    ExecutionEvidenceConflictError,
+    SecretBoundaryViolationError,
+)
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.states import AttemptTerminalKind
+from memrelay_eval.evidence.required import REQUIRED_NATIVE_EVIDENCE_KINDS
 from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder
 from memrelay_eval.orchestration.inspect import InspectAttemptController
 from memrelay_eval.orchestration.parity import ParityPreflightEvidence
@@ -126,6 +131,142 @@ def test_crash_path_retains_partial_authority_evidence() -> None:
     assert evidence.native_terminal.failure_code == "sdk_crash"
 
 
+def test_agent_visible_treatment_label_is_blocked_before_scheduler_execution() -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    scheduler = FakeScheduler(NativeTerminalRecord("succeeded", (), (), {}))
+    controller = InspectAttemptController(
+        scheduler, store, AttemptTerminalRecorder(ledger, InMemoryTelemetry())
+    )
+    attempt_id = AttemptId.new()
+    task = InspectTaskRequest(
+        "opaque-task",
+        {},
+        "Use the control treatment workflow.",
+        "native-model",
+        {"tools": True},
+        "unavailable",
+        "unavailable",
+        ("terminal",),
+        ("read",),
+        SessionLimits(10, 10, 10),
+    )
+
+    with pytest.raises(SecretBoundaryViolationError) as raised:
+        asyncio.run(
+            controller.execute(
+                task,
+                attempt_id=attempt_id,
+                run_id=RunId.new(),
+                inspect_state="failed",
+                eval_bytes=b"not reached",
+                inspect_export={"status": "failed"},
+            )
+        )
+
+    assert len(raised.value.evidence_refs) == 1
+    assert scheduler.calls == 0
+    assert ledger.attempt_terminal_for(attempt_id) is not None
+
+
+def test_secret_failure_code_links_preserved_bundle_to_evidence_incomplete_terminal() -> None:
+    value = "SK-" + ("x" * 24)
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    attempt_id = AttemptId.new()
+    controller = InspectAttemptController(
+        FakeScheduler(
+            NativeTerminalRecord(
+                "failed",
+                ("event-reference",),
+                ("patch-reference",),
+                {"total_tokens": 3},
+                value,
+            )
+        ),
+        store,
+        AttemptTerminalRecorder(ledger, InMemoryTelemetry()),
+    )
+
+    with pytest.raises(SecretBoundaryViolationError):
+        asyncio.run(
+            controller.execute(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=RunId.new(),
+                inspect_state="failed",
+                eval_bytes=b"safe eval",
+                inspect_export={"status": "failed"},
+            )
+        )
+
+    terminal = ledger.attempt_terminal_for(attempt_id)
+    assert terminal is not None
+    assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
+    assert terminal.reason == SecretBoundaryViolationError.code
+    assert len(terminal.evidence_refs) == len(REQUIRED_NATIVE_EVIDENCE_KINDS) + 1
+    assert all(value.encode() not in store.open_verified(ref) for ref in terminal.evidence_refs)
+
+
+def test_scan_failure_links_preserved_bundle_with_typed_terminal_code() -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    attempt_id = AttemptId.new()
+    controller = InspectAttemptController(
+        FakeScheduler(NativeTerminalRecord("succeeded", (), (), {})),
+        store,
+        AttemptTerminalRecorder(ledger, InMemoryTelemetry()),
+    )
+
+    with pytest.raises(SecretBoundaryViolationError):
+        asyncio.run(
+            controller.execute(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=RunId.new(),
+                inspect_state="succeeded",
+                eval_bytes=b"safe eval",
+                inspect_export={"status": "succeeded"},
+                secret_boundaries={"oversized": "x" * ((4 * 1024 * 1024) + 1)},
+            )
+        )
+
+    terminal = ledger.attempt_terminal_for(attempt_id)
+    assert terminal is not None
+    assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
+    assert terminal.reason == "evidence_scan_failed"
+    assert len(terminal.evidence_refs) == len(REQUIRED_NATIVE_EVIDENCE_KINDS) + 1
+
+
+def test_persistence_time_evidence_conflict_records_terminal_evidence() -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    controller = InspectAttemptController(
+        FakeScheduler(NativeTerminalRecord("succeeded", (), (), {})),
+        store,
+        AttemptTerminalRecorder(ledger, InMemoryTelemetry()),
+    )
+    attempt_id = AttemptId.new()
+
+    with pytest.raises(ExecutionEvidenceConflictError, match="override"):
+        asyncio.run(
+            controller.execute(
+                _task(),
+                attempt_id=attempt_id,
+                run_id=RunId.new(),
+                inspect_state="succeeded",
+                eval_bytes=b"native eval",
+                inspect_export={"status": "succeeded"},
+                native_evidence={"usage": {}},
+            )
+        )
+
+    terminal = ledger.attempt_terminal_for(attempt_id)
+    assert terminal is not None
+    assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
+    assert len(terminal.evidence_refs) == 1
+
+
 def test_terminal_authority_conflict_blocks_reconciliation_after_persistence() -> None:
     store = InMemoryArtifactStore()
     ledger = InMemoryLedger()
@@ -197,7 +338,7 @@ def test_malformed_native_terminal_blocks_reconciliation_with_partial_evidence(
     terminal = ledger.attempt_terminal_for(attempt_id)
     assert terminal is not None
     assert terminal.classification is AttemptTerminalKind.EVIDENCE_INCOMPLETE
-    assert len(terminal.evidence_refs) == 3
+    assert len(terminal.evidence_refs) == 14
 
 
 def test_terminal_parity_failure_refuses_a_passing_replay_before_scheduler_execution() -> None:

@@ -117,6 +117,10 @@ class CostEntryId(OpaqueId):
     prefix = "cost"
 
 
+class RuntimeId(OpaqueId):
+    prefix = "runtime"
+
+
 class AnalysisId(OpaqueId):
     prefix = "analysis"
 

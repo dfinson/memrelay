@@ -17,6 +17,9 @@ _REFERENCES = (
     CredentialReference("GITHUB_TOKEN", CredentialDomain.COPILOT, ProcessRole.COPILOT_WORKER),
     CredentialReference("COPILOT_AUTH_TOKEN", CredentialDomain.COPILOT, ProcessRole.JUDGE),
     CredentialReference("OPENAI_API_KEY", CredentialDomain.OPENAI, ProcessRole.MEMRELAY_DAEMON),
+    CredentialReference(
+        "OPENAI_API_KEY", CredentialDomain.OPENAI, ProcessRole.DIRECT_ENGINE_WORKER
+    ),
 )
 _VALUES = {
     "GITHUB_TOKEN": "host-copilot-auth",
@@ -41,6 +44,7 @@ def test_role_environment_uses_minimal_role_allowlist(role: ProcessRole) -> None
         ProcessRole.COPILOT_WORKER: {"GITHUB_TOKEN"},
         ProcessRole.JUDGE: {"COPILOT_AUTH_TOKEN"},
         ProcessRole.MEMRELAY_DAEMON: {"OPENAI_API_KEY"},
+        ProcessRole.DIRECT_ENGINE_WORKER: {"OPENAI_API_KEY"},
     }.get(role, set())
     assert set(environment).intersection(_VALUES) == expected
     assert credential_domain_for(role) in CredentialDomain
@@ -90,3 +94,13 @@ def test_observed_prohibited_canary_fails_without_echoing_value() -> None:
 
     assert canary.value not in repr(raised.value.evidence)
     assert raised.value.evidence[0].verdict == "prohibited_observed"
+
+
+def test_subprocess_environment_rejects_encoded_provider_material_outside_its_boundary() -> None:
+    with pytest.raises(ProcessBoundaryConformanceError) as raised:
+        build_process_environment(
+            ProcessRole.GRADER,
+            runtime_environment={"PATH": "sk-" + ("x" * 24)},
+        )
+
+    assert "sk-" not in repr(raised.value.evidence)

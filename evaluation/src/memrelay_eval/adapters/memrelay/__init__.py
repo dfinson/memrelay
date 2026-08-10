@@ -1,4 +1,4 @@
-"""Memrelay product-stratum adapters and control evidence."""
+"""Memrelay product-stratum and direct-engine adapters."""
 
 from .controls import (
     EXPECTED_EMBEDDING_MODEL,
@@ -15,6 +15,7 @@ from .controls import (
     require_product_tool_visibility,
     verify_framework_preflight,
 )
+from .engine import DirectEngineAdapter, DirectEngineAttempt, DirectEngineEvidence
 from .product import (
     AgentMCPServerConfiguration,
     MCPToolCallEvidence,
@@ -32,6 +33,9 @@ __all__ = [
     "EXPECTED_FRAMEWORK_MODEL",
     "EXPECTED_OPENAI_BASE_URL",
     "AgentMCPServerConfiguration",
+    "DirectEngineAdapter",
+    "DirectEngineAttempt",
+    "DirectEngineEvidence",
     "FrameworkPreflightEvidence",
     "MCPToolCallEvidence",
     "MemrelayProductTreatment",

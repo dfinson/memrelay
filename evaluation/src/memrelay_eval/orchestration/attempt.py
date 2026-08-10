@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from memrelay_eval.domain.engine import FrameworkConfiguration, StratumAuthority
 from memrelay_eval.domain.entities import (
     ArtifactRef,
     AttemptTerminal,
@@ -21,6 +22,7 @@ from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerInten
 from memrelay_eval.domain.ports import LedgerPort, TelemetryPort, TreatmentPort
 from memrelay_eval.domain.states import AttemptTerminalKind, InternalRetrySubsystem
 
+from .stages import verify_direct_engine_stage
 from .worker import WorkerIntentEmitter
 
 
@@ -77,6 +79,51 @@ class AttemptTerminalRecorder:
             attempt_id, run_id
         ):
             raise AttemptExecutionClaimDeniedError(AttemptExecutionClaimDeniedError.code)
+
+    @property
+    def ledger(self) -> LedgerPort:
+        """Expose the injected port only to the control-owned orchestration layer."""
+        return self._ledger
+
+    @property
+    def telemetry(self) -> TelemetryPort:
+        """Expose the injected port only to the control-owned orchestration layer."""
+        return self._telemetry
+
+
+class DirectEngineAttemptController:
+    """Reachable orchestration seam for one separately governed engine treatment."""
+
+    def __init__(
+        self,
+        treatment: object,
+        *,
+        product_authority: StratumAuthority,
+        product_framework: FrameworkConfiguration,
+    ) -> None:
+        self._treatment = treatment
+        self._product_authority = product_authority
+        self._product_framework = product_framework
+
+    async def execute(
+        self,
+        attempt: object,
+        *,
+        engine_authority: StratumAuthority,
+        engine_framework: FrameworkConfiguration,
+    ) -> object:
+        verify_direct_engine_stage(
+            self._product_authority,
+            engine_authority,
+            self._product_framework,
+            engine_framework,
+        )
+        execute = getattr(self._treatment, "execute", None)
+        if execute is None:
+            from memrelay_eval.domain.errors import DirectEngineBoundaryError
+
+            raise DirectEngineBoundaryError("direct_engine_treatment_port_invalid")
+        return await execute(attempt)
 
 
 class InternalRetryRecorder:
