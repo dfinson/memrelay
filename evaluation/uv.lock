@@ -1126,6 +1126,10 @@ dependencies = [
     { name = "inspect-ai" },
     { name = "jsonschema" },
     { name = "memrelay" },
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp" },
+    { name = "opentelemetry-sdk" },
     { name = "pyyaml" },
     { name = "rfc8785" },
 ]
@@ -1137,9 +1141,6 @@ dev = [
 future-adapters = [
     { name = "duckdb" },
     { name = "openinference-instrumentation-openai" },
-    { name = "openinference-semantic-conventions" },
-    { name = "opentelemetry-exporter-otlp" },
-    { name = "opentelemetry-sdk" },
     { name = "pyarrow" },
 ]
 
@@ -1151,9 +1152,10 @@ requires-dist = [
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "memrelay", directory = "../" },
     { name = "openinference-instrumentation-openai", marker = "extra == 'future-adapters'", specifier = "==0.1.53" },
-    { name = "openinference-semantic-conventions", marker = "extra == 'future-adapters'", specifier = "==0.1.31" },
-    { name = "opentelemetry-exporter-otlp", marker = "extra == 'future-adapters'", specifier = "==1.44.0" },
-    { name = "opentelemetry-sdk", marker = "extra == 'future-adapters'", specifier = "==1.44.0" },
+    { name = "openinference-semantic-conventions", specifier = "==0.1.31" },
+    { name = "opentelemetry-api", specifier = "==1.44.0" },
+    { name = "opentelemetry-exporter-otlp", specifier = "==1.44.0" },
+    { name = "opentelemetry-sdk", specifier = "==1.44.0" },
     { name = "pyarrow", marker = "extra == 'future-adapters'", specifier = "==25.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "pyyaml", specifier = "==6.0.3" },

@@ -15,6 +15,10 @@ from memrelay_eval.application.copilot_services import (
     eligible_models,
     qualify_native_catalog,
 )
+from memrelay_eval.application.telemetry_services import (
+    DEFAULT_COLLECTOR_ARCHIVE_NAME,
+    verify_local_telemetry_bootstrap,
+)
 from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.catalog.compiler import compile_catalog_command
 from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
@@ -79,10 +83,38 @@ def run_stage(args: Namespace) -> int:
     raise AssertionError("cross-repository execution must remain unavailable in evaluator v1")
 
 
-def bootstrap(args: Namespace) -> int:
+def bootstrap(
+    args: Namespace,
+    *,
+    evaluation_root: Path | None = None,
+    telemetry_verifier: Callable[[Path, Path], object] = verify_local_telemetry_bootstrap,
+    runtime_bootstrap: Callable[[LockRepository, Path], object] = bootstrap_runtime,
+    backup_root_validator: Callable[[Path], None] | None = None,
+) -> int:
     """Perform the one permitted runtime download after checking the evidence root."""
 
     backup_root = Path(args.backup_root).expanduser().resolve()
+    if backup_root_validator is None:
+        _validate_backup_root(backup_root)
+    else:
+        backup_root_validator(backup_root)
+    root = evaluation_root or Path(__file__).parents[3]
+    repository = LockRepository(root / "artifacts")
+    archive_path = (
+        Path(args.collector_archive).expanduser().resolve()
+        if getattr(args, "collector_archive", None)
+        else root / "collector" / DEFAULT_COLLECTOR_ARCHIVE_NAME
+    )
+    verification = telemetry_verifier(root, archive_path)
+    runtime_bootstrap(repository, root / "uv.lock")
+    print(
+        "Copilot runtime and telemetry substrate verified; "
+        f"telemetry evidence {verification.evidence.sha256} retained"
+    )
+    return 0
+
+
+def _validate_backup_root(backup_root: Path) -> None:
     if not backup_root.exists():
         raise ConformancePauseError(
             "backup_root_missing", "backup root must exist before bootstrap"
@@ -92,11 +124,6 @@ def bootstrap(args: Namespace) -> int:
             "backup_root_not_second_volume",
             "backup root must be on a different volume before a live runtime bootstrap",
         )
-    evaluation_root = Path(__file__).parents[3]
-    repository = LockRepository(evaluation_root / "artifacts")
-    bootstrap_runtime(repository, evaluation_root / "uv.lock")
-    print("Copilot runtime lock written; future implicit runtime downloads are disabled")
-    return 0
 
 
 def lock_models(

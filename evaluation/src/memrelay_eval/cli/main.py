@@ -52,6 +52,10 @@ def build_parser() -> argparse.ArgumentParser:
         "bootstrap", help="explicitly verify and lock the official Copilot runtime"
     )
     bootstrap_parser.add_argument("--backup-root", required=True)
+    bootstrap_parser.add_argument(
+        "--collector-archive",
+        help="path to the already-downloaded frozen otelcol-contrib archive",
+    )
     bootstrap_parser.set_defaults(handler=bootstrap)
     lock_models_parser = subcommands.add_parser(
         "lock-models", help="explicitly qualify and lock native Copilot models"
