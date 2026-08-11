@@ -11,6 +11,7 @@ from types import MappingProxyType
 
 from .errors import InvalidArtifactManifestError, InvalidAttemptTerminalError
 from .ids import (
+    AnalysisId,
     ArtifactId,
     AssignmentId,
     AttemptId,
@@ -26,10 +27,12 @@ from .ids import (
     HistoryId,
     InclusionId,
     ProtocolId,
+    ReportId,
     RetentionPolicyId,
     RunId,
     ScenarioId,
     SequenceId,
+    StratumId,
     TaskId,
 )
 from .policies import validate_run_transition
@@ -1013,3 +1016,37 @@ class LockedModel:
         if self.role not in {"M0", "M1", "M2", "judge"}:
             raise ValueError("model lock role is invalid")
         object.__setattr__(self, "capabilities", MappingProxyType(dict(self.capabilities)))
+
+
+@dataclass(frozen=True, slots=True)
+class ProductIdentityChain:
+    """Opaque treatment-stratum identities carried across product evidence layers."""
+
+    stratum: EvaluationStratum
+    stratum_id: StratumId
+    protocol_id: ProtocolId
+    assignment_id: AssignmentId
+    endpoint_id: EndpointId
+    cost_entry_id: CostEntryId
+    analysis_id: AnalysisId
+    report_id: ReportId
+    claim_id: ClaimId
+
+    def __post_init__(self) -> None:
+        if self.stratum not in {EvaluationStratum.PRODUCT, EvaluationStratum.DIRECT_ENGINE}:
+            raise InvalidArtifactManifestError(
+                "product identity chain requires a product or engine treatment stratum"
+            )
+
+    def to_record(self) -> dict[str, str]:
+        return {
+            "stratum": self.stratum.value,
+            "stratum_id": str(self.stratum_id),
+            "protocol_id": str(self.protocol_id),
+            "assignment_id": str(self.assignment_id),
+            "endpoint_id": str(self.endpoint_id),
+            "cost_entry_id": str(self.cost_entry_id),
+            "analysis_id": str(self.analysis_id),
+            "report_id": str(self.report_id),
+            "claim_id": str(self.claim_id),
+        }

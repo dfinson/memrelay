@@ -1,5 +1,59 @@
-"""Memrelay treatment adapters."""
+"""Memrelay product-stratum and direct-engine adapters."""
 
+from .controls import (
+    CALLER_DIGEST_UNDECLARED,
+    EXPECTED_EMBEDDING_MODEL,
+    EXPECTED_FRAMEWORK_MODEL,
+    EXPECTED_OPENAI_BASE_URL,
+    PRODUCT_SHIPPED_TOOL_NAMES,
+    FrameworkPreflightEvidence,
+    ProductIdentityEnvelope,
+    ProductToolContract,
+    ProductToolVisibilityEvidence,
+    build_framework_process_environments,
+    build_product_identity_chain,
+    product_tool_contract,
+    require_product_tool_visibility,
+    verify_framework_preflight,
+)
 from .engine import DirectEngineAdapter, DirectEngineAttempt, DirectEngineEvidence
+from .product import (
+    AgentMCPServerConfiguration,
+    MCPToolCallEvidence,
+    MemrelayProductTreatment,
+    ProductCleanupEvidence,
+    ProductProvisionRequest,
+    ProductStateEvidence,
+    ProductTreatmentHandle,
+    ProductTreatmentPaths,
+    shipped_observation_path,
+)
 
-__all__ = ["DirectEngineAdapter", "DirectEngineAttempt", "DirectEngineEvidence"]
+__all__ = [
+    "CALLER_DIGEST_UNDECLARED",
+    "EXPECTED_EMBEDDING_MODEL",
+    "EXPECTED_FRAMEWORK_MODEL",
+    "EXPECTED_OPENAI_BASE_URL",
+    "AgentMCPServerConfiguration",
+    "DirectEngineAdapter",
+    "DirectEngineAttempt",
+    "DirectEngineEvidence",
+    "FrameworkPreflightEvidence",
+    "MCPToolCallEvidence",
+    "MemrelayProductTreatment",
+    "PRODUCT_SHIPPED_TOOL_NAMES",
+    "ProductCleanupEvidence",
+    "ProductIdentityEnvelope",
+    "ProductProvisionRequest",
+    "ProductStateEvidence",
+    "ProductToolContract",
+    "ProductToolVisibilityEvidence",
+    "ProductTreatmentHandle",
+    "ProductTreatmentPaths",
+    "build_framework_process_environments",
+    "build_product_identity_chain",
+    "product_tool_contract",
+    "require_product_tool_visibility",
+    "shipped_observation_path",
+    "verify_framework_preflight",
+]

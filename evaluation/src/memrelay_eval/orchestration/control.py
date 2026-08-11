@@ -10,7 +10,7 @@ from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from memrelay_eval.application.copilot_catalog import (
     CatalogArchive,
@@ -56,9 +56,26 @@ from memrelay_eval.domain.ports import (
     DenialEvidencePort,
     LedgerPort,
     RepositoryAuthorizationPort,
+    TelemetryPort,
+    TreatmentPort,
 )
 
+if TYPE_CHECKING:
+    from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, ProductTreatmentAttempt
+
 _Result = TypeVar("_Result")
+
+
+def build_product_treatment_attempt(
+    treatment: TreatmentPort,
+    terminal_recorder: AttemptTerminalRecorder,
+    telemetry: TelemetryPort,
+) -> ProductTreatmentAttempt:
+    """Compose the product boundary without replacing Inspect or lifecycle authority."""
+
+    from memrelay_eval.orchestration.attempt import ProductTreatmentAttempt
+
+    return ProductTreatmentAttempt(treatment, terminal_recorder, telemetry)
 
 
 class DirectEngineGraphClaimRegistry:

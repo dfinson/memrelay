@@ -17,6 +17,12 @@ from pathlib import Path
 
 from graphiti_core.embedder.client import EmbedderClient
 
+from .model_lock import (
+    EmbeddingModelIntegrityError,
+    materialize_verified_embedding_model,
+    verify_materialized_embedding_model,
+)
+
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_EMBEDDING_DIM = 384
 
@@ -61,13 +67,31 @@ class LocalEmbedder(EmbedderClient):
 
         self.model_name = model_name
         self.cache_dir = str(cache_dir) if cache_dir is not None else None
+        if model_name == DEFAULT_EMBEDDING_MODEL and cache_dir is None:
+            raise LocalEmbedderError(
+                "Local embeddings require the frozen BAAI/bge-small-en-v1.5 model cache."
+            )
         # Constructing ``TextEmbedding`` downloads the model on first use. fastembed
         # retries the fetch internally and then collapses any network/cache failure into
         # a single opaque ``ValueError("Could not load model ... from any source.")`` — so
         # there is no stable typed fetch error to catch narrowly. Wrap broadly and re-raise
         # a clear, actionable error (the original is preserved as the cause).
         try:
-            self._model = TextEmbedding(model_name=model_name, cache_dir=self.cache_dir)
+            if model_name == DEFAULT_EMBEDDING_MODEL:
+                verified_model = materialize_verified_embedding_model(cache_dir)
+                self._model = TextEmbedding(
+                    model_name=model_name,
+                    cache_dir=self.cache_dir,
+                    specific_model_path=str(verified_model.source_directory),
+                    local_files_only=True,
+                )
+                verify_materialized_embedding_model(verified_model)
+            else:
+                self._model = TextEmbedding(model_name=model_name, cache_dir=self.cache_dir)
+        except EmbeddingModelIntegrityError as exc:
+            raise LocalEmbedderError(
+                "The local embedding model cache does not match the frozen BGE artifact lock."
+            ) from exc
         except Exception as exc:
             cache_dir_display = (
                 self.cache_dir if self.cache_dir is not None else "the fastembed default cache"

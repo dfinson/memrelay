@@ -19,7 +19,7 @@ from memrelay_eval.domain.errors import (
 )
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType
-from memrelay_eval.domain.ports import LedgerPort, TelemetryPort
+from memrelay_eval.domain.ports import LedgerPort, TelemetryPort, TreatmentPort
 from memrelay_eval.domain.states import AttemptTerminalKind, InternalRetrySubsystem
 
 from .stages import verify_direct_engine_stage
@@ -174,3 +174,32 @@ def emit_attempt_intent(
     """Forward an immutable attempt lifecycle intent across the control boundary."""
 
     return emitter.emit(intent)
+
+
+class ProductTreatmentAttempt:
+    """Bridge the product treatment through existing ledger and telemetry authorities."""
+
+    def __init__(
+        self,
+        treatment: TreatmentPort,
+        terminal_recorder: AttemptTerminalRecorder,
+        telemetry: TelemetryPort,
+    ) -> None:
+        self._treatment = treatment
+        self._terminal_recorder = terminal_recorder
+        self._telemetry = telemetry
+
+    async def provision(self, request: object, *, attempt_id: AttemptId, run_id: RunId) -> object:
+        """Claim before any daemon process or MCP boundary can be exposed."""
+
+        self._terminal_recorder.claim_execution(attempt_id, run_id)
+        self._telemetry.start_attempt({"attempt_id": str(attempt_id)})
+        return await self._treatment.provision(request)
+
+    async def collect_and_close(self, handle: object) -> tuple[object, ...]:
+        """Preserve native treatment evidence, then always release its process tree."""
+
+        try:
+            return tuple(await self._treatment.collect_state(handle))
+        finally:
+            await self._treatment.close(handle)
