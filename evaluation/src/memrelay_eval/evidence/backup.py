@@ -478,9 +478,7 @@ def _inventory_item(path: Path, relative_path: str) -> dict[str, object]:
     }
 
 
-def verify_backup_generation(
-    *, backup_root: Path | str, generation_id: str
-) -> BackupReceipt:
+def verify_backup_generation(*, backup_root: Path | str, generation_id: str) -> BackupReceipt:
     """Verify an immutable backup generation without restoring or changing it."""
     source = Path(backup_root).expanduser().resolve(strict=True) / "generations" / generation_id
     receipt = _load_receipt(source)
