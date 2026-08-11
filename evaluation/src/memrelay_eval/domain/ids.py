@@ -199,3 +199,15 @@ class IntentId(OpaqueId):
     """Opaque delivery identity for a worker-to-control ledger intent."""
 
     prefix = "intent"
+
+
+class StageId(OpaqueId):
+    """Opaque, treatment-neutral identity of one sealed study stage."""
+
+    prefix = "stage"
+
+
+class StageAuthorizationId(OpaqueId):
+    """Opaque identity of an independent operator or scheduler stage authorization."""
+
+    prefix = "stageauth"

@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import uuid
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -51,8 +54,10 @@ from memrelay_eval.domain.errors import (
     ConformancePauseError,
     CrossRepositoryDeniedError,
     InvalidConfigurationError,
+    StageControlError,
 )
 from memrelay_eval.evidence.backup import preflight_backup_root
+from memrelay_eval.evidence.manifest import stage_command_manifest
 from memrelay_eval.orchestration.configuration import (
     load_evaluator_toml,
     resolve_effective_configuration,
@@ -62,7 +67,13 @@ from memrelay_eval.orchestration.control import (
     reuse_or_reject_model_lock,
     write_model_lock,
 )
-from memrelay_eval.orchestration.stages import refuse_cross_repository_stage
+from memrelay_eval.orchestration.stages import (
+    authorize_stage_entry,
+    load_authorization,
+    load_entry_bundle,
+    load_exit_bundle,
+    refuse_cross_repository_stage,
+)
 
 
 def show_foundation_status(_: Namespace) -> int:
@@ -95,17 +106,189 @@ def show_effective_configuration(args: Namespace) -> int:
     return 0
 
 
-def run_stage(args: Namespace) -> int:
-    """Handle the only currently recognized execution-stage request."""
+_CI_ENV_MARKERS = (
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "TF_BUILD",
+    "TEAMCITY_VERSION",
+    "CIRCLECI",
+)
 
-    if args.stage != "cross-repo":
+# Ambient configuration that would silently redirect stage topology, authority,
+# or paid execution is refused: authority must come from explicit sealed inputs.
+_AMBIENT_STAGE_CONFIG_MARKERS = (
+    "MEMRELAY_EVAL_STAGE",
+    "MEMRELAY_EVAL_TOPOLOGY",
+    "MEMRELAY_EVAL_FALLBACK",
+    "MEMRELAY_EVAL_AUTHORIZATION",
+    "MEMRELAY_EVAL_ENTRY_BUNDLE",
+    "MEMRELAY_EVAL_PREDECESSOR_EXIT",
+    "MEMRELAY_EVAL_PAID",
+    "MEMRELAY_EVAL_AUTO_PROMOTE",
+    "MEMRELAY_EVAL_PROMOTE",
+)
+
+_ENROLLABLE_STAGE_CHOICES = ("integration", "pilot", "primary", "secondary")
+
+
+def run_stage(args: Namespace) -> int:
+    """Route a noninteractive execution-stage request, failing closed by default.
+
+    ``cross-repo`` preserves the Story 7.3 deny-before-discovery contract exactly.
+    The paid enrollable stages fail closed before enrollment whenever their sealed
+    predecessor authority is absent, corrupt, rejected, incomplete, or expired, and
+    they never accept ambient configuration, automatic topology fallback, or CI-driven
+    paid execution.
+    """
+
+    if args.stage == "cross-repo":
+        try:
+            refuse_cross_repository_stage()
+        except CrossRepositoryDeniedError as error:
+            print(f"execution denied: {error.reason}")
+            return 2
+        raise AssertionError("cross-repository execution must remain unavailable in evaluator v1")
+
+    if args.stage not in _ENROLLABLE_STAGE_CHOICES:
         raise ValueError("unsupported evaluator stage")
+    return _run_enrollable_stage(args)
+
+
+def _run_enrollable_stage(args: Namespace) -> int:
+    """Guard one paid enrollable stage entry and emit an immutable command manifest."""
+
+    from memrelay_eval.domain.states import StageKind
+
+    stage = args.stage
+    environment = dict(os.environ)
+    input_hashes: dict[str, str] = {}
+    output_hashes: dict[str, str] = {}
+    runtime_lock_sha256: str | None = None
+    protocol_sha256: str | None = None
+    error_code: str | None = None
+    terminal_status = "succeeded"
+    exit_code = 0
+
     try:
-        refuse_cross_repository_stage()
-    except CrossRepositoryDeniedError as error:
-        print(f"execution denied: {error.reason}")
-        return 2
-    raise AssertionError("cross-repository execution must remain unavailable in evaluator v1")
+        _reject_ambient_stage_environment(environment)
+        _reject_ci_paid_execution(environment)
+        entry_path, predecessor_path, authorization_path = _require_stage_inputs(args)
+        entry_bytes = _read_stage_input(entry_path, "stage_entry_bundle_unreadable")
+        predecessor_bytes = _read_stage_input(predecessor_path, "predecessor_exit_unreadable")
+        authorization_bytes = _read_stage_input(
+            authorization_path, "stage_authorization_unreadable"
+        )
+        input_hashes = {
+            "authorization": sha256(authorization_bytes).hexdigest(),
+            "predecessor_exit": sha256(predecessor_bytes).hexdigest(),
+            "stage_entry_bundle": sha256(entry_bytes).hexdigest(),
+        }
+        admission_entry = load_entry_bundle(entry_bytes)
+        predecessor_exit = load_exit_bundle(predecessor_bytes)
+        authorization = load_authorization(authorization_bytes)
+        runtime_lock_sha256 = admission_entry.locks["runtime_lock_sha256"]
+        protocol_sha256 = admission_entry.locks["protocol_sha256"]
+        authorize_stage_entry(
+            stage_kind=StageKind(stage),
+            entry_bundle=admission_entry,
+            predecessor_exit=predecessor_exit,
+            authorization=authorization,
+            now=datetime.now(UTC),
+        )
+        output_hashes = {
+            "stage_authorization": authorization.digest,
+            "stage_entry_bundle": admission_entry.digest,
+        }
+    except StageControlError as error:
+        error_code = error.code
+        terminal_status = "refused"
+        exit_code = 2
+
+    manifest = stage_command_manifest(
+        command="run",
+        stage=stage,
+        terminal_status=terminal_status,
+        exit_code=exit_code,
+        input_hashes=input_hashes,
+        output_hashes=output_hashes,
+        runtime_lock_sha256=runtime_lock_sha256,
+        protocol_sha256=protocol_sha256,
+        error_code=error_code,
+    )
+    digest = json.loads(manifest.decode("utf-8"))["digest"]
+    manifest_path = Path(args.output_root) / "commands" / f"run-{stage}-{digest}.json"
+    try:
+        _write_immutable_stage_manifest(manifest_path, manifest)
+    finally:
+        # Emit exactly one terminal manifest on every path, including a failed
+        # publish, so a disk/permission fault never silently swallows the
+        # required command manifest contract.
+        print(manifest.decode("utf-8"))
+    return exit_code
+
+
+def _reject_ambient_stage_environment(environment: dict[str, str]) -> None:
+    present = tuple(
+        sorted(marker for marker in _AMBIENT_STAGE_CONFIG_MARKERS if environment.get(marker))
+    )
+    if present:
+        raise StageControlError("ambient_stage_configuration_forbidden", present)
+
+
+def _reject_ci_paid_execution(environment: dict[str, str]) -> None:
+    markers = tuple(sorted(marker for marker in _CI_ENV_MARKERS if environment.get(marker)))
+    if markers:
+        raise StageControlError("paid_execution_forbidden_in_ci", markers)
+
+
+def _require_stage_inputs(args: Namespace) -> tuple[str, str, str]:
+    entry = getattr(args, "entry_bundle", None)
+    predecessor = getattr(args, "predecessor_exit", None)
+    authorization = getattr(args, "authorization", None)
+    missing = tuple(
+        name
+        for name, value in (
+            ("--authorization", authorization),
+            ("--entry-bundle", entry),
+            ("--predecessor-exit", predecessor),
+        )
+        if not value
+    )
+    if missing:
+        raise StageControlError("stage_inputs_incomplete", missing)
+    return entry, predecessor, authorization
+
+
+def _read_stage_input(path: str, code: str) -> bytes:
+    try:
+        return Path(path).read_bytes()
+    except OSError as error:
+        raise StageControlError(code, (path,)) from error
+
+
+def _write_immutable_stage_manifest(path: Path, data: bytes) -> None:
+    """Append one stage command manifest exactly once, refusing silent mutation."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if not path.is_file() or path.read_bytes() != data:
+            raise StageControlError("stage_command_manifest_conflict", (str(path),))
+        return
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        temporary.write_bytes(data)
+        temporary.replace(path)
+    except OSError as error:
+        if path.is_file() and path.read_bytes() == data:
+            return
+        raise StageControlError("stage_command_manifest_publish_failed", (str(path),)) from error
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    if not path.is_file() or path.read_bytes() != data:
+        raise StageControlError("stage_command_manifest_publish_failed", (str(path),))
 
 
 def bootstrap(

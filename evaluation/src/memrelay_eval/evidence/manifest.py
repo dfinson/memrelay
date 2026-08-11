@@ -218,3 +218,40 @@ def reconciliation_command_manifest(
     }
     document["digest"] = canonical_digest(document)
     return canonical_json_bytes(document)
+
+
+def stage_command_manifest(
+    *,
+    command: str,
+    stage: str,
+    terminal_status: str,
+    exit_code: int,
+    input_hashes: Mapping[str, str],
+    output_hashes: Mapping[str, str],
+    runtime_lock_sha256: str | None,
+    protocol_sha256: str | None,
+    error_code: str | None,
+    prior_error_code: str | None = None,
+) -> bytes:
+    """Create the shared canonical command manifest for a noninteractive stage command.
+
+    The shape matches ``reconciliation_command_manifest`` so every required
+    command emits one uniform, digest-bound terminal record.
+    """
+
+    document = {
+        "schema_version": "1.0.0",
+        "command": command,
+        "stage": stage,
+        "terminal_status": terminal_status,
+        "exit_code": exit_code,
+        "input_hashes": dict(sorted(input_hashes.items())),
+        "output_hashes": dict(sorted(output_hashes.items())),
+        "runtime_lock_sha256": runtime_lock_sha256,
+        "protocol_sha256": protocol_sha256,
+        "error_code": error_code,
+    }
+    if prior_error_code is not None:
+        document["prior_error_code"] = prior_error_code
+    document["digest"] = canonical_digest(document)
+    return canonical_json_bytes(document)

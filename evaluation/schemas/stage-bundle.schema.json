@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/stage-bundle.schema.json",
+  "title": "Immutable stage entry, exit, and authorization bundles",
+  "description": "Sealed, digest-bound stage control documents. Any post-seal change to a bound hash yields a different digest; legitimate change requires a new protocol or stage identity.",
+  "oneOf": [
+    {"$ref": "#/$defs/stage_entry_bundle"},
+    {"$ref": "#/$defs/stage_exit_bundle"},
+    {"$ref": "#/$defs/stage_authorization"}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "stage_kind": {
+      "type": "string",
+      "enum": ["bootstrap", "conformance", "integration", "pilot", "primary", "secondary", "cross-repo"]
+    },
+    "exit_status": {"type": "string", "enum": ["accepted", "rejected"]},
+    "entry_locks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalog_sha256",
+        "protocol_sha256",
+        "sdk_sha256",
+        "runtime_lock_sha256",
+        "model_lock_sha256",
+        "environment_sha256",
+        "grader_sha256",
+        "judge_sha256",
+        "telemetry_sha256",
+        "price_table_sha256",
+        "limits_sha256",
+        "preceding_exit_sha256"
+      ],
+      "properties": {
+        "catalog_sha256": {"$ref": "#/$defs/sha256"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "sdk_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_lock_sha256": {"$ref": "#/$defs/sha256"},
+        "model_lock_sha256": {"$ref": "#/$defs/sha256"},
+        "environment_sha256": {"$ref": "#/$defs/sha256"},
+        "grader_sha256": {"$ref": "#/$defs/sha256"},
+        "judge_sha256": {"$ref": "#/$defs/sha256"},
+        "telemetry_sha256": {"$ref": "#/$defs/sha256"},
+        "price_table_sha256": {"$ref": "#/$defs/sha256"},
+        "limits_sha256": {"$ref": "#/$defs/sha256"},
+        "preceding_exit_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stage_entry_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "artifact_type",
+        "stage_id",
+        "stage_kind",
+        "protocol_id",
+        "predecessor_stage_kind",
+        "locks",
+        "digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "artifact_type": {"const": "stage_entry_bundle"},
+        "stage_id": {"type": "string", "minLength": 1},
+        "stage_kind": {"$ref": "#/$defs/stage_kind"},
+        "protocol_id": {"type": "string", "minLength": 1},
+        "predecessor_stage_kind": {"$ref": "#/$defs/stage_kind"},
+        "locks": {"$ref": "#/$defs/entry_locks"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stage_exit_bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "artifact_type",
+        "stage_id",
+        "stage_kind",
+        "protocol_id",
+        "entry_bundle_sha256",
+        "preceding_exit_sha256",
+        "status",
+        "reconciliation_sha256",
+        "inclusion_decision_sha256",
+        "authorization_id",
+        "digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "artifact_type": {"const": "stage_exit_bundle"},
+        "stage_id": {"type": "string", "minLength": 1},
+        "stage_kind": {"$ref": "#/$defs/stage_kind"},
+        "protocol_id": {"type": "string", "minLength": 1},
+        "entry_bundle_sha256": {"$ref": "#/$defs/sha256"},
+        "preceding_exit_sha256": {"$ref": "#/$defs/sha256"},
+        "status": {"$ref": "#/$defs/exit_status"},
+        "reconciliation_sha256": {"$ref": "#/$defs/sha256"},
+        "inclusion_decision_sha256": {"$ref": "#/$defs/sha256"},
+        "authorization_id": {"type": "string", "minLength": 1},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "stage_authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "artifact_type",
+        "authorization_id",
+        "stage_id",
+        "stage_kind",
+        "protocol_id",
+        "entry_bundle_sha256",
+        "envelope_sha256",
+        "authorizer_id",
+        "authorizer_role",
+        "valid_from",
+        "valid_until",
+        "paid_execution",
+        "digest"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "artifact_type": {"const": "stage_authorization"},
+        "authorization_id": {"type": "string", "minLength": 1},
+        "stage_id": {"type": "string", "minLength": 1},
+        "stage_kind": {"$ref": "#/$defs/stage_kind"},
+        "protocol_id": {"type": "string", "minLength": 1},
+        "entry_bundle_sha256": {"$ref": "#/$defs/sha256"},
+        "envelope_sha256": {"$ref": "#/$defs/sha256"},
+        "authorizer_id": {"type": "string", "minLength": 1},
+        "authorizer_role": {"type": "string", "enum": ["operator", "scheduler"]},
+        "valid_from": {"type": "string", "format": "date-time"},
+        "valid_until": {"type": "string", "format": "date-time"},
+        "paid_execution": {"type": "boolean"},
+        "digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}
