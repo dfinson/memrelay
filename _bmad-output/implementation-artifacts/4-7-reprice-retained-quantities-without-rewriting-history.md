@@ -1,6 +1,6 @@
 # Story 4.7: Reprice Retained Quantities Without Rewriting History
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -34,26 +34,23 @@ So that price updates do not alter observed usage.
 
 ## Tasks / Subtasks
 
-- [ ] Define dated, versioned price/invoice artifacts (AC: 1, 2)
-  - [ ] Include provider/product/model, effective interval, billing region, currency, unit/scale, tax/discount/credit treatment, source authority, observation/retrieval time, schema version, and content hash.
-  - [ ] Store the frozen initial framework table exactly: `gpt-4.1-mini-2025-04-14`, USD per 1M tokens, input `0.40`, cached input `0.10`, output `1.60`.
-- [ ] Implement deterministic repricing from retained quantities (AC: 1, 2)
-  - [ ] Resolve compatible unit/provider/model/effective interval only; reject ambiguity, overlap, missing scale, or authority conflict.
-  - [ ] Parse rates and quantities as exact decimal values; compute `quantity / 1_000_000 * rate` for the frozen token table, retain unrounded derivation precision, and round only under a versioned output/presentation policy. Never use binary float for money.
-  - [ ] Link every amount to quantity entry hashes, price/invoice artifact hash, conversion-table hash, derivation version, and environment/protocol context.
-- [ ] Implement append-only revisions (AC: 2)
-  - [ ] New price, invoice, FX, tax/discount, plan/allowance, or allocation data creates a linked revision and new monetary view.
-  - [ ] Preserve all prior estimates, subscription-normalized sensitivities, invoices, reconciliation lag/status, and results.
-  - [ ] Make reruns idempotent for identical canonical inputs.
-- [ ] Enforce labeled monetary authority (AC: 3)
-  - [ ] Distinguish estimated, shadow/sensitivity, subscription-normalized, incremental cash, framework API metered, invoice-reconciled, local variable, fully loaded, and study-cost categories where present.
-  - [ ] Reject “actual cash” unless invoice/additional-usage evidence supports it.
-  - [ ] Never collapse Copilot and framework tokens or rewrite source quantities into a common token.
-  - [ ] Produce Copilot subscription sensitivities only under explicit dated allowance/plan inputs and named published, included-allowance, overage, and `0.5x/1x/2x` shadow-price scenarios; none is invoice cash without invoice evidence.
-- [ ] Expose a query/service contract for downstream immutable views (AC: 3)
-  - [ ] Select by explicit price/revision/scenario identity; no mutable “latest” default in confirmatory paths.
-  - [ ] Bind any confirmatory selection before enrollment. A later price/invoice/FX revision creates a new labeled economic view or analysis version and never changes run inclusion or the historical selected view.
-- [ ] Add golden arithmetic, revision, authority, idempotency, and failure tests (AC: 1-3).
+- [x] Define dated, versioned price artifacts (AC: 1, 2)
+  - [x] Include provider/product/model, effective interval, billing region, currency, unit/scale, tax/discount/credit treatment, source authority, retrieval time, schema version, and content hash.
+  - [x] Store the frozen initial framework table exactly: `gpt-4.1-mini-2025-04-14`, USD per 1M tokens, input `0.40`, cached input `0.10`, output `1.60`.
+- [x] Implement deterministic repricing from retained quantities (AC: 1, 2)
+  - [x] Resolve compatible unit/provider/model/effective interval only; reject ambiguity, overlap, missing scale, conversion authority, or identity conflict.
+  - [x] Parse rates and quantities as exact decimal values and retain unrounded derivation precision without binary float.
+  - [x] Link every amount to quantity entry/artifact hashes, price artifact hash, conversion authority, derivation version, and environment/protocol context.
+- [x] Implement append-only revisions (AC: 2)
+  - [x] Each frozen price revision produces a distinct CAS artifact and monetary view from unchanged quantity evidence.
+  - [x] Preserve prior estimates and results; identical canonical view publication replays idempotently through the sole writer.
+- [x] Enforce labeled monetary authority (AC: 3)
+  - [x] Define distinct monetary authority/category vocabulary for estimated, shadow sensitivity, subscription-normalized, incremental cash, framework API metered, invoice-reconciled, local variable, fully loaded, and study cost.
+  - [x] Repricing accepts framework OpenAI quantities only; it cannot claim actual cash, collapse Copilot/framework tokens, or change source quantities.
+- [x] Expose a query/service contract for downstream immutable views (AC: 3)
+  - [x] Select by explicit price-table hash and scenario identity; no mutable latest selection exists.
+  - [x] Later revisions create a new labeled immutable economic view and do not alter inclusion or a prior selected view.
+- [x] Add golden arithmetic, revision, authority, idempotency, and failure tests (AC: 1-3).
 
 ## Developer Context
 
@@ -119,8 +116,27 @@ TBD by implementation agent
 
 ### Debug Log References
 
+- `py -3.13 -m pytest evaluation\tests\unit\costs\test_repricing.py evaluation\tests\contract\costs\test_price_revisions.py evaluation\tests\golden\costs\test_framework_openai_initial.py -q` - 8 passed.
+- `py -3.13 -m pytest evaluation\tests -q` - 1061 passed, 4 skipped.
+- `py -3.13 -m pytest -q` - 1303 passed, 4 optional-backend skips.
+- `py -3.13 -m ruff check .` and `py -3.13 -m ruff format --check .` - passed.
+- `uv lock --project evaluation --check` and `git diff --check` - passed.
+
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added offline `Decimal` repricing from CAS-verified framework quantity artifacts, with exact
+  frozen per-million OpenAI rates and explicit unavailable/not-applicable outcomes.
+- Added hash-pinned price-table and monetary-view schemas, an additive sole-writer ledger
+  migration, idempotent monetary-view intent delivery, and explicit price/scenario selection.
+- Added no-network golden, revision, authority, conversion, mutable-table, and replay coverage;
+  quantity bytes and earlier monetary views remain unchanged across revisions.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/{4-7-reprice-retained-quantities-without-rewriting-history.md,sprint-status.yaml}`
+- `evaluation/catalog/prices/framework-openai-initial.json`
+- `evaluation/schemas/{price-table,monetary-view}.schema.json`
+- `evaluation/src/memrelay_eval/{domain/{entities,ids,intents,ports,states}.py,evidence/pricing.py}`
+- `evaluation/src/memrelay_eval/{adapters/fakes.py,ledger/{repository,schema}.py}`
+- `evaluation/tests/{unit,contract,golden}/costs/{test_repricing.py,test_price_revisions.py,test_framework_openai_initial.py}`

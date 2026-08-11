@@ -88,7 +88,7 @@ development_status:
   4-4-separate-provider-and-credential-domain-identities: review
   4-5-reconcile-required-evidence-and-decide-inclusion: ready-for-dev
   4-6-record-separate-quantity-and-cost-ledgers: review
-  4-7-reprice-retained-quantities-without-rewriting-history: ready-for-dev
+  4-7-reprice-retained-quantities-without-rewriting-history: review
   4-8-back-up-and-restore-terminal-evidence: ready-for-dev
   epic-4-retrospective: optional
 

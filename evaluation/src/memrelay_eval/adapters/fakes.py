@@ -18,6 +18,7 @@ from memrelay_eval.domain.entities import (
     ExposureRecord,
     InclusionDecision,
     InternalRetryRecord,
+    MonetaryViewLink,
     RetryAuthorization,
     RunTransition,
     TelemetryObservation,
@@ -41,6 +42,7 @@ from memrelay_eval.domain.intents import (
     IntentAck,
     IntentRejection,
     LedgerIntentType,
+    MonetaryViewIntent,
     RetryLineageIntent,
     RunTransitionIntent,
     delivery_payload_digest,
@@ -131,6 +133,7 @@ class InMemoryLedger:
         self._transition_digests: dict[RunId, str | None] = {}
         self.authority_conflicts: list[AuthorityConflictIntent] = []
         self.cost_ledger_intents: list[CostLedgerIntent] = []
+        self.monetary_view_intents: list[MonetaryViewIntent] = []
 
     def append_transition(self, transition: RunTransition) -> None:
         history = self.history(transition.run_id)
@@ -304,7 +307,42 @@ class InMemoryLedger:
                 return self.reject_intent(intent, "duplicate_cost_entry")
             self.cost_ledger_intents.append(intent)
             return self._ack(intent)
+        if isinstance(intent, MonetaryViewIntent):
+            if self._attempts.get(intent.attempt_id) != intent.run_id:
+                return self.reject_intent(intent, "unknown_attempt")
+            if intent.metadata.source_attempt_id != intent.attempt_id:
+                return self.reject_intent(intent, "monetary_view_attempt_source_mismatch")
+            if any(
+                reference not in intent.metadata.evidence_refs
+                for reference in (
+                    intent.artifact_ref,
+                    intent.price_table_ref,
+                    intent.quantity_artifact_ref,
+                )
+            ):
+                return self.reject_intent(intent, "monetary_view_artifact_not_evidence")
+            if any(
+                item.monetary_view_id == intent.monetary_view_id
+                for item in self.monetary_view_intents
+            ):
+                return self.reject_intent(intent, "duplicate_monetary_view")
+            self.monetary_view_intents.append(intent)
+            return self._ack(intent)
         return self.reject_intent(intent, "unknown_intent_kind")
+
+    def monetary_views_for(self, attempt_id: AttemptId) -> tuple[MonetaryViewLink, ...]:
+        return tuple(
+            MonetaryViewLink(
+                str(intent.monetary_view_id),
+                intent.run_id,
+                intent.attempt_id,
+                intent.category,
+                intent.artifact_ref,
+                intent.price_table_ref,
+            )
+            for intent in self.monetary_view_intents
+            if intent.attempt_id == attempt_id
+        )
 
     def reject_intent(self, intent: LedgerIntentType, reason_code: str) -> IntentRejection:
         digest, preflight_rejection = delivery_payload_digest(intent)

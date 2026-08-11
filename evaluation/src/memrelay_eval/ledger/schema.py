@@ -263,6 +263,35 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        version=6,
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS monetary_views (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                intent_id TEXT NOT NULL UNIQUE REFERENCES intent_receipts(intent_id),
+                monetary_view_id TEXT NOT NULL UNIQUE,
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                attempt_id TEXT NOT NULL REFERENCES attempts(attempt_id),
+                category TEXT NOT NULL,
+                artifact_id TEXT NOT NULL,
+                artifact_sha256 TEXT NOT NULL,
+                size_bytes INTEGER NOT NULL,
+                price_table_artifact_id TEXT NOT NULL,
+                price_table_sha256 TEXT NOT NULL,
+                price_table_size_bytes INTEGER NOT NULL,
+                quantity_artifact_id TEXT NOT NULL,
+                quantity_sha256 TEXT NOT NULL,
+                quantity_size_bytes INTEGER NOT NULL,
+                occurred_at TEXT NOT NULL
+            )
+            """,
+            (
+                "CREATE INDEX IF NOT EXISTS monetary_views_by_attempt "
+                "ON monetary_views(attempt_id, category, sequence)"
+            ),
+        ),
+    ),
 )
 
 

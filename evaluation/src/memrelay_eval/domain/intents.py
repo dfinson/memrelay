@@ -14,7 +14,16 @@ from typing import ClassVar
 from memrelay_eval.canonical import canonical_bytes
 
 from .entities import ArtifactLink, ArtifactRef, InclusionDecision
-from .ids import AssignmentId, AttemptId, CostEntryId, ExperimentId, IntentId, ProtocolId, RunId
+from .ids import (
+    AssignmentId,
+    AttemptId,
+    CostEntryId,
+    ExperimentId,
+    IntentId,
+    MonetaryViewId,
+    ProtocolId,
+    RunId,
+)
 from .states import AttemptTerminalKind, LedgerIntentKind, RunState
 
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -318,6 +327,33 @@ class CostLedgerIntent(LedgerIntent):
         }
 
 
+@dataclass(frozen=True, slots=True)
+class MonetaryViewIntent(LedgerIntent):
+    """Thin, control-owned link to one immutable repriced monetary view."""
+
+    metadata: IntentMetadata
+    monetary_view_id: MonetaryViewId
+    run_id: RunId
+    attempt_id: AttemptId
+    category: str
+    artifact_ref: ArtifactRef
+    price_table_ref: ArtifactRef
+    quantity_artifact_ref: ArtifactRef
+
+    kind: ClassVar[LedgerIntentKind] = LedgerIntentKind.MONETARY_VIEW
+
+    def _operation_payload(self) -> dict[str, object]:
+        return {
+            "monetary_view_id": str(self.monetary_view_id),
+            "run_id": str(self.run_id),
+            "attempt_id": str(self.attempt_id),
+            "category": self.category,
+            "artifact": _artifact_payload(self.artifact_ref),
+            "price_table": _artifact_payload(self.price_table_ref),
+            "quantity_artifact": _artifact_payload(self.quantity_artifact_ref),
+        }
+
+
 LedgerIntentType = (
     CreateExperimentIntent
     | CreateRunIntent
@@ -329,6 +365,7 @@ LedgerIntentType = (
     | InclusionDecisionIntent
     | AuthorityConflictIntent
     | CostLedgerIntent
+    | MonetaryViewIntent
 )
 
 
@@ -443,6 +480,20 @@ def preflight_intent_rejection(intent: object) -> str | None:
             and isinstance(intent.source_evidence_ref, ArtifactRef)
             and intent.artifact_ref in metadata.evidence_refs
             and intent.source_evidence_ref in metadata.evidence_refs
+        )
+    elif isinstance(intent, MonetaryViewIntent):
+        valid = (
+            isinstance(intent.monetary_view_id, MonetaryViewId)
+            and isinstance(intent.run_id, RunId)
+            and isinstance(intent.attempt_id, AttemptId)
+            and isinstance(intent.category, str)
+            and _REASON_CODE.fullmatch(intent.category) is not None
+            and isinstance(intent.artifact_ref, ArtifactRef)
+            and isinstance(intent.price_table_ref, ArtifactRef)
+            and isinstance(intent.quantity_artifact_ref, ArtifactRef)
+            and intent.artifact_ref in metadata.evidence_refs
+            and intent.price_table_ref in metadata.evidence_refs
+            and intent.quantity_artifact_ref in metadata.evidence_refs
         )
     else:
         valid = False
