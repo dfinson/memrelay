@@ -277,11 +277,20 @@ class MaterializationError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
-class AnalysisError(DomainError):
-    """A frozen assignment-aligned analysis request cannot be safely completed."""
+class SafetyAnalysisError(DomainError):
+    """Safety evidence, frozen policy, or categorical gate input is invalid."""
 
     def __init__(self, code: str) -> None:
         self.code = code
+        super().__init__(code.replace("_", " "))
+
+
+class AnalysisError(DomainError):
+    """A frozen analysis request or derivation cannot satisfy its contract."""
+
+    def __init__(self, code: str, fields: tuple[str, ...] = ()) -> None:
+        self.code = code
+        self.fields = fields
         super().__init__(code.replace("_", " "))
 
 

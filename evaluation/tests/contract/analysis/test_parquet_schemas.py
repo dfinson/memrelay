@@ -11,6 +11,7 @@ from memrelay_eval.analysis.schemas import (
     ELIGIBLE_OUTCOMES_TABLE,
     PARQUET_SCHEMA_VERSION,
     PYARROW_VERSION,
+    SAFETY_SCHEMA_VERSION,
     assigned_units_schema,
     eligible_outcomes_schema,
     schema_sha256,
@@ -39,7 +40,11 @@ def test_committed_json_schema_versions_describe_the_parquet_boundary() -> None:
         "parquet-assigned-units.schema.json",
         "parquet-eligible-outcomes.schema.json",
         "parquet-dataset-manifest.schema.json",
+        "analysis-derivation-manifest.schema.json",
         "eligible-outcome-authority.schema.json",
+        "safety-report.schema.json",
+        "task-audit-disposition.schema.json",
+        "categorical-gate-decision.schema.json",
         "assignment-aligned-itt-table.schema.json",
         "frozen-estimator-decision.schema.json",
         "assignment-balance-diagnostic-report.schema.json",
@@ -53,6 +58,7 @@ def test_committed_json_schema_versions_describe_the_parquet_boundary() -> None:
         document = json.loads((schemas / name).read_text(encoding="utf-8"))
         assert document["properties"]["schema_version"]["const"] in {
             PARQUET_SCHEMA_VERSION,
+            SAFETY_SCHEMA_VERSION,
             ANALYSIS_SCHEMA_VERSION,
         }
 
@@ -88,9 +94,14 @@ def test_claim_and_power_schemas_require_frozen_family_and_final_information_con
     assert {"endpoint_target_effects", "endpoint_scales", "endpoint_baselines"} <= set(
         power["$defs"]["cell"]["required"]
     )
-    assert {"information_sha256", "power_evaluation_sha256", "sealed_claim_protocol_sha256"} <= set(
-        decision["required"]
-    )
+    assert {
+        "claim_id",
+        "information_sha256",
+        "power_evaluation_sha256",
+        "sealed_claim_protocol_sha256",
+        "categorical_policy_sha256",
+        "categorical_gate_decision_sha256",
+    } <= set(decision["required"])
     assert {
         "family_sha256",
         "cells",
@@ -98,7 +109,10 @@ def test_claim_and_power_schemas_require_frozen_family_and_final_information_con
         "sealed_claim_protocol_sha256",
     } <= set(evaluation["required"])
     assert {"pre_enrollment_authorization_sha256", "registrations"} <= set(seal["required"])
-    assert {"family_registration_sha256", "sealed_claim_protocol_sha256"} <= set(
-        thresholds["required"]
-    )
+    assert {
+        "family_registration_sha256",
+        "sealed_claim_protocol_sha256",
+        "categorical_policy_sha256",
+        "categorical_scope_id",
+    } <= set(thresholds["required"])
     assert decision["$defs"]["sha256"]["pattern"] == "^[a-f0-9]{64}$"

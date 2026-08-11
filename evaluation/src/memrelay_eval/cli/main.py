@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
+    analyze_stage,
     backup_terminal,
     bootstrap,
     compile_authored_catalog,
@@ -180,6 +181,24 @@ def build_parser() -> argparse.ArgumentParser:
     backup.add_argument("--run-id", required=True)
     backup.add_argument("--attempt-id", required=True)
     backup.set_defaults(handler=backup_terminal)
+    analyze = subcommands.add_parser(
+        "analyze",
+        help="read one explicitly versioned reconciled Parquet dataset with a closed DuckDB API",
+    )
+    analyze.add_argument("--stage", required=True)
+    analyze.add_argument("--parquet-root", required=True)
+    analyze.add_argument("--dataset-version", required=True)
+    analyze.add_argument(
+        "--plan",
+        required=True,
+        help="canonical frozen analysis-plan JSON; arbitrary SQL is not accepted",
+    )
+    analyze.add_argument(
+        "--output-root",
+        required=True,
+        help="derived-artifact root outside the immutable Parquet dataset root",
+    )
+    analyze.set_defaults(handler=analyze_stage)
     return parser
 
 

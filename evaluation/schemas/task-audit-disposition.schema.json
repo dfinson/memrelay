@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/schemas/task-audit-disposition.schema.json",
+  "type": "object",
+  "required": ["schema_version", "task_id", "status", "reasons", "policy_sha256", "audit_evidence_sha256", "prior_disposition_digest", "digest"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "task_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["eligible", "quarantined", "rejected"]},
+    "reasons": {"type": "array", "items": {"type": "string"}},
+    "policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "audit_evidence_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+    "prior_disposition_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "additionalProperties": false
+}

@@ -6,9 +6,17 @@ import asyncio
 import json
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from memrelay_eval.analysis.queries import (
+    ANALYSIS_SCHEMA_VERSION,
+    AnalysisQuery,
+    DerivationPublisher,
+    DerivationSpec,
+    ReadOnlyDuckDbAnalysis,
+)
 from memrelay_eval.application.copilot_services import (
     CopilotSdkClient,
     bootstrap_runtime,
@@ -19,11 +27,12 @@ from memrelay_eval.application.telemetry_services import (
     DEFAULT_COLLECTOR_ARCHIVE_NAME,
     verify_local_telemetry_bootstrap,
 )
-from memrelay_eval.canonical import canonical_bytes
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.catalog.compiler import compile_catalog_command
 from memrelay_eval.catalog.validation import CatalogValidationError, validate_catalog
 from memrelay_eval.domain.entities import QualificationCaps
 from memrelay_eval.domain.errors import (
+    AnalysisError,
     ConformancePauseError,
     CrossRepositoryDeniedError,
     InvalidConfigurationError,
@@ -289,3 +298,135 @@ def backup_terminal(args: Namespace) -> int:
         ledger.close()
     print(receipt.bytes().decode("utf-8"))
     return 0
+
+
+def analyze_stage(args: Namespace) -> int:
+    """Execute one frozen, SQL-free analysis request against a named Parquet version."""
+    plan_bytes = Path(args.plan).read_bytes()
+    plan = _canonical_analysis_plan(plan_bytes)
+    if plan["stage"] != args.stage or plan["dataset_version"] != args.dataset_version:
+        raise AnalysisError("analysis_plan_authority_conflict")
+    query = AnalysisQuery(
+        table=plan["table"],
+        columns=tuple(plan["columns"]),
+        equals=tuple((item["column"], item["value"]) for item in plan["equals"]),
+    )
+    spec = DerivationSpec(
+        name=plan["derivation_name"],
+        derivation_kind=plan["derivation_kind"],
+        gate_ids=tuple(plan["gate_ids"]),
+        parent_derivations=tuple(plan["parent_derivations"]),
+        query_sha256=sha256(
+            canonical_bytes(
+                {
+                    "columns": query.columns,
+                    "equals": query.equals,
+                    "table": query.table,
+                }
+            )
+        ).hexdigest(),
+    )
+    with ReadOnlyDuckDbAnalysis.open(args.parquet_root, args.dataset_version) as analysis:
+        publisher = DerivationPublisher(args.output_root, analysis.dataset)
+        try:
+            table = analysis.read(query)
+            result = publisher.publish_table(table, spec)
+        except AnalysisError as error:
+            publisher.record_rejection(spec, error)
+            raise
+        command = {
+            "schema_version": ANALYSIS_SCHEMA_VERSION,
+            "command": "analyze",
+            "stage": args.stage,
+            "terminal_status": "succeeded",
+            "exit_code": 0,
+            "dataset_version": analysis.dataset.dataset_version,
+            "dataset_manifest_sha256": analysis.dataset.manifest_sha256,
+            "analysis_plan_sha256": sha256(plan_bytes).hexdigest(),
+            "derivation_sha256": result.derivation_sha256,
+            "output_sha256": sha256(result.output_path.read_bytes()).hexdigest(),
+            "protocol_sha256": analysis.dataset.manifest["protocol_sha256"],
+            "runtime_lock_sha256": analysis.dataset.manifest["runtime_lock_sha256"],
+        }
+        command["command_sha256"] = canonical_digest(command)
+        command_path = (
+            Path(args.output_root) / "commands" / f"analyze-{command['command_sha256']}.json"
+        )
+        _write_immutable_command(command_path, canonical_bytes(command))
+    print(canonical_bytes(command).decode("utf-8"))
+    return 0
+
+
+def _canonical_analysis_plan(data: bytes) -> dict[str, Any]:
+    """Parse the intentionally small plan format before opening any analysis data."""
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AnalysisError("analysis_plan_not_canonical")
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AnalysisError("analysis_plan_not_canonical") from error
+    if not isinstance(document, dict) or canonical_bytes(document) != data:
+        raise AnalysisError("analysis_plan_not_canonical")
+    required = {
+        "schema_version",
+        "stage",
+        "dataset_version",
+        "table",
+        "columns",
+        "equals",
+        "derivation_name",
+        "derivation_kind",
+        "gate_ids",
+        "parent_derivations",
+    }
+    if set(document) != required or document["schema_version"] != ANALYSIS_SCHEMA_VERSION:
+        raise AnalysisError("analysis_plan_schema_invalid")
+    if (
+        not isinstance(document["stage"], str)
+        or not document["stage"]
+        or not isinstance(document["dataset_version"], str)
+        or not isinstance(document["table"], str)
+        or not isinstance(document["derivation_name"], str)
+        or not isinstance(document["derivation_kind"], str)
+        or not all(isinstance(value, str) for value in document["columns"])
+        or not all(isinstance(value, str) for value in document["gate_ids"])
+        or not all(isinstance(value, str) for value in document["parent_derivations"])
+        or not isinstance(document["equals"], list)
+    ):
+        raise AnalysisError("analysis_plan_schema_invalid")
+    for value in document["equals"]:
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"column", "value"}
+            or not isinstance(value["column"], str)
+            or not isinstance(value["value"], str)
+        ):
+            raise AnalysisError("analysis_plan_schema_invalid")
+    return document
+
+
+def _write_immutable_command(path: Path, data: bytes) -> None:
+    """Create a command manifest exactly once without modifying prior evidence."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if not path.is_file() or path.read_bytes() != data:
+            raise AnalysisError("analysis_command_manifest_conflict")
+        return
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        temporary.write_bytes(data)
+        temporary.replace(path)
+    except OSError as error:
+        if path.is_file() and path.read_bytes() == data:
+            return
+        raise AnalysisError("analysis_command_manifest_publish_failed") from error
+    finally:
+        if temporary.exists():
+            temporary.unlink()

@@ -4,12 +4,13 @@
   "title": "Immutable claim gate decision",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "artifact_type", "endpoint_id", "claim_type", "status", "gate_trace", "source_sha256", "derivation_sha256", "protocol_sha256", "family_sha256", "sealed_claim_protocol_sha256", "threshold_sha256", "power_sha256", "power_evaluation_sha256", "information_sha256", "panel_gate_sha256", "categorical_gates_sha256"],
+  "required": ["schema_version", "artifact_type", "endpoint_id", "claim_type", "claim_id", "status", "gate_trace", "source_sha256", "derivation_sha256", "protocol_sha256", "family_sha256", "sealed_claim_protocol_sha256", "threshold_sha256", "power_sha256", "power_evaluation_sha256", "information_sha256", "panel_gate_sha256", "categorical_policy_sha256", "categorical_gate_decision_sha256"],
   "properties": {
     "schema_version": {"const": "1.0.0"},
     "artifact_type": {"const": "claim_gate_decision"},
     "endpoint_id": {"type": "string"},
     "claim_type": {"enum": ["reliability_benefit", "quality_benefit", "no_regression", "cost_superiority", "wall_superiority"]},
+    "claim_id": {"type": "string", "minLength": 1},
     "status": {"enum": ["pass", "fail", "blocked", "indeterminate", "estimation-only"]},
     "gate_trace": {"type": "array", "items": {"type": "string"}},
     "source_sha256": {"$ref": "#/$defs/sha256"},
@@ -22,7 +23,8 @@
     "power_evaluation_sha256": {"$ref": "#/$defs/sha256"},
     "information_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
     "panel_gate_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
-    "categorical_gates_sha256": {"$ref": "#/$defs/sha256"}
+    "categorical_policy_sha256": {"$ref": "#/$defs/sha256"},
+    "categorical_gate_decision_sha256": {"$ref": "#/$defs/sha256"}
   },
   "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
 }

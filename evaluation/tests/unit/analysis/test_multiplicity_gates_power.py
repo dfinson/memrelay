@@ -10,7 +10,12 @@ from memrelay_eval.analysis.estimands import (
     FrozenEstimatorRegistry,
     MissingnessPolicy,
 )
-from memrelay_eval.analysis.gates import FrozenThresholdPolicy, evaluate_claim
+from memrelay_eval.analysis.gates import (
+    CategoricalGateDecision,
+    CategoricalGatePolicy,
+    FrozenThresholdPolicy,
+    evaluate_claim,
+)
 from memrelay_eval.analysis.intervals import SimultaneousInterval
 from memrelay_eval.analysis.multiplicity import FrozenClaimFamily, HolmResult
 from memrelay_eval.analysis.power import (
@@ -24,7 +29,8 @@ from memrelay_eval.analysis.preregistration import (
     SealedClaimProtocol,
     SealedClaimRegistration,
 )
-from memrelay_eval.domain.errors import AnalysisError
+from memrelay_eval.canonical import verify_digest
+from memrelay_eval.domain.errors import AnalysisError, SafetyAnalysisError
 
 _PROTOCOL = "a" * 64
 _PLAN = "b" * 64
@@ -34,7 +40,8 @@ _AUTHORIZATION = "e" * 64
 _PANEL = "f" * 64
 _SOURCE = "1" * 64
 _DERIVATION = "2" * 64
-_CATEGORICAL = "3" * 64
+_CATEGORICAL_POLICY_DOCUMENT = "3" * 64
+_CATEGORICAL_SCOPE = "primary-stage"
 
 
 @dataclass(frozen=True)
@@ -43,6 +50,7 @@ class _Bundle:
     thresholds: FrozenThresholdPolicy
     protocol: FrozenPowerProtocol
     seal: SealedClaimProtocol
+    categorical_policy: CategoricalGatePolicy
 
 
 def _family_policy(
@@ -200,12 +208,18 @@ def _bundle(
 ) -> _Bundle:
     endpoint_ids, _directions, scales, _margins, _selection = _family_policy(mode)
     registry = FrozenEstimatorRegistry(_estimands(endpoint_ids, scales, design))
+    categorical_policy = CategoricalGatePolicy(
+        policy_id="primary-categorical-policy",
+        policy_document_sha256=_CATEGORICAL_POLICY_DOCUMENT,
+    )
     provisional_family = _family(mode=mode, registry=registry, seal_sha256="0" * 64)
     provisional_thresholds = FrozenThresholdPolicy(
         _PROTOCOL,
         provisional_family.family_sha256,
         provisional_family.family_registration_sha256,
         "0" * 64,
+        categorical_policy.sha256,
+        _CATEGORICAL_SCOPE,
         panel_gate_sha256=_PANEL,
     )
     cell = _cell(
@@ -253,6 +267,8 @@ def _bundle(
         family.family_sha256,
         family.family_registration_sha256,
         seal.sealed_claim_protocol_sha256,
+        categorical_policy.sha256,
+        _CATEGORICAL_SCOPE,
         panel_gate_sha256=_PANEL,
     )
     protocol = FrozenPowerProtocol(
@@ -270,7 +286,7 @@ def _bundle(
         endpoint_ids[0],
         seal,
     )
-    return _Bundle(family, thresholds, protocol, seal)
+    return _Bundle(family, thresholds, protocol, seal, categorical_policy)
 
 
 @lru_cache
@@ -304,6 +320,7 @@ def _interval(
 
 def _context(bundle: _Bundle) -> dict[str, object]:
     return {
+        "claim_id": "claim-reliability",
         "source_sha256": _SOURCE,
         "derivation_sha256": _DERIVATION,
         "power_evaluation": _evaluation(),
@@ -312,7 +329,16 @@ def _context(bundle: _Bundle) -> dict[str, object]:
         "information_proof": FinalInformationProof(
             _PROTOCOL, bundle.protocol.power_sha256, 512, _SOURCE
         ),
-        "categorical_gates_sha256": _CATEGORICAL,
+        "categorical_gate_policy": bundle.categorical_policy,
+        "categorical_gate_decision": CategoricalGateDecision(
+            scope_id=_CATEGORICAL_SCOPE,
+            status="pass",
+            blocking_event_ids=(),
+            affected_claim_ids=(),
+            policy_sha256=bundle.categorical_policy.sha256,
+            evidence_sha256=(),
+            bounded_language_required=False,
+        ),
     }
 
 
@@ -464,6 +490,120 @@ def test_claim_gate_rejects_claims_without_endpoint_specific_power() -> None:
             claim_type="quality_benefit",
             qualitative_scale=(0.0, 1.0),
             **_context(bundle),
+        )
+
+
+def test_categorical_authority_blocks_favorable_quantitative_claims() -> None:
+    bundle = _bundle()
+    context = _context(bundle)
+    blocked = CategoricalGateDecision(
+        scope_id=_CATEGORICAL_SCOPE,
+        status="blocked",
+        blocking_event_ids=("event-1",),
+        affected_claim_ids=("claim-reliability",),
+        policy_sha256=bundle.categorical_policy.sha256,
+        evidence_sha256=("4" * 64,),
+        bounded_language_required=True,
+    )
+    assert verify_digest(blocked.to_document())
+    context["categorical_gate_decision"] = blocked
+
+    decision = evaluate_claim(
+        bundle.family,
+        bundle.thresholds,
+        _holm(bundle.family),
+        _interval(bundle.family),
+        claim_type="reliability_benefit",
+        **context,
+    )
+
+    assert decision.status == "blocked"
+    assert decision.categorical_gate_decision_sha256 == blocked.digest
+    assert "categorical:blocked" in decision.gate_trace
+
+
+def test_categorical_authority_rejects_mismatched_or_malformed_bindings() -> None:
+    bundle = _bundle()
+    context = _context(bundle)
+    passed = context["categorical_gate_decision"]
+    assert isinstance(passed, CategoricalGateDecision)
+
+    wrong_policy = CategoricalGatePolicy(
+        policy_id="other-policy",
+        policy_document_sha256="5" * 64,
+    )
+    context["categorical_gate_policy"] = wrong_policy
+    with pytest.raises(AnalysisError, match="policy mismatch"):
+        evaluate_claim(
+            bundle.family,
+            bundle.thresholds,
+            _holm(bundle.family),
+            _interval(bundle.family),
+            claim_type="reliability_benefit",
+            **context,
+        )
+
+    context = _context(bundle)
+    context["categorical_gate_decision"] = CategoricalGateDecision(
+        scope_id="secondary-stage",
+        status="pass",
+        blocking_event_ids=(),
+        affected_claim_ids=(),
+        policy_sha256=bundle.categorical_policy.sha256,
+        evidence_sha256=(),
+        bounded_language_required=False,
+    )
+    with pytest.raises(AnalysisError, match="scope or policy mismatch"):
+        evaluate_claim(
+            bundle.family,
+            bundle.thresholds,
+            _holm(bundle.family),
+            _interval(bundle.family),
+            claim_type="reliability_benefit",
+            **context,
+        )
+
+    context = _context(bundle)
+    context["categorical_gate_decision"] = CategoricalGateDecision(
+        scope_id=_CATEGORICAL_SCOPE,
+        status="blocked",
+        blocking_event_ids=("event-1",),
+        affected_claim_ids=("another-claim",),
+        policy_sha256=bundle.categorical_policy.sha256,
+        evidence_sha256=("4" * 64,),
+        bounded_language_required=True,
+    )
+    with pytest.raises(AnalysisError, match="claim mismatch"):
+        evaluate_claim(
+            bundle.family,
+            bundle.thresholds,
+            _holm(bundle.family),
+            _interval(bundle.family),
+            claim_type="reliability_benefit",
+            **context,
+        )
+
+    context = _context(bundle)
+    context["categorical_gate_decision"] = object()
+    with pytest.raises(AnalysisError, match="authority invalid"):
+        evaluate_claim(
+            bundle.family,
+            bundle.thresholds,
+            _holm(bundle.family),
+            _interval(bundle.family),
+            claim_type="reliability_benefit",
+            **context,
+        )
+
+    with pytest.raises(SafetyAnalysisError, match="categorical gate decision invalid"):
+        CategoricalGateDecision(
+            scope_id=_CATEGORICAL_SCOPE,
+            status="indeterminate",
+            blocking_event_ids=(),
+            affected_claim_ids=(),
+            policy_sha256=bundle.categorical_policy.sha256,
+            evidence_sha256=(),
+            bounded_language_required=False,
         )
 
 

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/analysis-derivation-manifest.schema.json",
+  "title": "Memrelay immutable analysis derivation manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "spec",
+    "dataset_version",
+    "dataset_manifest_sha256",
+    "source_table_sha256",
+    "output_schema_sha256",
+    "output_sha256",
+    "protocol_sha256",
+    "population_id",
+    "endpoint_id",
+    "stratum",
+    "history_mode",
+    "runtime_lock_sha256",
+    "units",
+    "derivation_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "artifact_type": { "const": "analysis_derivation_manifest" },
+    "dataset_version": { "type": "string", "pattern": "^parquet-v1\\.0\\.0-[a-f0-9]{16}$" },
+    "dataset_manifest_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "source_table_sha256": {
+      "type": "object",
+      "required": ["assigned_units", "eligible_outcomes"],
+      "additionalProperties": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+    },
+    "output_schema_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "output_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "derivation_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

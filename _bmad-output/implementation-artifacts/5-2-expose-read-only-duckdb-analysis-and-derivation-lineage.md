@@ -1,6 +1,6 @@
 # Story 5.2: Expose Read-Only DuckDB Analysis and Derivation Lineage
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -32,26 +32,26 @@ So that analyses are reproducible and cannot mutate operational evidence.
 
 ## Tasks / Subtasks
 
-- [ ] Implement a DuckDB `1.5.5` read-only adapter (AC: 1)
-  - [ ] Open only an immutable Story 5.1 dataset version from an allowlisted root and verify all hashes before registration.
-  - [ ] Use an isolated ephemeral catalog with external access disabled and manifest-listed Parquet registered through controlled code; a DuckDB database-file `read_only` flag alone is not sufficient protection for Parquet.
-  - [ ] Enforce a closed query API over registered logical tables, deny caller-supplied arbitrary SQL, extension load/install and network access, and expose no SQLite/CAS mutation API.
-  - [ ] Reject path traversal, mutable aliases, unmanifested globs/table functions, `ATTACH`, `COPY`, DDL/DML, `PRAGMA`/`SET`/`CALL`, secret/config mutation, and write/export statements. Governed derived bytes are written by the artifact publisher, never by DuckDB into source roots.
-- [ ] Build schema-aware stratification validation (AC: 2)
-  - [ ] Require explicit valid operations for product/engine, controlled/dynamic, model, environment, protocol, population, and endpoint dimensions.
-  - [ ] Reject unstratified joins/aggregates and record dimension values, query/derivation identity, typed reason, and source hashes without leaking treatment labels.
-  - [ ] Preserve sequence/history/repository clustering metadata for downstream estimators.
-- [ ] Create a derivation registry and manifest writer (AC: 3)
-  - [ ] Hash canonical SQL plus bound parameters, non-SQL derivation code/version, ordered inputs, runtime lock, and output schema.
-  - [ ] Attach protocol, population, endpoint, stratum, history mode, units, gates, source table/file/schema hashes, and parent derivations.
-  - [ ] Emit immutable decision records for successful and rejected derivations.
-- [ ] Produce deterministic table/figure primitives (AC: 3)
-  - [ ] Freeze sorting, numeric formatting, categorical order, fonts/rendering dependencies, metadata stripping, and output encoding.
-  - [ ] Store outputs atomically by hash; exact input/derivation reruns must reproduce exact figure bytes.
-- [ ] Wire `memrelay-eval analyze --stage <stage>` without adding inference policy (AC: 1-3)
-  - [ ] Resolve the frozen stage/dataset/analysis plan explicitly; never choose “latest”.
-  - [ ] Emit the standard command manifest with immutable inputs, outputs, protocol, runtime lock, and typed terminal status.
-- [ ] Add query-sandbox, stratification, lineage, determinism, and mutation-denial tests (AC: 1-3).
+- [x] Implement a DuckDB `1.5.5` read-only adapter (AC: 1)
+  - [x] Open only an immutable Story 5.1 dataset version from an allowlisted root and verify all hashes before registration.
+  - [x] Use an isolated ephemeral catalog with external access disabled and manifest-listed Parquet registered through controlled code; a DuckDB database-file `read_only` flag alone is not sufficient protection for Parquet.
+  - [x] Enforce a closed query API over registered logical tables, deny caller-supplied arbitrary SQL, extension load/install and network access, and expose no SQLite/CAS mutation API.
+  - [x] Reject path traversal, mutable aliases, unmanifested globs/table functions, `ATTACH`, `COPY`, DDL/DML, `PRAGMA`/`SET`/`CALL`, secret/config mutation, and write/export statements. Governed derived bytes are written by the artifact publisher, never by DuckDB into source roots.
+- [x] Build schema-aware stratification validation (AC: 2)
+  - [x] Require explicit valid operations for product/engine, controlled/dynamic, model, environment, protocol, population, and endpoint dimensions.
+  - [x] Reject unstratified joins/aggregates and record dimension values, query/derivation identity, typed reason, and source hashes without leaking treatment labels.
+  - [x] Preserve sequence/history/repository clustering metadata for downstream estimators.
+- [x] Create a derivation registry and manifest writer (AC: 3)
+  - [x] Hash canonical SQL plus bound parameters, non-SQL derivation code/version, ordered inputs, runtime lock, and output schema.
+  - [x] Attach protocol, population, endpoint, stratum, history mode, units, gates, source table/file/schema hashes, and parent derivations.
+  - [x] Emit immutable decision records for successful and rejected derivations.
+- [x] Produce deterministic table/figure primitives (AC: 3)
+  - [x] Freeze sorting, numeric formatting, categorical order, fonts/rendering dependencies, metadata stripping, and output encoding.
+  - [x] Store outputs atomically by hash; exact input/derivation reruns must reproduce exact figure bytes.
+- [x] Wire `memrelay-eval analyze --stage <stage>` without adding inference policy (AC: 1-3)
+  - [x] Resolve the frozen stage/dataset/analysis plan explicitly; never choose “latest”.
+  - [x] Emit the standard command manifest with immutable inputs, outputs, protocol, runtime lock, and typed terminal status.
+- [x] Add query-sandbox, stratification, lineage, determinism, and mutation-denial tests (AC: 1-3).
 
 ## Developer Context
 
@@ -104,12 +104,30 @@ DuckDB is a replaceable read engine, not state. All authority remains in immutab
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- Focused analysis contract, architecture, fault, golden, and schema tests: 17 passed.
+- Evaluator regression suite reached 1236 and 1234 passing tests across two runs, with
+  only transient Windows directory-lock failures in existing catalog atomic-publication tests.
+  The affected catalog tests passed immediately when rerun in isolation (1/1, then 5/5).
+- Targeted Ruff check and format check: passed.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a pinned DuckDB 1.5.5 adapter that verifies a named Story 5.1 dataset,
+  hashes and schemas before registering in-memory Arrow tables in an external-access-disabled
+  catalog. The API exposes only structured projections and explicitly stratified counts.
+- Added immutable, content-addressed derivation and rejection manifests with source table,
+  dataset, protocol, population, endpoint, stratum, history, unit, gate, runtime, and
+  parent-derivation lineage. Canonical table JSON and fixed SVG primitives reproduce exact bytes.
+- Added `memrelay-eval analyze --stage` using a canonical explicit plan and version, plus
+  command-manifest emission. No inference policy or operational evidence mutation was introduced.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/{5-2-expose-read-only-duckdb-analysis-and-derivation-lineage.md,sprint-status.yaml}`
+- `evaluation/{pyproject.toml,schemas/analysis-derivation-manifest.schema.json}`
+- `evaluation/src/memrelay_eval/{analysis/queries.py,cli/{commands,main}.py,domain/errors.py}`
+- `evaluation/tests/{architecture/test_duckdb_analysis_boundary.py,contract/analysis/{test_duckdb_read_only,test_parquet_schemas}.py}`
