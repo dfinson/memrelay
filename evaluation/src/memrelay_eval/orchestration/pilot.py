@@ -55,9 +55,7 @@ class PilotTask:
             or set(self.session_ids_by_unit) != set(units)
         ):
             raise StageControlError("pilot_task_assignment_shape_invalid")
-        sessions = {
-            unit: tuple(value) for unit, value in self.session_ids_by_unit.items()
-        }
+        sessions = {unit: tuple(value) for unit, value in self.session_ids_by_unit.items()}
         if any(
             len(value) not in {2, 3}
             or len(set(value)) != len(value)

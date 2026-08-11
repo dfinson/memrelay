@@ -69,9 +69,7 @@ def _exit_evidence(plan: FrozenPilotPlan) -> PilotExitEvidence:
     )
 
 
-def test_pilot_entry_requires_sealed_128_unit_plan(
-    monkeypatch, tmp_path, capsys
-) -> None:  # type: ignore[no-untyped-def]
+def test_pilot_entry_requires_sealed_128_unit_plan(monkeypatch, tmp_path, capsys) -> None:  # type: ignore[no-untyped-def]
     for marker in CI_MARKERS:
         monkeypatch.delenv(marker, raising=False)
     predecessor = StageExitBundle(
@@ -89,9 +87,7 @@ def test_pilot_entry_requires_sealed_128_unit_plan(
     protocol_id = ProtocolId.new()
     locks = dict.fromkeys(STAGE_ENTRY_LOCK_FIELDS, HASH)
     locks["preceding_exit_sha256"] = predecessor.digest
-    entry = StageEntryBundle(
-        stage_id, StageKind.PILOT, protocol_id, StageKind.INTEGRATION, locks
-    )
+    entry = StageEntryBundle(stage_id, StageKind.PILOT, protocol_id, StageKind.INTEGRATION, locks)
     now = datetime.now(UTC)
     authorization = StageAuthorization(
         StageAuthorizationId.new(),

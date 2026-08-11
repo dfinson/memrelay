@@ -314,12 +314,7 @@ def gate_pilot(args: Namespace) -> int:
     evidence_bytes = _read_stage_input(args.exit_evidence, "pilot_exit_evidence_unreadable")
     plan = load_pilot_plan(plan_bytes)
     decision = evaluate_pilot_exit(plan, load_pilot_exit_evidence(evidence_bytes))
-    path = (
-        Path(args.output_root)
-        / "pilot-exits"
-        / str(plan.stage_id)
-        / f"{decision.digest}.json"
-    )
+    path = Path(args.output_root) / "pilot-exits" / str(plan.stage_id) / f"{decision.digest}.json"
     _write_immutable_stage_manifest(path, decision.bytes())
     print(decision.bytes().decode("utf-8"))
     return 0 if decision.status == "accepted" else 2
