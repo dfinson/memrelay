@@ -67,6 +67,12 @@ from memrelay_eval.orchestration.control import (
     reuse_or_reject_model_lock,
     write_model_lock,
 )
+from memrelay_eval.orchestration.pilot import (
+    authorize_pilot_plan,
+    evaluate_pilot_exit,
+    load_pilot_exit_evidence,
+    load_pilot_plan,
+)
 from memrelay_eval.orchestration.stages import (
     authorize_stage_entry,
     load_authorization,
@@ -198,10 +204,20 @@ def _run_enrollable_stage(args: Namespace) -> int:
             authorization=authorization,
             now=datetime.now(UTC),
         )
+        if stage == "pilot":
+            pilot_plan_path = getattr(args, "pilot_plan", None)
+            if not pilot_plan_path:
+                raise StageControlError("pilot_plan_required")
+            pilot_plan_bytes = _read_stage_input(pilot_plan_path, "pilot_plan_unreadable")
+            pilot_plan = load_pilot_plan(pilot_plan_bytes)
+            authorize_pilot_plan(admission_entry, pilot_plan)
+            input_hashes["pilot_plan"] = sha256(pilot_plan_bytes).hexdigest()
         output_hashes = {
             "stage_authorization": authorization.digest,
             "stage_entry_bundle": admission_entry.digest,
         }
+        if stage == "pilot":
+            output_hashes["pilot_plan"] = pilot_plan.digest
     except StageControlError as error:
         error_code = error.code
         terminal_status = "refused"
@@ -289,6 +305,24 @@ def _write_immutable_stage_manifest(path: Path, data: bytes) -> None:
             temporary.unlink()
     if not path.is_file() or path.read_bytes() != data:
         raise StageControlError("stage_command_manifest_publish_failed", (str(path),))
+
+
+def gate_pilot(args: Namespace) -> int:
+    """Seal a whole-pilot exit decision from blinded, frozen evidence only."""
+
+    plan_bytes = _read_stage_input(args.pilot_plan, "pilot_plan_unreadable")
+    evidence_bytes = _read_stage_input(args.exit_evidence, "pilot_exit_evidence_unreadable")
+    plan = load_pilot_plan(plan_bytes)
+    decision = evaluate_pilot_exit(plan, load_pilot_exit_evidence(evidence_bytes))
+    path = (
+        Path(args.output_root)
+        / "pilot-exits"
+        / str(plan.stage_id)
+        / f"{decision.digest}.json"
+    )
+    _write_immutable_stage_manifest(path, decision.bytes())
+    print(decision.bytes().decode("utf-8"))
+    return 0 if decision.status == "accepted" else 2
 
 
 def bootstrap(

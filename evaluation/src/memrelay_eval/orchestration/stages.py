@@ -510,6 +510,7 @@ class StageUnit:
 
     unit_id: str
     terminal: bool
+    started: bool = False
 
 
 def plan_stage_resume(
@@ -538,7 +539,7 @@ def plan_stage_resume(
         raise StageControlError("resume_receipt_conflict")
     if not ledger_cas_consistent:
         raise StageControlError("resume_ledger_cas_conflict")
-    return tuple(unit.unit_id for unit in units if not unit.terminal)
+    return tuple(unit.unit_id for unit in units if not unit.terminal and not unit.started)
 
 
 class StageBundleStore:
