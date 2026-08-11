@@ -8,7 +8,7 @@ import os
 import uuid
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -41,7 +41,10 @@ from memrelay_eval.application.copilot_services import (
     eligible_models,
     qualify_native_catalog,
 )
-from memrelay_eval.application.observation_services import qualify_observation
+from memrelay_eval.application.observation_services import (
+    qualify_observation,
+    verified_product_observation_evidence,
+)
 from memrelay_eval.application.telemetry_services import (
     DEFAULT_COLLECTOR_ARCHIVE_NAME,
     verify_local_telemetry_bootstrap,
@@ -59,8 +62,10 @@ from memrelay_eval.domain.errors import (
     StageControlError,
 )
 from memrelay_eval.domain.observation import (
+    ObservationContract,
+    generate_sentinels,
     observation_contract_from_document,
-    observation_evidence_from_document,
+    require_new_protocol,
 )
 from memrelay_eval.evidence.backup import preflight_backup_root
 from memrelay_eval.evidence.manifest import (
@@ -479,26 +484,41 @@ def plan_offline_command(args: Namespace) -> int:
 
 
 def observation_conformance(args: Namespace) -> int:
-    """Qualify one frozen synthetic sentinel path and retain its immutable decision."""
+    """Execute one configured product composition and qualify its retained native evidence."""
 
+    if (
+        not isinstance(args.sentinel_count, int)
+        or isinstance(args.sentinel_count, bool)
+        or args.sentinel_count <= 0
+        or not isinstance(args.window_seconds, int)
+        or isinstance(args.window_seconds, bool)
+        or args.window_seconds <= 0
+    ):
+        raise ObservationQualificationError("observation_execution_parameters_invalid")
     input_path = Path(args.input)
     document, input_bytes = _canonical_observation_input(input_path)
     contract_value = document.get("contract")
-    evidence_value = document.get("evidence")
-    if not isinstance(contract_value, dict) or not isinstance(evidence_value, dict):
+    if not isinstance(contract_value, dict):
         raise ObservationQualificationError("observation_qualification_input_invalid")
     try:
-        contract = observation_contract_from_document(contract_value)
-        evidence = observation_evidence_from_document(evidence_value)
-        decided_at = _observation_timestamp(document.get("decided_at"))
+        requested_contract = observation_contract_from_document(contract_value)
     except ValueError as error:
         raise ObservationQualificationError("observation_qualification_input_invalid") from error
-    decision = qualify_observation(
-        contract,
-        evidence,
-        decided_at=decided_at,
+
+    from memrelay_eval.adapters.memrelay.observation_runner import (
+        current_observation_identity,
+        receipt_sha256,
+        run_actual_observation_composition,
     )
-    identity = contract.identity
+
+    output_root = Path(args.output_root)
+    workspace = output_root / "observation-runs" / requested_contract.path.value / uuid.uuid4().hex
+    identity, product_config = current_observation_identity(
+        path=requested_contract.path,
+        product_config_path=Path(args.product_config),
+        runtime_lock_path=Path(args.runtime_lock),
+        workspace=workspace,
+    )
     protocol_sha256 = canonical_digest(
         {
             "protocol_version": identity.protocol_version,
@@ -509,15 +529,47 @@ def observation_conformance(args: Namespace) -> int:
     # this handler returns or raises, binding that terminal record to this path.
     args.runtime_lock_sha256 = identity.runtime_lock_sha256
     args.protocol_sha256 = protocol_sha256
+    window_started_at = datetime.now(UTC)
+    contract = ObservationContract(
+        path=requested_contract.path,
+        identity=identity,
+        expected_sentinels=generate_sentinels(args.sentinel_count),
+        window_started_at=window_started_at,
+        deadline_at=window_started_at + timedelta(seconds=args.window_seconds),
+    )
+    require_new_protocol(requested_contract, contract)
+
+    run = run_actual_observation_composition(
+        contract=contract,
+        config=product_config,
+        workspace=workspace,
+    )
+    native_receipt_sha256 = receipt_sha256(run)
+    _persist_observation_native_receipt(
+        output_root,
+        path=contract.path.value,
+        conformance_sha256=identity.conformance_sha256,
+        receipt=run.receipt,
+    )
+    evidence = verified_product_observation_evidence(
+        contract,
+        run,
+        native_receipt_persisted=True,
+    )
+    decision = qualify_observation(contract, evidence, decided_at=datetime.now(UTC))
     input_hashes = {
-        "observation_input": sha256(input_bytes).hexdigest(),
+        "observation_contract_request": sha256(input_bytes).hexdigest(),
+        "native_observation_receipt": native_receipt_sha256,
         "configuration": identity.configuration_sha256,
         "reconciliation_policy": identity.reconciliation_policy_sha256,
         "semantic_map": identity.semantic_map_sha256,
         "sentinel_contract": identity.sentinel_contract_sha256,
         "source_implementation": identity.source_implementation_sha256,
     }
-    output_hashes = {"observation_qualification": decision.decision_sha256}
+    output_hashes = {
+        "native_observation_receipt": native_receipt_sha256,
+        "observation_qualification": decision.decision_sha256,
+    }
     qualification_manifest = observation_qualification_manifest(
         path=contract.path.value,
         conformance_sha256=identity.conformance_sha256,
@@ -530,7 +582,7 @@ def observation_conformance(args: Namespace) -> int:
         runtime_lock_sha256=identity.runtime_lock_sha256,
     )
     _persist_observation_decision(
-        Path(args.output_root),
+        output_root,
         path=contract.path.value,
         conformance_sha256=identity.conformance_sha256,
         decision_bytes=canonical_bytes(decision.to_document()),
@@ -550,7 +602,7 @@ def _canonical_observation_input(path: Path) -> tuple[dict[str, object], bytes]:
         raise ObservationQualificationError("observation_qualification_input_invalid") from error
     if (
         not isinstance(document, dict)
-        or set(document) != {"contract", "evidence", "decided_at"}
+        or set(document) != {"contract"}
         or canonical_bytes(document) != data
     ):
         raise ObservationQualificationError("observation_qualification_input_invalid")
@@ -564,18 +616,6 @@ def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, ob
             raise ValueError("duplicate_observation_input_key")
         document[key] = value
     return document
-
-
-def _observation_timestamp(value: object) -> datetime:
-    if not isinstance(value, str):
-        raise ObservationQualificationError("observation_qualification_input_invalid")
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as error:
-        raise ObservationQualificationError("observation_qualification_input_invalid") from error
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ObservationQualificationError("observation_qualification_input_invalid")
-    return parsed.astimezone(UTC)
 
 
 def _persist_observation_decision(
@@ -595,6 +635,18 @@ def _persist_observation_decision(
     _write_immutable_observation_file(
         directory / f"manifest-{manifest_sha256}.json", qualification_manifest
     )
+
+
+def _persist_observation_native_receipt(
+    output_root: Path,
+    *,
+    path: str,
+    conformance_sha256: str,
+    receipt: bytes,
+) -> None:
+    directory = output_root / "observation-qualification" / path / conformance_sha256
+    receipt_sha256 = sha256(receipt).hexdigest()
+    _write_immutable_observation_file(directory / f"native-receipt-{receipt_sha256}.json", receipt)
 
 
 def _write_immutable_observation_file(path: Path, data: bytes) -> None:

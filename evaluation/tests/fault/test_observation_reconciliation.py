@@ -176,9 +176,7 @@ def test_unreconciled_shutdown_and_restart_faults_block_path_claims(alter, reaso
     _assert_blocked(alter(_evidence(contract)), reason)
 
 
-def test_unqualified_cli_decision_is_persisted_with_the_typed_failure_manifest(
-    tmp_path: Path,
-) -> None:
+def test_cli_rejects_fabricated_serialized_evidence(tmp_path: Path) -> None:
     contract = _contract()
     evidence = replace(_evidence(contract), reconciliation_completed=False)
     input_path = tmp_path / "observation-input.json"
@@ -187,13 +185,14 @@ def test_unqualified_cli_decision_is_persisted_with_the_typed_failure_manifest(
             {
                 "contract": contract.to_document(),
                 "evidence": evidence.to_document(),
-                "decided_at": (_STARTED_AT + timedelta(minutes=2))
-                .isoformat(timespec="microseconds")
-                .replace("+00:00", "Z"),
             }
         )
     )
     output_root = tmp_path / "artifacts"
+    product_config = tmp_path / "product.toml"
+    product_config.write_text('[ingest]\nintake_source = "replay"\n', encoding="utf-8")
+    runtime_lock = tmp_path / "runtime-lock.json"
+    runtime_lock.write_bytes(b'{"runtime":"synthetic-observation-lock-v1"}')
 
     with pytest.raises(ObservationQualificationError) as error:
         main(
@@ -201,14 +200,40 @@ def test_unqualified_cli_decision_is_persisted_with_the_typed_failure_manifest(
                 "observation-conformance",
                 "--input",
                 str(input_path),
+                "--product-config",
+                str(product_config),
+                "--runtime-lock",
+                str(runtime_lock),
                 "--output-root",
                 str(output_root),
             ]
         )
 
-    assert error.value.code == ObservationFailureReason.UNRECONCILED.value
-    decision_path = next(output_root.glob("observation-qualification/replay/*/decision-*.json"))
-    assert json.loads(decision_path.read_text(encoding="utf-8"))["qualified"] is False
+    assert error.value.code == "observation_qualification_input_invalid"
+    assert not list(output_root.glob("observation-qualification/**/decision-*.json"))
     command_manifest_path = next(output_root.glob("commands/observation-conformance-*.json"))
     command_manifest = json.loads(command_manifest_path.read_text(encoding="utf-8"))
-    assert command_manifest["error_code"] == ObservationFailureReason.UNRECONCILED.value
+    assert command_manifest["error_code"] == "observation_qualification_input_invalid"
+
+
+def test_records_before_the_frozen_window_fail_and_do_not_count_toward_delivery() -> None:
+    contract = _contract()
+    evidence = _evidence(contract)
+    early = next(
+        record
+        for record in evidence.records
+        if record.boundary is ObservationBoundary.RECONCILIATION
+        and record.sentinel_id == contract.expected_sentinels[0].identifier
+    )
+    records = tuple(
+        replace(early, observed_at=contract.window_started_at - timedelta(microseconds=1))
+        if record is early
+        else record
+        for record in evidence.records
+    )
+
+    assessment = assess_observation(contract, replace(evidence, records=records))
+
+    assert ObservationFailureReason.OUTSIDE_FROZEN_WINDOW in assessment.failure_reasons
+    assert ObservationFailureReason.MISSING in assessment.failure_reasons
+    assert assessment.delivery_numerator == len(contract.expected_sentinels) - 1

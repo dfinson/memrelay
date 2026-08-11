@@ -84,13 +84,16 @@ original binding. These decisions support only the named path's frozen sentinel
 contract, not efficacy, safety, economics, production-wide reliability, or
 cross-repository fitness.
 
-Use `memrelay-eval observation-conformance --input <canonical-input.json>
+Use `memrelay-eval observation-conformance --input <canonical-contract.json>
+--product-config <product.toml> --runtime-lock <runtime-lock.json>
 --output-root <artifacts-root>` to retain one immutable decision and
-path-specific manifest. The canonical input contains only the serialized frozen
-contract, boundary evidence, and UTC decision time; unsupported fields,
-non-canonical JSON, and source payloads are rejected. An unqualified path still
-persists its decision and returns its typed failure reason, while the ordinary
-Story 6.1 command manifest is emitted alongside it.
+path-specific manifest. The canonical input contains only a prior serialized
+contract identity; boundary evidence and caller-selected decision times are
+rejected. At execution the evaluator rehashes the imported configured
+composition, semantic map, product configuration, and runtime-lock bytes,
+rejecting an identity mismatch with a typed drift failure. It then creates the
+frozen window and fresh sentinels, drives the real poller/capture composition,
+and retains a hash-bound native receipt with the decision and manifests.
 
 ## Terminal evidence backup and restore
 

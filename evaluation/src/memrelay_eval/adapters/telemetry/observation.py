@@ -32,32 +32,49 @@ def observation_telemetry_evidence(
 ) -> ObservationTelemetryEvidence:
     """Require daemon-dispatch sentinel spans without treating transport alone as proof."""
 
-    expected_order = tuple(
-        span.span_id for span in spans if span.span_class is SpanClass.DAEMON_DISPATCH
-    )
+    target_spans: list[TelemetrySpan] = []
+    malformed_or_mismatched = False
+    for span in spans:
+        if span.span_class is not SpanClass.DAEMON_DISPATCH:
+            continue
+        attributes = span.attributes
+        is_observation_span = any(
+            key in attributes
+            for key in ("sentinel_id", "sentinel_sequence", "observation_path", "restart_epoch")
+        )
+        if not is_observation_span:
+            continue
+        identifier = attributes.get("sentinel_id")
+        sequence = attributes.get("sentinel_sequence")
+        span_path = attributes.get("observation_path")
+        restart_epoch = attributes.get("restart_epoch", 0)
+        valid = (
+            isinstance(identifier, str)
+            and isinstance(sequence, int)
+            and not isinstance(sequence, bool)
+            and isinstance(restart_epoch, int)
+            and not isinstance(restart_epoch, bool)
+        )
+        if span_path != path.value or not valid:
+            malformed_or_mismatched = True
+            continue
+        target_spans.append(span)
+
+    expected_order = tuple(span.span_id for span in target_spans)
     reconciliation = reconcile_telemetry(
-        spans,
+        target_spans,
         expected_order=expected_order,
         expected_classes={SpanClass.DAEMON_DISPATCH},
         collector_shutdown_verified=collector_shutdown_verified,
     )
     records: list[SentinelBoundaryRecord] = []
-    for span in spans:
-        if span.span_class is not SpanClass.DAEMON_DISPATCH:
-            continue
+    for span in target_spans:
         identifier = span.attributes.get("sentinel_id")
         sequence = span.attributes.get("sentinel_sequence")
-        span_path = span.attributes.get("observation_path")
         restart_epoch = span.attributes.get("restart_epoch", 0)
-        if (
-            not isinstance(identifier, str)
-            or not isinstance(sequence, int)
-            or isinstance(sequence, bool)
-            or span_path != path.value
-            or not isinstance(restart_epoch, int)
-            or isinstance(restart_epoch, bool)
-        ):
-            continue
+        assert isinstance(identifier, str)
+        assert isinstance(sequence, int) and not isinstance(sequence, bool)
+        assert isinstance(restart_epoch, int) and not isinstance(restart_epoch, bool)
         records.append(
             SentinelBoundaryRecord(
                 path=path,
@@ -70,6 +87,15 @@ def observation_telemetry_evidence(
         )
     return ObservationTelemetryEvidence(
         records=tuple(records),
-        complete=reconciliation.complete and len(records) == len(expected_order),
-        failure_codes=reconciliation.failure_codes,
+        complete=(
+            reconciliation.complete
+            and not malformed_or_mismatched
+            and len(records) == len(expected_order)
+        ),
+        failure_codes=tuple(
+            sorted(
+                set(reconciliation.failure_codes)
+                | ({"TEL-OBSERVATION-RECONCILIATION"} if malformed_or_mismatched else set())
+            )
+        ),
     )

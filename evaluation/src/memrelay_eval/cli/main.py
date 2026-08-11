@@ -198,7 +198,29 @@ def build_parser() -> argparse.ArgumentParser:
     observation.add_argument(
         "--input",
         required=True,
-        help="canonical observation contract/evidence input JSON containing no source payloads",
+        help="canonical prior contract identity request; native evidence is not accepted",
+    )
+    observation.add_argument(
+        "--product-config",
+        required=True,
+        help="current product TOML configuration selecting replay or file_watch",
+    )
+    observation.add_argument(
+        "--runtime-lock",
+        required=True,
+        help="current runtime lock whose bytes are bound before sentinel injection",
+    )
+    observation.add_argument(
+        "--sentinel-count",
+        type=int,
+        default=3,
+        help="positive number of fresh synthetic sentinels injected for this execution",
+    )
+    observation.add_argument(
+        "--window-seconds",
+        type=int,
+        default=30,
+        help="positive frozen conformance-window duration created immediately before injection",
     )
     observation.add_argument(
         "--output-root",
@@ -353,7 +375,7 @@ _INPUT_PATH_FIELDS = {
     "validate-catalog": ("catalog", "prior_lock"),
     "compile-catalog": ("catalog", "prior_lock", "runtime_lock"),
     "plan-offline": ("catalog", "prior_lock", "runtime_lock", "lock"),
-    "observation-conformance": ("input",),
+    "observation-conformance": ("input", "product_config", "runtime_lock"),
     "reconcile": ("input", "ledger"),
     "backup-terminal": ("artifacts_root", "ledger"),
     "analyze": ("plan", "parquet_root"),

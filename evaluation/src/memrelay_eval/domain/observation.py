@@ -62,6 +62,7 @@ class ObservationFailureReason(StrEnum):
     DUPLICATED = "observation_sentinel_duplicated"
     REORDERED = "observation_sentinel_reordered"
     DELAYED = "observation_sentinel_delayed"
+    OUTSIDE_FROZEN_WINDOW = "observation_sentinel_outside_frozen_window"
     GAP = "observation_sentinel_gap"
     RESTART_GAP = "observation_restart_gap"
     TERMINAL_FLUSH_MISSING = "observation_terminal_flush_missing"
@@ -545,10 +546,13 @@ def assess_observation(
         if expected is None or expected.sequence != record.sequence:
             reasons.add(ObservationFailureReason.UNRECONCILED)
             continue
+        if not (contract.window_started_at <= record.observed_at <= contract.deadline_at):
+            reasons.add(ObservationFailureReason.OUTSIDE_FROZEN_WINDOW)
+            if record.observed_at > contract.deadline_at:
+                delayed.add(record.sentinel_id)
+            continue
         records_by_boundary[record.boundary].append(record)
         restart_epochs.add(record.restart_epoch)
-        if record.observed_at > contract.deadline_at:
-            delayed.add(record.sentinel_id)
 
     missing_by_boundary: dict[ObservationBoundary, tuple[str, ...]] = {}
     pre_idempotency_duplicates: set[str] = set()
@@ -621,14 +625,17 @@ def assess_observation(
     )
 
 
-def require_new_protocol(prior: ObservationAssessment, replacement: ObservationContract) -> None:
-    """Prevent relabeling prior evidence after any frozen identity input changes."""
+def require_new_protocol(
+    prior: ObservationContract | ObservationAssessment, replacement: ObservationContract
+) -> None:
+    """Reject stale contracts instead of relabeling their retained evidence."""
 
-    if (
-        prior.contract.identity.conformance_sha256 != replacement.identity.conformance_sha256
-        and prior.contract.identity.protocol_version == replacement.identity.protocol_version
-    ):
+    prior_contract = prior.contract if isinstance(prior, ObservationAssessment) else prior
+    if prior_contract.identity.conformance_sha256 == replacement.identity.conformance_sha256:
+        return
+    if prior_contract.identity.protocol_version == replacement.identity.protocol_version:
         raise ObservationQualificationError("observation_protocol_version_reused_after_drift")
+    raise ObservationQualificationError(ObservationFailureReason.CONFORMANCE_IDENTITY_DRIFT.value)
 
 
 def _first_occurrence_order(records: Sequence[SentinelBoundaryRecord]) -> tuple[str, ...]:
