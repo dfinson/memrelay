@@ -30,6 +30,7 @@ from memrelay_eval.domain.entities import (
     InternalRetryRecord,
     MonetaryViewLink,
     RetryAuthorization,
+    RunLedgerSnapshot,
     RunTransition,
 )
 from memrelay_eval.domain.errors import (
@@ -44,6 +45,7 @@ from memrelay_eval.domain.ids import (
     AttemptId,
     CostEntryId,
     ExperimentId,
+    InclusionId,
     IntentId,
     ProtocolId,
     RunId,
@@ -76,6 +78,10 @@ from memrelay_eval.domain.states import (
     InternalRetrySubsystem,
     LedgerIntentKind,
     RunState,
+)
+from memrelay_eval.evidence.authority import (
+    ReconciliationAuthority,
+    load_reconciliation_authority,
 )
 
 from .schema import apply_migrations
@@ -1396,6 +1402,114 @@ class SqliteLedger:
         )
         self._raise_direct_rejection(result)
 
+    def inclusion_for(self, run_id: RunId) -> InclusionDecision | None:
+        self._ensure_open()
+        with self.__lock:
+            row = self.__connection.execute(
+                """
+                SELECT inclusion_id, status, reason_code, reconciliation_sha256, occurred_at
+                FROM inclusion_decisions WHERE run_id = ?
+                """,
+                (str(run_id),),
+            ).fetchone()
+        if row is None:
+            return None
+        return InclusionDecision(
+            InclusionId(row["inclusion_id"]),
+            run_id,
+            InclusionStatus(row["status"]),
+            row["reason_code"],
+            row["reconciliation_sha256"],
+            _parse_utc(row["occurred_at"]),
+        )
+
+    def record_reconciliation_authority(self, authority: ReconciliationAuthority) -> bool:
+        """Append one immutable control-owned authority before reconciliation."""
+
+        self._ensure_open()
+        if not isinstance(authority, ReconciliationAuthority):
+            raise LedgerDirectWriteError("invalid_reconciliation_authority")
+        document = canonical_bytes(authority.to_document())
+        digest = sha256(document).hexdigest()
+        with self.__lock:
+            self.__connection.execute("BEGIN IMMEDIATE")
+            try:
+                attempt = self.__connection.execute(
+                    "SELECT run_id FROM attempts WHERE attempt_id = ?",
+                    (str(authority.attempt_id),),
+                ).fetchone()
+                if attempt is None:
+                    raise LedgerDirectWriteError("unknown_attempt")
+                if attempt["run_id"] != str(authority.run_id):
+                    raise LedgerDirectWriteError("attempt_run_mismatch")
+                existing = self.__connection.execute(
+                    """
+                    SELECT authority_sha256 FROM reconciliation_authorities
+                    WHERE attempt_id = ?
+                    """,
+                    (str(authority.attempt_id),),
+                ).fetchone()
+                if existing is not None:
+                    self.__connection.execute("COMMIT")
+                    if existing["authority_sha256"] == digest:
+                        return False
+                    raise LedgerIntentConflictError("reconciliation authority is immutable")
+                self.__connection.execute(
+                    """
+                    INSERT INTO reconciliation_authorities (
+                        attempt_id, run_id, authority_sha256, authority_document, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(authority.attempt_id),
+                        str(authority.run_id),
+                        digest,
+                        document,
+                        _utc_z(datetime.now(UTC)),
+                    ),
+                )
+                self._fault("before_reconciliation_authority_commit")
+                self.__connection.execute("COMMIT")
+            except BaseException:
+                with suppress(sqlite3.Error):
+                    self.__connection.execute("ROLLBACK")
+                raise
+        return True
+
+    def reconciliation_authority_for(
+        self, run_id: RunId, attempt_id: AttemptId
+    ) -> ReconciliationAuthority | None:
+        """Load the exact authority sealed by the control-owned ledger."""
+
+        self._ensure_open()
+        with self.__lock:
+            row = self.__connection.execute(
+                """
+                SELECT authority_sha256, authority_document
+                FROM reconciliation_authorities
+                WHERE run_id = ? AND attempt_id = ?
+                """,
+                (str(run_id), str(attempt_id)),
+            ).fetchone()
+        if row is None:
+            return None
+        document = bytes(row["authority_document"])
+        if sha256(document).hexdigest() != row["authority_sha256"]:
+            raise LedgerDirectWriteError("reconciliation_authority_corrupt")
+        try:
+            authority = load_reconciliation_authority(document)
+        except ValueError as error:
+            raise LedgerDirectWriteError("reconciliation_authority_corrupt") from error
+        if authority.run_id != run_id or authority.attempt_id != attempt_id:
+            raise LedgerDirectWriteError("reconciliation_authority_identity_mismatch")
+        return authority
+
+    def run_state_snapshot(self, run_id: RunId) -> RunLedgerSnapshot:
+        self._ensure_open()
+        with self.__lock:
+            state, digest = self._run_state_and_digest(run_id)
+        return RunLedgerSnapshot(run_id, state, digest)
+
     @staticmethod
     def _raise_direct_rejection(result: IntentAck | IntentRejection) -> None:
         if isinstance(result, IntentRejection):
@@ -1442,6 +1556,11 @@ class SqliteLedger:
             for row in rows
         )
 
+    def attempt_terminals_for(self, run_id: RunId) -> tuple[AttemptTerminal, ...]:
+        """Expose immutable run lineage through the domain ledger port."""
+
+        return self.attempt_terminals(run_id)
+
     def retry_lineage(self, run_id: RunId) -> tuple[tuple[AttemptId, AttemptId], ...]:
         self._ensure_open()
         with self.__lock:
@@ -1453,6 +1572,11 @@ class SqliteLedger:
                 (str(run_id),),
             ).fetchall()
         return tuple((AttemptId(row[0]), AttemptId(row[1])) for row in rows)
+
+    def retry_lineage_for(self, run_id: RunId) -> tuple[tuple[AttemptId, AttemptId], ...]:
+        """Expose immutable retry links through the domain ledger port."""
+
+        return self.retry_lineage(run_id)
 
     def retry_authorizations_for(self, run_id: RunId) -> tuple[RetryAuthorization, ...]:
         self._ensure_open()

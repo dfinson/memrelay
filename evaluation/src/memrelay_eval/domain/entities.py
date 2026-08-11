@@ -1078,6 +1078,21 @@ class InclusionDecision:
 
 
 @dataclass(frozen=True, slots=True)
+class RunLedgerSnapshot:
+    """Thin control-owned state needed to append a typed reconciliation intent."""
+
+    run_id: RunId
+    state: RunState
+    transition_digest: str | None
+
+    def __post_init__(self) -> None:
+        if self.transition_digest is not None and not _SHA256.fullmatch(self.transition_digest):
+            raise InvalidArtifactManifestError(
+                "transition_digest must be a lowercase SHA-256 digest when present"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class TelemetryObservation:
     event_name: str
     occurred_at: datetime

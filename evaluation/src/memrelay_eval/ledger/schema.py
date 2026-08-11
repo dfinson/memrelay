@@ -292,6 +292,24 @@ MIGRATIONS = (
             ),
         ),
     ),
+    Migration(
+        version=7,
+        statements=(
+            """
+            CREATE TABLE IF NOT EXISTS reconciliation_authorities (
+                attempt_id TEXT PRIMARY KEY REFERENCES attempts(attempt_id),
+                run_id TEXT NOT NULL REFERENCES runs(run_id),
+                authority_sha256 TEXT NOT NULL,
+                authority_document BLOB NOT NULL,
+                recorded_at TEXT NOT NULL
+            )
+            """,
+            (
+                "CREATE INDEX IF NOT EXISTS reconciliation_authorities_by_run "
+                "ON reconciliation_authorities(run_id, attempt_id)"
+            ),
+        ),
+    ),
 )
 
 

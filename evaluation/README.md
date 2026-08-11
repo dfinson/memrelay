@@ -47,3 +47,20 @@ pre-exposure infrastructure terminal record, and prevents the Inspect
 scheduler from delivering a task or starting inference. Environment
 fingerprints are linked to protocols and cannot be aggregated across strata
 without an explicit separate stratum.
+
+## Terminal evidence reconciliation
+
+`memrelay-eval reconcile --stage <stage>` consumes a canonical,
+schema-versioned terminal-evidence input (or
+`artifacts/reconciliation/<stage>.input.json` by default). It verifies
+the control-owned ledger's immutable authority for the exact run and attempt
+before using that input. The authority fixes the matrix conditions, identities,
+frozen hashes, protocol/runtime hashes, and every evidence-projection CAS
+reference. Each projection canonically binds its evidence kind, source
+authority, status, claims, blockers, unavailable reason, and raw
+manifest-backed bytes. A missing or mismatched authority/projection fails
+closed; the command never creates one from CLI input. It writes an immutable,
+redacted reconciliation report and submits one typed included or excluded
+decision through the control-owned ledger. The command emits a canonical
+manifest with input, output, runtime, and protocol hashes, and makes no
+provider or analysis calls.

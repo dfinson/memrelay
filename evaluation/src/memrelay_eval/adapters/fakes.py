@@ -20,6 +20,7 @@ from memrelay_eval.domain.entities import (
     InternalRetryRecord,
     MonetaryViewLink,
     RetryAuthorization,
+    RunLedgerSnapshot,
     RunTransition,
     TelemetryObservation,
 )
@@ -53,6 +54,7 @@ from memrelay_eval.domain.states import (
     InternalRetrySubsystem,
     RunState,
 )
+from memrelay_eval.evidence.authority import ReconciliationAuthority
 from memrelay_eval.evidence.manifest import manifest_bytes
 
 _REDACTED_TERMS = (
@@ -78,6 +80,7 @@ class InMemoryArtifactStore:
     def __init__(self) -> None:
         self._blobs: dict[str, bytes] = {}
         self._manifests: dict[str, ArtifactManifest] = {}
+        self._authoritative_manifests: dict[str, ArtifactManifest] = {}
 
     def put_bytes(self, data: bytes, *, media_type: str, classification: str) -> ArtifactRef:
         del media_type, classification
@@ -100,7 +103,19 @@ class InMemoryArtifactStore:
             canonical, media_type="application/json", classification=manifest.classification
         )
         self._manifests[reference.sha256] = manifest
+        self._authoritative_manifests[manifest.sha256] = manifest
         return reference
+
+    def read_manifest(self, artifact: ArtifactRef) -> ArtifactManifest:
+        manifest = self._authoritative_manifests.get(artifact.sha256)
+        if (
+            manifest is None
+            or manifest.artifact_id != artifact.artifact_id
+            or manifest.size_bytes != artifact.size_bytes
+        ):
+            raise ArtifactIntegrityError("artifact manifest is missing or corrupt")
+        self.open_verified(artifact)
+        return manifest
 
 
 class InMemoryLedger:
@@ -122,8 +137,10 @@ class InMemoryLedger:
         self._retry_authorizations: list[RetryAuthorization] = []
         self._artifact_links: list[ArtifactLink] = []
         self._inclusions: list[InclusionDecision] = []
+        self._reconciliation_authorities: dict[AttemptId, ReconciliationAuthority] = {}
         self._internal_retry_lock = Lock()
         self._retry_authorization_lock = Lock()
+        self._reconciliation_authority_lock = Lock()
         self._experiments: set[ExperimentId] = set()
         self._runs: dict[RunId, ExperimentId] = {}
         self._attempts: dict[AttemptId, RunId] = {}
@@ -233,6 +250,39 @@ class InMemoryLedger:
         if decision.status is InclusionStatus.INCLUDED:
             raise IneligibleEvidenceError("unpaid conformance evidence cannot support inclusion")
         self._inclusions.append(decision)
+
+    def inclusion_for(self, run_id: RunId) -> InclusionDecision | None:
+        return next((item for item in self._inclusions if item.run_id == run_id), None)
+
+    def record_reconciliation_authority(self, authority: ReconciliationAuthority) -> bool:
+        if self._attempts.get(authority.attempt_id) != authority.run_id:
+            raise LedgerIntentConflictError("reconciliation authority attempt/run mismatch")
+        with self._reconciliation_authority_lock:
+            prior = self._reconciliation_authorities.get(authority.attempt_id)
+            if prior is None:
+                self._reconciliation_authorities[authority.attempt_id] = authority
+                return True
+            if prior != authority:
+                raise LedgerIntentConflictError("reconciliation authority is immutable")
+            return False
+
+    def reconciliation_authority_for(
+        self, run_id: RunId, attempt_id: AttemptId
+    ) -> ReconciliationAuthority | None:
+        authority = self._reconciliation_authorities.get(attempt_id)
+        if authority is None:
+            return None
+        if authority.run_id != run_id:
+            return None
+        return authority
+
+    def run_state_snapshot(self, run_id: RunId) -> RunLedgerSnapshot:
+        history = self.history(run_id)
+        return RunLedgerSnapshot(
+            run_id,
+            history[-1].next_state if history else RunState.PLANNED,
+            self._transition_digests.get(run_id),
+        )
 
     def submit_intent(self, intent: LedgerIntentType) -> IntentAck | IntentRejection:
         digest, preflight_rejection = delivery_payload_digest(intent)
@@ -501,6 +551,16 @@ class InMemoryLedger:
 
     def history(self, run_id: RunId) -> tuple[RunTransition, ...]:
         return tuple(item for item in self._transitions if item.run_id == run_id)
+
+    def attempt_terminals_for(self, run_id: RunId) -> tuple[AttemptTerminal, ...]:
+        return tuple(item for item in self._attempt_terminals if item.run_id == run_id)
+
+    def retry_lineage_for(self, run_id: RunId) -> tuple[tuple[AttemptId, AttemptId], ...]:
+        return tuple(
+            (previous, retry)
+            for previous, retry in self._retry_links
+            if self._attempts.get(previous) == run_id
+        )
 
     def retry_authorizations_for(self, run_id: RunId) -> tuple[RetryAuthorization, ...]:
         return tuple(item for item in self._retry_authorizations if item.run_id == run_id)

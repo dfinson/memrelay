@@ -254,6 +254,29 @@ class ExecutionEvidenceConflictError(DomainError):
     code = "execution_evidence_conflict"
 
 
+class ReconciliationError(DomainError):
+    """A required-evidence reconciliation cannot safely reach a terminal decision."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
+class TerminalDecisionConflictError(ReconciliationError):
+    """A later report attempted to replace an immutable inclusion decision."""
+
+    def __init__(
+        self,
+        code: str = "terminal_inclusion_decision_conflict",
+        *,
+        report_ref: object | None = None,
+        report_manifest_ref: object | None = None,
+    ) -> None:
+        super().__init__(code)
+        self.report_ref = report_ref
+        self.report_manifest_ref = report_manifest_ref
+
+
 class SecretBoundaryViolationError(DomainError):
     """A scan found credential material without retaining or rendering its value."""
 

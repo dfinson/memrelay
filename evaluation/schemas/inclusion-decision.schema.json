@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/inclusion-decision.schema.json",
+  "title": "Append-only inclusion decision",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "inclusion_id",
+    "run_id",
+    "status",
+    "reason_code",
+    "reconciliation_sha256",
+    "occurred_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "inclusion_id": {"type": "string", "pattern": "^inclusion_[a-f0-9]{32}$"},
+    "run_id": {"type": "string", "pattern": "^run_[a-f0-9]{32}$"},
+    "status": {"enum": ["included", "excluded"]},
+    "reason_code": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{0,63}$"},
+    "reconciliation_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "occurred_at": {"type": "string", "format": "date-time"}
+  }
+}

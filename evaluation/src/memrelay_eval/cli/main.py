@@ -11,6 +11,7 @@ from memrelay_eval.cli.commands import (
     compile_authored_catalog,
     lock_models,
     plan_offline_command,
+    reconcile_stage,
     run_stage,
     show_effective_configuration,
     show_foundation_status,
@@ -145,6 +146,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional runtime lock referenced by name and hash only",
     )
     plan_offline.set_defaults(handler=plan_offline_command)
+    reconcile = subcommands.add_parser(
+        "reconcile",
+        help="reconcile canonical terminal evidence and append one immutable inclusion decision",
+    )
+    reconcile.add_argument("--stage", required=True)
+    reconcile.add_argument(
+        "--input",
+        help="canonical reconciliation input JSON; defaults under --artifacts-root by stage",
+    )
+    reconcile.add_argument(
+        "--artifacts-root",
+        default="artifacts",
+        help="durable filesystem CAS root",
+    )
+    reconcile.add_argument(
+        "--ledger",
+        help="control-owned SQLite ledger path; defaults under --artifacts-root",
+    )
+    reconcile.add_argument(
+        "--manifest",
+        help="command manifest path; defaults under --artifacts-root by stage",
+    )
+    reconcile.set_defaults(handler=reconcile_stage)
     return parser
 
 

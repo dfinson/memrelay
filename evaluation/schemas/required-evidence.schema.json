@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/required-evidence.schema.json",
+  "title": "Frozen required evidence matrix",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "key", "requirements"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "stratum",
+        "history_mode",
+        "task_state",
+        "failure_state",
+        "provider_path",
+        "grader_required",
+        "panel_required",
+        "adjudication_required"
+      ],
+      "properties": {
+        "stage": {"enum": ["conformance", "integration", "pilot", "primary", "secondary", "cross-repo"]},
+        "stratum": {"enum": ["product", "direct_engine"]},
+        "history_mode": {"enum": ["controlled", "dynamic"]},
+        "task_state": {"const": "terminal"},
+        "failure_state": {
+          "enum": [
+            "succeeded",
+            "agent_failed",
+            "timed_out",
+            "provider_unavailable",
+            "quota_exhausted",
+            "grader_failed",
+            "evidence_incomplete",
+            "infrastructure_failed_pre_exposure",
+            "infrastructure_failed_post_exposure",
+            "cancelled_by_circuit_breaker"
+          ]
+        },
+        "provider_path": {"enum": ["copilot_task_agent", "direct_engine"]},
+        "grader_required": {"type": "boolean"},
+        "panel_required": {"type": "boolean"},
+        "adjudication_required": {"type": "boolean"}
+      }
+    },
+    "requirements": {
+      "type": "array",
+      "minItems": 25,
+      "maxItems": 25,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "mode", "authorities"],
+        "properties": {
+          "kind": {
+            "enum": [
+              "assignment",
+              "lifecycle",
+              "inspect_eval",
+              "inspect_json",
+              "sdk_events",
+              "sdk_terminal",
+              "memrelay_logs",
+              "telemetry",
+              "workspace_baseline",
+              "workspace_terminal",
+              "workspace_patch",
+              "treatment",
+              "grading",
+              "panel",
+              "calibration",
+              "adjudication",
+              "cost_copilot",
+              "cost_framework",
+              "cost_local",
+              "configuration",
+              "model_lock",
+              "parity",
+              "cleanup",
+              "transitions",
+              "referenced_hashes"
+            ]
+          },
+          "mode": {
+            "enum": [
+              "primary_required",
+              "conditionally_required",
+              "explicit_unavailable_permitted",
+              "prohibited"
+            ]
+          },
+          "authorities": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string"}
+          }
+        }
+      },
+      "allOf": [
+        {"contains": {"properties": {"kind": {"const": "assignment"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "lifecycle"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "inspect_eval"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "inspect_json"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "sdk_events"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "sdk_terminal"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "memrelay_logs"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "telemetry"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "workspace_baseline"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "workspace_terminal"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "workspace_patch"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "treatment"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "grading"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "panel"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "calibration"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "adjudication"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "cost_copilot"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "cost_framework"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "cost_local"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "configuration"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "model_lock"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "parity"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "cleanup"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "transitions"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1},
+        {"contains": {"properties": {"kind": {"const": "referenced_hashes"}}, "required": ["kind"]}, "minContains": 1, "maxContains": 1}
+      ]
+    }
+  }
+}
