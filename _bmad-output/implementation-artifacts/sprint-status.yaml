@@ -78,7 +78,7 @@ development_status:
   3-3-run-three-independent-structured-judge-sessions: review
   3-4-calibrate-and-gate-panel-reliability: review
   3-5-adjudicate-frozen-disagreement-thresholds: ready-for-dev
-  3-6-normalize-outcomes-under-separate-authorities: ready-for-dev
+  3-6-normalize-outcomes-under-separate-authorities: review
   epic-3-retrospective: optional
 
   epic-4: in-progress
