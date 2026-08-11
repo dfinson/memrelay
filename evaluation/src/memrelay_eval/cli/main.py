@@ -18,6 +18,7 @@ from memrelay_eval.cli.commands import (
     backup_terminal,
     bootstrap,
     compile_authored_catalog,
+    gate_pilot,
     lock_models,
     plan_offline_command,
     reconcile_stage,
@@ -82,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the independent sealed stage authorization",
     )
     run.add_argument(
+        "--pilot-plan",
+        dest="pilot_plan",
+        help="sealed 128-unit blinded pilot plan; required when --stage pilot",
+    )
+    run.add_argument(
         "--output-root",
         dest="output_root",
         default="artifacts",
@@ -120,6 +126,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="matching M1/M2 secondary authorization; repeat for each qualified role",
     )
     run.set_defaults(handler=run_stage)
+    pilot_gate = subcommands.add_parser(
+        "pilot-gate",
+        help="seal a non-confirmatory blinded pilot exit from frozen evidence",
+    )
+    pilot_gate.add_argument("--pilot-plan", required=True)
+    pilot_gate.add_argument("--exit-evidence", required=True)
+    pilot_gate.add_argument("--output-root", default="artifacts")
+    _add_command_manifest_root(pilot_gate)
+    pilot_gate.set_defaults(handler=gate_pilot, stage="pilot")
     bootstrap_parser = subcommands.add_parser(
         "bootstrap", help="explicitly verify and lock the official Copilot runtime"
     )
@@ -358,6 +373,7 @@ _LEGACY_MANIFESTED_COMMANDS = frozenset(
         "seal-reproduction-bundle",
         "allocate-stochastic-rerun",
         "report",
+        "pilot-gate",
     }
 )
 
@@ -381,6 +397,7 @@ _INPUT_PATH_FIELDS = {
     ),
     "allocate-stochastic-rerun": ("original_evidence_root",),
     "report": ("stage_evidence", "parquet_root"),
+    "pilot-gate": ("pilot_plan", "exit_evidence"),
 }
 
 _OUTPUT_PATH_FIELDS = {
@@ -396,6 +413,7 @@ _OUTPUT_PATH_FIELDS = {
     "seal-reproduction-bundle": ("output_root",),
     "allocate-stochastic-rerun": ("output_root",),
     "report": ("output_root",),
+    "pilot-gate": ("output_root",),
 }
 
 
