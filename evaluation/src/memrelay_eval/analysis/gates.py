@@ -206,10 +206,7 @@ def evaluate_claim(
 
     if claim_type not in _CLAIM_TYPES:
         raise AnalysisError("claim_type_unsupported")
-    if not all(
-        _valid_sha256(value)
-        for value in (source_sha256, derivation_sha256)
-    ):
+    if not all(_valid_sha256(value) for value in (source_sha256, derivation_sha256)):
         raise AnalysisError("claim_decision_lineage_invalid")
     if not isinstance(sealed_claim_protocol, SealedClaimProtocol):
         raise AnalysisError("sealed_claim_protocol_required")
@@ -355,8 +352,10 @@ def _validate_categorical_authority(
 ) -> tuple[str, bool]:
     """Bind a quantitative claim to the immutable categorical decision for its scope."""
 
-    if not claim_id or not isinstance(policy, CategoricalGatePolicy) or not isinstance(
-        decision, CategoricalGateDecision
+    if (
+        not claim_id
+        or not isinstance(policy, CategoricalGatePolicy)
+        or not isinstance(decision, CategoricalGateDecision)
     ):
         raise AnalysisError("categorical_gate_authority_invalid")
     if policy.sha256 != thresholds.categorical_policy_sha256:
@@ -653,6 +652,7 @@ def release_fitness(
             ):
                 return False
     return True
+
 
 _OVERRIDE_KINDS: Final = frozenset(
     {
