@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/panel-gate-1.0.0.json",
+  "title": "Frozen Panel Reliability Gate Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "qualification_protocol_sha256",
+    "panel_protocol_sha256",
+    "records_sha256",
+    "panel_diversity",
+    "criterion_agreement",
+    "gates",
+    "per_judge_drift",
+    "per_criterion_calibration_mae",
+    "reliability_passed",
+    "confirmatory_qualitative_claims",
+    "artifact_authority",
+    "blocking_codes"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "qualification_protocol_sha256": {"$ref": "#/$defs/sha256"},
+    "panel_protocol_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "records_sha256": {"$ref": "#/$defs/sha256"},
+    "panel_diversity": {"enum": ["diverse", "partial", "homogeneous", null]},
+    "criterion_agreement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uncovered_requirement_satisfaction",
+        "semantic_appropriateness",
+        "maintainability",
+        "unnecessary_complexity",
+        "repository_fit",
+        "evidence_supported_confidence"
+      ],
+      "properties": {
+        "uncovered_requirement_satisfaction": {"$ref": "#/$defs/criterionAgreement"},
+        "semantic_appropriateness": {"$ref": "#/$defs/criterionAgreement"},
+        "maintainability": {"$ref": "#/$defs/criterionAgreement"},
+        "unnecessary_complexity": {"$ref": "#/$defs/criterionAgreement"},
+        "repository_fit": {"$ref": "#/$defs/criterionAgreement"},
+        "evidence_supported_confidence": {"$ref": "#/$defs/criterionAgreement"}
+      }
+    },
+    "gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agreement",
+        "human_calibration",
+        "drift",
+        "duplicate",
+        "sentinel",
+        "leave_one_out",
+        "family_sensitivity",
+        "shared_bias",
+        "leakage"
+      ],
+      "properties": {
+        "agreement": {"$ref": "#/$defs/gate"},
+        "human_calibration": {"$ref": "#/$defs/gate"},
+        "drift": {"$ref": "#/$defs/gate"},
+        "duplicate": {"$ref": "#/$defs/gate"},
+        "sentinel": {"$ref": "#/$defs/gate"},
+        "leave_one_out": {"$ref": "#/$defs/gate"},
+        "family_sensitivity": {"$ref": "#/$defs/gate"},
+        "shared_bias": {"$ref": "#/$defs/gate"},
+        "leakage": {"$ref": "#/$defs/gate"}
+      }
+    },
+    "per_judge_drift": {
+      "type": "object",
+      "additionalProperties": {"anyOf": [{"type": "number"}, {"type": "null"}]}
+    },
+    "per_criterion_calibration_mae": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uncovered_requirement_satisfaction",
+        "semantic_appropriateness",
+        "maintainability",
+        "unnecessary_complexity",
+        "repository_fit",
+        "evidence_supported_confidence"
+      ],
+      "properties": {
+        "uncovered_requirement_satisfaction": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "semantic_appropriateness": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "maintainability": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "unnecessary_complexity": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "repository_fit": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "evidence_supported_confidence": {"anyOf": [{"type": "number"}, {"type": "null"}]}
+      }
+    },
+    "reliability_passed": {"type": "boolean"},
+    "confirmatory_qualitative_claims": {"const": false},
+    "artifact_authority": {"const": "unpaid_conformance"},
+    "blocking_codes": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "value", "threshold", "comparison"],
+      "properties": {
+        "status": {"enum": ["passed", "failed", "unavailable", "not_required"]},
+        "value": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "threshold": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "comparison": {"enum": ["minimum", "maximum", "none"]}
+      }
+    },
+    "criterionAgreement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["metric", "status", "value", "threshold", "comparison"],
+      "properties": {
+        "metric": {"enum": ["icc", "weighted_kappa"]},
+        "status": {"enum": ["passed", "failed", "unavailable", "not_required"]},
+        "value": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "threshold": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "comparison": {"enum": ["minimum", "maximum", "none"]}
+      }
+    }
+  }
+}

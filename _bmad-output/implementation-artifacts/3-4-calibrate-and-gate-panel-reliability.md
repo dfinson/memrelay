@@ -1,6 +1,6 @@
 # Story 3.4: Calibrate and Gate Panel Reliability
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -32,20 +32,20 @@ so that unreliable panel scores cannot support qualitative claims.
 
 ## Tasks / Subtasks
 
-- [ ] Define and seal the panel qualification protocol (AC: 1)
-  - [ ] Hash human gold labels/provenance, calibration items, duplicates, sentinels, allocation/order, metric selection, drift windows, sensitivity methods, and thresholds.
-- [ ] Compute criterion-appropriate agreement and human calibration (AC: 1, 2)
-  - [ ] Use weighted kappa or ICC as frozen; require `>=0.70`; compute human-label MAE and require `<=0.10`.
-- [ ] Compute drift, sentinel, duplicate, leave-one-judge-out, and family sensitivity evidence (AC: 1)
-  - [ ] Preserve per-criterion/per-judge results and missing/unavailable values; do not average away a failed frozen gate.
-- [ ] Bind Story 3.2 leakage evidence into panel qualification (AC: 2)
-  - [ ] Require classifier 95% upper AUC `<=0.60` and zero direct leakage; treat failure as a hard qualitative-claim blocker.
-- [ ] Enforce partial/homogeneous-panel policy (AC: 3)
-  - [ ] Require a protocol-supplied stronger human-calibration threshold strictly below `0.10` plus a versioned shared-bias sensitivity rule; the final architecture supplies no numeric stronger default, so missing/unsealed values fail closed and must never be invented from outcomes.
-- [ ] Emit immutable pass/fail gate evidence and enforce non-overridability (AC: 1-3)
-  - [ ] A failed agreement, calibration, drift, sentinel, leakage, or shared-bias gate blocks confirmatory qualitative claims; favorable averages/adjudication cannot waive it; executable outcomes stay unchanged.
-  - [ ] Require protocol-supplied frozen pass rules for drift, duplicates, sentinels, leave-one-out, and family sensitivity. Missing results or thresholds are blocked/unavailable, not silently passing.
-- [ ] Add deterministic metric, boundary, drift, sentinel, missingness, diversity, and freeze tests (AC: 1-3).
+- [x] Define and seal the panel qualification protocol (AC: 1)
+  - [x] Hash human gold labels/provenance, calibration items, duplicates, sentinels, allocation/order, metric selection, drift windows, sensitivity methods, and thresholds.
+- [x] Compute criterion-appropriate agreement and human calibration (AC: 1, 2)
+  - [x] Use weighted kappa or ICC as frozen; require `>=0.70`; compute human-label MAE and require `<=0.10`.
+- [x] Compute drift, sentinel, duplicate, leave-one-judge-out, and family sensitivity evidence (AC: 1)
+  - [x] Preserve per-criterion/per-judge results and missing/unavailable values; do not average away a failed frozen gate.
+- [x] Bind Story 3.2 leakage evidence into panel qualification (AC: 2)
+  - [x] Require classifier 95% upper AUC `<=0.60` and zero direct leakage; treat failure as a hard qualitative-claim blocker.
+- [x] Enforce partial/homogeneous-panel policy (AC: 3)
+  - [x] Require a protocol-supplied stronger human-calibration threshold strictly below `0.10` plus a versioned shared-bias sensitivity rule; the final architecture supplies no numeric stronger default, so missing/unsealed values fail closed and must never be invented from outcomes.
+- [x] Emit immutable pass/fail gate evidence and enforce non-overridability (AC: 1-3)
+  - [x] A failed agreement, calibration, drift, sentinel, leakage, or shared-bias gate blocks confirmatory qualitative claims; favorable averages/adjudication cannot waive it; executable outcomes stay unchanged.
+  - [x] Require protocol-supplied frozen pass rules for drift, duplicates, sentinels, leave-one-out, and family sensitivity. Missing results or thresholds are blocked/unavailable, not silently passing.
+- [x] Add deterministic metric, boundary, drift, sentinel, missingness, diversity, and freeze tests (AC: 1-3).
 
 ## Developer Context
 
@@ -88,12 +88,33 @@ Panel reliability is a collection of explicit gates, not one blended score. Huma
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- `$env:PYTHONPATH = "$(Resolve-Path .\src);$(Resolve-Path .\evaluation\src)"; py -3.13 -m pytest evaluation\tests\unit\scoring evaluation\tests\contract\scoring evaluation\tests\unit\judge evaluation\tests\contract\judge` (35 passed, 40 expected Windows network-sandbox skips)
+- `$env:PYTHONPATH = "$(Resolve-Path .\src);$(Resolve-Path .\evaluation\src)"; py -3.13 -m pytest tests\eval` (18 passed)
+- `py -3.13 -m ruff check` and `ruff format --check` on Story 3.4 source and test paths (passed)
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a sealed qualification protocol that binds human gold-label provenance, calibration/sentinel corpus, duplicate mapping, allocation commitment, per-criterion metric choice, drift window, family rule, and all supplied thresholds to a canonical digest.
+- Bound the qualification digest into the pre-call panel protocol so panel execution cannot proceed under unsealed calibration authority.
+- Added deterministic ICC and weighted-kappa agreement, human calibration MAE, drift, duplicate, sentinel, leave-one-out, generator-family, shared-bias, and Story 3.2 leakage gates with per-criterion/per-judge evidence.
+- Added immutable canonical panel-gate evidence and a versioned schema. Every failed, unavailable, unstable, missing, or fake-authority condition blocks confirmatory qualitative claims without changing executable authority.
+- Kept model slots fixed: diversity scarcity is reported and never enables a replacement model, a threshold movement, or paid/study authority.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/3-4-calibrate-and-gate-panel-reliability.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/schemas/panel-gate.schema.json`
+- `evaluation/src/memrelay_eval/scoring/__init__.py`
+- `evaluation/src/memrelay_eval/scoring/calibration.py`
+- `evaluation/src/memrelay_eval/scoring/reliability.py`
+- `evaluation/src/memrelay_eval/scoring/rubric.py`
+- `evaluation/src/memrelay_eval/scoring/service.py`
+- `evaluation/tests/contract/scoring/test_panel_gate_schema.py`
+- `evaluation/tests/unit/judge/test_panel.py`
+- `evaluation/tests/unit/scoring/test_calibration.py`
+- `evaluation/tests/unit/scoring/test_reliability.py`
