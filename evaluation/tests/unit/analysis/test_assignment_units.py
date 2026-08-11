@@ -108,5 +108,79 @@ def test_binary_cmh_gee_and_glmm_sensitivities_are_cluster_aware() -> None:
     )
 
     assert cmh_sensitivity(table).status == "estimated"
-    assert gee_sensitivity(table).status == "estimated"
+    assert gee_sensitivity(table).status == "indeterminate"
+    assert gee_sensitivity(table).p_value is None
     assert glmm_sensitivity(table).status == "indeterminate"
+
+
+def _gee_table(cluster_effects: tuple[float, ...]):
+    assignment_ids = tuple(
+        f"gee-{cluster}-{arm}"
+        for cluster in range(len(cluster_effects))
+        for arm in ("memory", "control")
+    )
+    assigned = tuple(
+        _assigned(assignment_id, task_id=f"task-{position // 2}")
+        for position, assignment_id in enumerate(assignment_ids)
+    )
+    outcomes = tuple(
+        _outcome(
+            assignment_id,
+            0.5 + cluster_effects[position // 2] / 2
+            if position % 2 == 0
+            else 0.5 - cluster_effects[position // 2] / 2,
+        )
+        for position, assignment_id in enumerate(assignment_ids)
+    )
+    disclosures = tuple(
+        _disclosure(
+            assignment_id,
+            "memory" if position % 2 == 0 else "control",
+            f"task-{position // 2}",
+            cluster_id=f"cluster-{position // 2}",
+        )
+        for position, assignment_id in enumerate(assignment_ids)
+    )
+    return IttTableBuilder().build(
+        FrozenEstimatorRegistry((_estimand(),)),
+        estimand_id="quality-itt",
+        version="1.0.0",
+        source_dataset_manifest_sha256=_DATASET,
+        assigned_units=assigned,
+        eligible_outcomes=outcomes,
+        assignment_analysis_lock=_lock(*disclosures),
+    )
+
+
+def test_gee_zero_effect_zero_se_under_twenty_clusters_is_indeterminate() -> None:
+    result = gee_sensitivity(_gee_table((0.0, 0.0)))
+
+    assert result.status == "indeterminate"
+    assert result.robust_standard_error == 0.0
+    assert result.p_value is None
+
+
+def test_gee_zero_effect_zero_se_at_twenty_clusters_is_indeterminate() -> None:
+    result = gee_sensitivity(_gee_table((0.0,) * 20))
+
+    assert result.status == "indeterminate"
+    assert result.robust_standard_error == 0.0
+    assert result.p_value is None
+
+
+def test_gee_nonzero_zero_se_is_indeterminate_without_frozen_method() -> None:
+    result = gee_sensitivity(_gee_table((0.4,) * 20))
+
+    assert result.status == "indeterminate"
+    assert result.point_estimate == pytest.approx(0.4)
+    assert result.robust_standard_error == 0.0
+    assert result.p_value is None
+
+
+def test_gee_non_degenerate_twenty_cluster_path_is_estimated() -> None:
+    result = gee_sensitivity(_gee_table((0.4, 0.2) * 10))
+
+    assert result.status == "estimated"
+    assert result.robust_standard_error is not None
+    assert result.robust_standard_error > 0.0
+    assert result.p_value is not None

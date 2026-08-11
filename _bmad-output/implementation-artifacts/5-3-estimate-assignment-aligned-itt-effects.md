@@ -114,8 +114,8 @@ GPT-5.6 Terra
 
 ### Debug Log References
 
-- Focused Story 5.3 tests and Ruff checks: 11 passed.
-- `py -3.13 -m pytest evaluation\\tests -q`: 1237 passed, 46 skipped.
+- Review-fix focused Story 5.3 tests and Ruff checks: 15 passed.
+- `py -3.13 -m pytest evaluation\\tests -q`: 1242 passed, 46 skipped.
 
 ### Completion Notes List
 
@@ -126,6 +126,8 @@ GPT-5.6 Terra
   verified before analysis; incomplete, mixed, unsupported, or post-freeze inputs fail closed.
 - CR2 and wild-cluster-bootstrap output remains explicitly indeterminate until a qualified
   registered backend is available; no substitute uncertainty claim is emitted.
+- GEE applies the under-20-cluster authority before any estimated status and returns an
+  indeterminate, p-value-unavailable result for all zero-standard-error degeneracies.
 
 ### File List
 

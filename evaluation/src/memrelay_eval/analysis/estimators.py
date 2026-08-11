@@ -498,13 +498,20 @@ def gee_sensitivity(table: IttTable) -> GeeSensitivity:
         raise AnalysisError("cluster_count_insufficient")
     estimate = fmean(cluster_effects)
     standard_error = stdev(cluster_effects) / math.sqrt(len(cluster_effects))
-    if standard_error == 0.0:
-        return GeeSensitivity(estimate, 0.0, len(cluster_effects) - 1, 0.0, "estimated")
+    degrees_of_freedom = len(cluster_effects) - 1
+    if len(cluster_effects) < 20 or standard_error == 0.0:
+        return GeeSensitivity(
+            estimate,
+            standard_error,
+            degrees_of_freedom,
+            None,
+            "indeterminate",
+        )
     z_score = abs(estimate / standard_error)
     return GeeSensitivity(
         estimate,
         standard_error,
-        len(cluster_effects) - 1,
+        degrees_of_freedom,
         math.erfc(z_score / math.sqrt(2.0)),
         "estimated" if len(cluster_effects) >= 20 else "indeterminate",
     )
