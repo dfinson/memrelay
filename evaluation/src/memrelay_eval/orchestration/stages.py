@@ -67,7 +67,11 @@ from memrelay_eval.orchestration.history import (
     require_no_cross_regime_pooling,
     require_same_controlled_analysis_identity,
 )
-from memrelay_eval.orchestration.limits import stage_envelope_digest
+from memrelay_eval.orchestration.limits import (
+    PrimaryModelStageLimits,
+    SecondaryModelStageLimits,
+    stage_envelope_digest,
+)
 
 
 def refuse_cross_repository_stage() -> None:
@@ -510,6 +514,511 @@ class StageUnit:
 
     unit_id: str
     terminal: bool
+
+
+_PRIMARY_FAMILIES = tuple(f"F{index}" for index in range(1, 9))
+_MODEL_ROLES = frozenset({"M0", "M1", "M2"})
+_SECONDARY_ROLES = frozenset({"M1", "M2"})
+_ROLE_AVAILABILITY = frozenset({"qualified", "unavailable", "drifted"})
+_PRIMARY_TASK_COUNT = 32
+_PRIMARY_UNIT_COUNT = 512
+_SECONDARY_TASK_COUNT = 16
+_SECONDARY_UNITS_PER_ROLE = 96
+_SECONDARY_UNIT_LIMIT = 192
+_PRIMARY_EXIT_EVIDENCE = frozenset(
+    {
+        "simultaneous_intervals",
+        "harm_tails",
+        "pareto_surface",
+        "panel",
+        "safety",
+        "analysis",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ModelStageUnit:
+    """One opaque assigned unit in a sealed primary or secondary model stage."""
+
+    unit_id: str
+    task_id: str
+    model_role: str
+    arm_slot: int
+    repeat: int
+    concurrency_lane: int
+
+    def __post_init__(self) -> None:
+        if (
+            not self.unit_id
+            or not self.task_id
+            or self.model_role not in _MODEL_ROLES
+            or self.arm_slot not in {0, 1}
+            or self.repeat < 0
+            or self.concurrency_lane not in {0, 1, 2, 3}
+        ):
+            raise StageControlError("model_stage_unit_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class PrimaryStagePlan:
+    """The immutable 32-task, 512-unit complete-ITT primary envelope."""
+
+    stage_id: StageId
+    protocol_id: ProtocolId
+    entry_bundle_sha256: str
+    pilot_exit_sha256: str
+    task_families: Mapping[str, tuple[str, ...]]
+    units: tuple[ModelStageUnit, ...]
+
+    def __post_init__(self) -> None:
+        _require_sha256(self.entry_bundle_sha256, "primary_plan_hash_invalid", "entry_bundle_sha256")
+        _require_sha256(self.pilot_exit_sha256, "primary_plan_hash_invalid", "pilot_exit_sha256")
+        _validate_primary_task_families(self.task_families)
+        _validate_fixed_units(
+            self.units,
+            task_ids=self.task_ids,
+            model_role="M0",
+            repeats=8,
+            code="primary_enrollment_envelope_invalid",
+        )
+        if len(self.units) != _PRIMARY_UNIT_COUNT:
+            raise StageControlError("primary_enrollment_envelope_invalid")
+        object.__setattr__(
+            self,
+            "task_families",
+            types.MappingProxyType(
+                {family: tuple(self.task_families[family]) for family in _PRIMARY_FAMILIES}
+            ),
+        )
+
+    @property
+    def task_ids(self) -> tuple[str, ...]:
+        return tuple(
+            task_id for family in _PRIMARY_FAMILIES for task_id in self.task_families[family]
+        )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "artifact_type": "primary_model_stage_plan",
+                "stage_id": str(self.stage_id),
+                "protocol_id": str(self.protocol_id),
+                "entry_bundle_sha256": self.entry_bundle_sha256,
+                "pilot_exit_sha256": self.pilot_exit_sha256,
+                "task_families": {
+                    family: list(self.task_families[family]) for family in _PRIMARY_FAMILIES
+                },
+                "units": [_model_unit_document(unit) for unit in self.units],
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class PrimaryStageConclusion:
+    """Terminal primary authority; secondary evidence is never claim-repair evidence."""
+
+    primary_plan_sha256: str
+    reconciliation_sha256: str
+    exit_evidence_sha256: Mapping[str, str]
+    claim_decision_sha256: tuple[str, ...]
+    claim_statuses: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        _require_sha256(self.primary_plan_sha256, "primary_conclusion_lineage_invalid", "plan")
+        _require_sha256(
+            self.reconciliation_sha256, "primary_conclusion_lineage_invalid", "reconciliation"
+        )
+        if set(self.exit_evidence_sha256) != _PRIMARY_EXIT_EVIDENCE:
+            raise StageControlError("primary_exit_evidence_incomplete")
+        for name, value in self.exit_evidence_sha256.items():
+            _require_sha256(value, "primary_conclusion_lineage_invalid", name)
+        if (
+            not self.claim_decision_sha256
+            or len(self.claim_decision_sha256) != len(self.claim_statuses)
+            or any(
+                not isinstance(status, str)
+                or status not in {"pass", "fail", "blocked", "indeterminate", "estimation-only"}
+                for status in self.claim_statuses
+            )
+        ):
+            raise StageControlError("primary_claim_decisions_incomplete")
+        for value in self.claim_decision_sha256:
+            _require_sha256(value, "primary_conclusion_lineage_invalid", "claim_decision")
+        object.__setattr__(
+            self, "exit_evidence_sha256", types.MappingProxyType(dict(self.exit_evidence_sha256))
+        )
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(
+            {
+                "artifact_type": "primary_stage_conclusion",
+                "primary_plan_sha256": self.primary_plan_sha256,
+                "reconciliation_sha256": self.reconciliation_sha256,
+                "exit_evidence_sha256": dict(sorted(self.exit_evidence_sha256.items())),
+                "claim_decision_sha256": list(self.claim_decision_sha256),
+                "claim_statuses": list(self.claim_statuses),
+                "secondary_repairs_primary": False,
+            }
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SecondaryRolePlan:
+    """A separately authorized 96-unit stratum for one qualified model role."""
+
+    model_role: str
+    stratum_id: str
+    stage_id: StageId
+    protocol_id: ProtocolId
+    entry_bundle_sha256: str
+    primary_conclusion_sha256: str
+    task_ids: tuple[str, ...]
+    units: tuple[ModelStageUnit, ...]
+
+    def __post_init__(self) -> None:
+        if self.model_role not in _SECONDARY_ROLES or self.stratum_id != f"secondary-{self.model_role}":
+            raise StageControlError("secondary_stratum_invalid")
+        _require_sha256(self.entry_bundle_sha256, "secondary_plan_hash_invalid", "entry_bundle")
+        _require_sha256(
+            self.primary_conclusion_sha256, "secondary_plan_hash_invalid", "primary_conclusion"
+        )
+        if len(self.task_ids) != _SECONDARY_TASK_COUNT or len(set(self.task_ids)) != len(self.task_ids):
+            raise StageControlError("secondary_task_envelope_invalid")
+        _validate_fixed_units(
+            self.units,
+            task_ids=self.task_ids,
+            model_role=self.model_role,
+            repeats=3,
+            code="secondary_enrollment_envelope_invalid",
+        )
+        if len(self.units) != _SECONDARY_UNITS_PER_ROLE:
+            raise StageControlError("secondary_enrollment_envelope_invalid")
+
+
+@dataclass(frozen=True, slots=True)
+class SecondaryStagePlan:
+    """Separate optional M1/M2 strata, with unavailable roles retained as evidence."""
+
+    primary_conclusion_sha256: str
+    role_plans: tuple[SecondaryRolePlan, ...]
+    unavailable_roles: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        _require_sha256(
+            self.primary_conclusion_sha256, "secondary_plan_hash_invalid", "primary_conclusion"
+        )
+        roles = tuple(plan.model_role for plan in self.role_plans)
+        if len(set(roles)) != len(roles) or set(roles) & set(self.unavailable_roles):
+            raise StageControlError("secondary_role_substitution_forbidden")
+        if (
+            len({plan.stage_id for plan in self.role_plans}) != len(self.role_plans)
+            or len({plan.protocol_id for plan in self.role_plans}) != len(self.role_plans)
+            or len({plan.entry_bundle_sha256 for plan in self.role_plans}) != len(self.role_plans)
+        ):
+            raise StageControlError("secondary_strata_not_separate")
+        if set(roles) | set(self.unavailable_roles) != _SECONDARY_ROLES:
+            raise StageControlError("secondary_role_availability_incomplete")
+        if any(
+            role not in _SECONDARY_ROLES or status not in {"unavailable", "drifted"}
+            for role, status in self.unavailable_roles.items()
+        ):
+            raise StageControlError("secondary_role_availability_invalid")
+        if len(self.role_plans) * _SECONDARY_UNITS_PER_ROLE > _SECONDARY_UNIT_LIMIT:
+            raise StageControlError("secondary_enrollment_envelope_invalid")
+        if any(plan.primary_conclusion_sha256 != self.primary_conclusion_sha256 for plan in self.role_plans):
+            raise StageControlError("secondary_primary_lineage_conflict")
+        object.__setattr__(
+            self, "unavailable_roles", types.MappingProxyType(dict(sorted(self.unavailable_roles.items())))
+        )
+
+    @property
+    def total_units(self) -> int:
+        return sum(len(plan.units) for plan in self.role_plans)
+
+
+def seal_primary_stage_plan(
+    *,
+    entry_bundle: StageEntryBundle,
+    pilot_exit: StageExitBundle,
+    authorization: StageAuthorization,
+    now: datetime,
+    task_families: Mapping[str, Sequence[str]],
+    limits: PrimaryModelStageLimits,
+) -> PrimaryStagePlan:
+    """Authorize then materialize the exact primary envelope, without a replacement path."""
+
+    authorize_stage_entry(
+        stage_kind=StageKind.PRIMARY,
+        entry_bundle=entry_bundle,
+        predecessor_exit=pilot_exit,
+        authorization=authorization,
+        now=now,
+    )
+    if entry_bundle.locks["limits_sha256"] != limits.digest:
+        raise StageControlError("primary_limits_lock_mismatch")
+    normalized_families = {
+        family: tuple(task_families.get(family, ())) for family in _PRIMARY_FAMILIES
+    }
+    _validate_primary_task_families(normalized_families)
+    task_ids = tuple(
+        task_id for family in _PRIMARY_FAMILIES for task_id in normalized_families[family]
+    )
+    units = tuple(
+        _model_stage_unit(
+            stage_id=entry_bundle.stage_id,
+            task_id=task_id,
+            model_role="M0",
+            arm_slot=arm_slot,
+            repeat=repeat,
+        )
+        for task_id in task_ids
+        for arm_slot in range(2)
+        for repeat in range(8)
+    )
+    return PrimaryStagePlan(
+        stage_id=entry_bundle.stage_id,
+        protocol_id=entry_bundle.protocol_id,
+        entry_bundle_sha256=entry_bundle.digest,
+        pilot_exit_sha256=pilot_exit.digest,
+        task_families=normalized_families,
+        units=units,
+    )
+
+
+def conclude_primary_stage(
+    *,
+    plan: PrimaryStagePlan,
+    terminal_unit_ids: Sequence[str],
+    reconciliation_sha256: str,
+    exit_evidence_sha256: Mapping[str, str],
+    claim_decisions: Sequence[object],
+) -> PrimaryStageConclusion:
+    """Seal terminal complete ITT evidence and existing frozen claim decisions."""
+
+    if set(terminal_unit_ids) != {unit.unit_id for unit in plan.units} or len(terminal_unit_ids) != len(
+        plan.units
+    ):
+        raise StageControlError("primary_itt_incomplete")
+    decision_hashes: list[str] = []
+    statuses: list[str] = []
+    for decision in claim_decisions:
+        decision_sha256 = getattr(decision, "decision_sha256", None)
+        status = getattr(decision, "status", None)
+        if not isinstance(decision_sha256, str) or not isinstance(status, str):
+            raise StageControlError("primary_claim_decisions_incomplete")
+        decision_hashes.append(decision_sha256)
+        statuses.append(status)
+    return PrimaryStageConclusion(
+        primary_plan_sha256=plan.digest,
+        reconciliation_sha256=reconciliation_sha256,
+        exit_evidence_sha256=exit_evidence_sha256,
+        claim_decision_sha256=tuple(decision_hashes),
+        claim_statuses=tuple(statuses),
+    )
+
+
+def seal_secondary_stage_plan(
+    *,
+    primary_plan: PrimaryStagePlan,
+    primary_exit: StageExitBundle,
+    primary_conclusion: PrimaryStageConclusion,
+    role_availability: Mapping[str, str],
+    role_entry_bundles: Mapping[str, StageEntryBundle],
+    role_authorizations: Mapping[str, StageAuthorization],
+    now: datetime,
+    task_families: Mapping[str, Sequence[str]],
+    limits: SecondaryModelStageLimits,
+) -> SecondaryStagePlan:
+    """Create independently authorized M1/M2 strata only after primary reconciliation."""
+
+    if primary_exit.stage_kind is not StageKind.PRIMARY or not primary_exit.is_accepted_and_complete:
+        raise StageControlError("secondary_primary_exit_not_accepted")
+    if primary_conclusion.primary_plan_sha256 != primary_plan.digest:
+        raise StageControlError("secondary_primary_lineage_conflict")
+    if (
+        primary_exit.stage_id != primary_plan.stage_id
+        or primary_exit.protocol_id != primary_plan.protocol_id
+        or primary_exit.entry_bundle_sha256 != primary_plan.entry_bundle_sha256
+        or primary_exit.preceding_exit_sha256 != primary_plan.pilot_exit_sha256
+        or primary_exit.reconciliation_sha256 != primary_conclusion.reconciliation_sha256
+    ):
+        raise StageControlError("secondary_primary_lineage_conflict")
+    if set(role_availability) != _SECONDARY_ROLES or any(
+        value not in _ROLE_AVAILABILITY for value in role_availability.values()
+    ):
+        raise StageControlError("secondary_role_availability_invalid")
+    normalized_families = {
+        family: tuple(task_families.get(family, ())) for family in _PRIMARY_FAMILIES
+    }
+    _validate_secondary_task_families(primary_plan, normalized_families)
+    task_ids = tuple(
+        task_id for family in _PRIMARY_FAMILIES for task_id in normalized_families[family]
+    )
+    plans: list[SecondaryRolePlan] = []
+    unavailable: dict[str, str] = {}
+    for role in sorted(_SECONDARY_ROLES):
+        availability = role_availability[role]
+        if availability != "qualified":
+            unavailable[role] = availability
+            continue
+        entry_bundle = role_entry_bundles.get(role)
+        authorization = role_authorizations.get(role)
+        if entry_bundle is None or authorization is None:
+            raise StageControlError("secondary_role_authorization_missing", (role,))
+        if entry_bundle.locks["limits_sha256"] != limits.digest:
+            raise StageControlError("secondary_limits_lock_mismatch", (role,))
+        authorize_stage_entry(
+            stage_kind=StageKind.SECONDARY,
+            entry_bundle=entry_bundle,
+            predecessor_exit=primary_exit,
+            authorization=authorization,
+            now=now,
+        )
+        units = tuple(
+            _model_stage_unit(
+                stage_id=entry_bundle.stage_id,
+                task_id=task_id,
+                model_role=role,
+                arm_slot=arm_slot,
+                repeat=repeat,
+            )
+            for task_id in task_ids
+            for arm_slot in range(2)
+            for repeat in range(3)
+        )
+        plans.append(
+            SecondaryRolePlan(
+                model_role=role,
+                stratum_id=f"secondary-{role}",
+                stage_id=entry_bundle.stage_id,
+                protocol_id=entry_bundle.protocol_id,
+                entry_bundle_sha256=entry_bundle.digest,
+                primary_conclusion_sha256=primary_conclusion.digest,
+                task_ids=task_ids,
+                units=units,
+            )
+        )
+    return SecondaryStagePlan(
+        primary_conclusion_sha256=primary_conclusion.digest,
+        role_plans=tuple(plans),
+        unavailable_roles=unavailable,
+    )
+
+
+def resume_unstarted_model_units(
+    units: Sequence[ModelStageUnit],
+    *,
+    started_unit_ids: Sequence[str],
+    locks_verified: bool,
+    receipts_consistent: bool,
+    model_healthy: bool,
+) -> tuple[str, ...]:
+    """Resume only never-started assigned units under unchanged locks and model pins."""
+
+    if not locks_verified:
+        raise StageControlError("resume_lock_drift")
+    if not receipts_consistent:
+        raise StageControlError("resume_receipt_conflict")
+    if not model_healthy:
+        raise StageControlError("model_unavailable_pause")
+    unit_ids = tuple(unit.unit_id for unit in units)
+    started = tuple(started_unit_ids)
+    if len(set(started)) != len(started) or not set(started).issubset(unit_ids):
+        raise StageControlError("resume_unit_identity_conflict")
+    return tuple(unit_id for unit_id in unit_ids if unit_id not in set(started))
+
+
+def _model_stage_unit(
+    *,
+    stage_id: StageId,
+    task_id: str,
+    model_role: str,
+    arm_slot: int,
+    repeat: int,
+) -> ModelStageUnit:
+    unit_id = canonical_digest(
+        {
+            "stage_id": str(stage_id),
+            "task_id": task_id,
+            "model_role": model_role,
+            "arm_slot": arm_slot,
+            "repeat": repeat,
+        }
+    )
+    return ModelStageUnit(
+        unit_id=unit_id,
+        task_id=task_id,
+        model_role=model_role,
+        arm_slot=arm_slot,
+        repeat=repeat,
+        concurrency_lane=(repeat * 2 + arm_slot) % 4,
+    )
+
+
+def _validate_primary_task_families(task_families: Mapping[str, Sequence[str]]) -> None:
+    if set(task_families) != set(_PRIMARY_FAMILIES):
+        raise StageControlError("primary_task_family_inventory_invalid")
+    task_ids = tuple(task_id for family in _PRIMARY_FAMILIES for task_id in task_families[family])
+    if (
+        len(task_ids) != _PRIMARY_TASK_COUNT
+        or len(set(task_ids)) != _PRIMARY_TASK_COUNT
+        or any(not isinstance(task_id, str) or not task_id for task_id in task_ids)
+        or any(len(task_families[family]) != 4 for family in _PRIMARY_FAMILIES)
+    ):
+        raise StageControlError("primary_task_envelope_invalid")
+
+
+def _validate_secondary_task_families(
+    primary_plan: PrimaryStagePlan, task_families: Mapping[str, Sequence[str]]
+) -> None:
+    if set(task_families) != set(_PRIMARY_FAMILIES):
+        raise StageControlError("secondary_task_family_inventory_invalid")
+    task_ids = tuple(task_id for family in _PRIMARY_FAMILIES for task_id in task_families[family])
+    if (
+        len(task_ids) != _SECONDARY_TASK_COUNT
+        or len(set(task_ids)) != _SECONDARY_TASK_COUNT
+        or any(len(task_families[family]) != 2 for family in _PRIMARY_FAMILIES)
+        or not set(task_ids).issubset(primary_plan.task_ids)
+    ):
+        raise StageControlError("secondary_task_envelope_invalid")
+
+
+def _validate_fixed_units(
+    units: Sequence[ModelStageUnit],
+    *,
+    task_ids: Sequence[str],
+    model_role: str,
+    repeats: int,
+    code: str,
+) -> None:
+    expected = {
+        (task_id, arm_slot, repeat)
+        for task_id in task_ids
+        for arm_slot in range(2)
+        for repeat in range(repeats)
+    }
+    observed = {(unit.task_id, unit.arm_slot, unit.repeat) for unit in units}
+    if (
+        len(units) != len(expected)
+        or len({unit.unit_id for unit in units}) != len(units)
+        or observed != expected
+        or any(unit.model_role != model_role for unit in units)
+    ):
+        raise StageControlError(code)
+
+
+def _model_unit_document(unit: ModelStageUnit) -> dict[str, object]:
+    return {
+        "unit_id": unit.unit_id,
+        "task_id": unit.task_id,
+        "model_role": unit.model_role,
+        "arm_slot": unit.arm_slot,
+        "repeat": unit.repeat,
+        "concurrency_lane": unit.concurrency_lane,
+    }
 
 
 def plan_stage_resume(
