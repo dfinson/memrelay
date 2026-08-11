@@ -34,6 +34,16 @@ _PRIMARY_EVIDENCE = (
     "safety",
     "analysis",
 )
+_CI_ENV_MARKERS = (
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "TF_BUILD",
+    "TEAMCITY_VERSION",
+    "CIRCLECI",
+)
 
 
 def _plan(bundle=None) -> CrossRepositoryStagePlan:
@@ -156,7 +166,8 @@ def test_cross_repository_stage_entry_binds_dgr_and_operator_authorization() -> 
 def test_cross_repository_cli_admits_only_the_complete_sealed_envelope(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("CI", raising=False)
+    for marker in _CI_ENV_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
     bundle = make_bundle()
     predecessor = StageExitBundle(
         stage_id=StageId.new(),
