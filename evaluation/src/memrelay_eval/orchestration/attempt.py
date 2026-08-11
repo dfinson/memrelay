@@ -17,6 +17,7 @@ from memrelay_eval.domain.errors import (
     AttemptExecutionClaimDeniedError,
     AttemptTerminalAlreadyRecordedError,
     InternalRetryLimitExceededError,
+    StageControlError,
 )
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType

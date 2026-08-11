@@ -39,7 +39,6 @@ from memrelay_eval.domain.governance import (
     RepositoryAccessRequest,
 )
 from memrelay_eval.domain.ids import AttemptId
-from memrelay_eval.orchestration.limits import CircuitBreakerAdmissionController, CircuitBreakerReason
 from memrelay_eval.domain.intents import (
     ArtifactLinkIntent,
     AttemptTerminalIntent,
@@ -59,6 +58,10 @@ from memrelay_eval.domain.ports import (
     RepositoryAuthorizationPort,
     TelemetryPort,
     TreatmentPort,
+)
+from memrelay_eval.orchestration.limits import (
+    CircuitBreakerAdmissionController,
+    CircuitBreakerReason,
 )
 
 if TYPE_CHECKING:
@@ -135,15 +138,16 @@ class CrossRepositoryAdmissionController:
     ) -> _Result:
         """Atomically recheck governance before a synchronous repository operation."""
 
-        self._require_breaker_open()
         self._authorize_local_policy(request, now)
         if self._authority is not None:
-            result, operation_result = self._admit_and_start(request, now, operation)
+            result, operation_result = self._admit_and_start(
+                request, now, lambda: self._start_with_breaker(operation)
+            )
             self._deny_if_needed(request, result)
             return cast(_Result, operation_result)
         with self._admission_lock:
             self._authorize_local_policy(request, now)
-            return operation()
+            return cast(_Result, self._start_with_breaker(operation))
 
     async def start_repository_operation_async(
         self,
@@ -153,13 +157,14 @@ class CrossRepositoryAdmissionController:
     ) -> _Result:
         """Atomically recheck governance before an asynchronous repository operation."""
 
-        self._require_breaker_open()
         self._authorize_local_policy(request, now)
         if self._authority is not None:
-            result, operation_result = await self._admit_and_start_async(request, now, operation)
+            result, operation_result = await self._admit_and_start_async(
+                request, now, lambda: self._start_with_breaker_async(operation)
+            )
             self._deny_if_needed(request, result)
             return cast(_Result, operation_result)
-        return await operation()
+        return await self._start_with_breaker_async(operation)
 
     def _authorize(self, request: RepositoryAccessRequest, now: datetime) -> None:
         self._authorize_local_policy(request, now)
@@ -247,9 +252,21 @@ class CrossRepositoryAdmissionController:
             self._circuit_breaker.trip(CircuitBreakerReason.GOVERNANCE_REVOKED)
         raise CrossRepositoryDeniedError(result.reason)
 
-    def _require_breaker_open(self) -> None:
+    def _start_with_breaker(self, operation: Callable[[], _Result]) -> _Result:
         if self._circuit_breaker is not None:
-            self._circuit_breaker.require_open()
+            return cast(_Result, self._circuit_breaker.start_external_operation(operation))
+        return operation()
+
+    async def _start_with_breaker_async(
+        self, operation: Callable[[], Awaitable[_Result]]
+    ) -> _Result:
+        if self._circuit_breaker is None:
+            return await operation()
+        claim_id = self._circuit_breaker.claim_external_start()
+        try:
+            return await operation()
+        finally:
+            self._circuit_breaker.complete_external_start(claim_id)
 
 
 class LockRepository:

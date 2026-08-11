@@ -654,10 +654,7 @@ def stage_status_projection(
             or evidence_loss_signals > 0
             or not throttle_healthy
             or not model_healthy
-            or (
-                circuit_breaker is not None
-                and circuit_breaker.get("state") not in {None, "open"}
-            )
+            or (circuit_breaker is not None and circuit_breaker.get("state") not in {None, "open"})
         ),
     }
 
@@ -670,7 +667,10 @@ _STAGE_ALERTS: tuple[tuple[str, str], ...] = (
     ("stale_authorization", "pause new work until an operator or scheduler re-authorizes"),
     ("backup_failure", "pause paid work until backup and restore proof passes"),
     ("dg_r_revocation", "disable the entire cross-repository stage"),
-    ("circuit_breaker", "stop new attempts, retain partial evidence, then drain or cancel by policy"),
+    (
+        "circuit_breaker",
+        "stop new attempts, retain partial evidence, then drain or cancel by policy",
+    ),
 )
 
 

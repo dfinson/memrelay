@@ -25,9 +25,13 @@ from memrelay_eval.adapters.process.launcher import (
     ProcessStartRecord,
 )
 from memrelay_eval.adapters.workspace import TemporaryWorktreeWorkspaceProvider, WorkspaceSpec
-from memrelay_eval.domain.errors import ConformancePauseError
+from memrelay_eval.domain.errors import ConformancePauseError, StageControlError
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, ProductTreatmentAttempt
+from memrelay_eval.orchestration.limits import (
+    CircuitBreakerAdmissionController,
+    FrozenLimitEnvelope,
+)
 
 
 class _LiveHealthClient:
@@ -246,6 +250,44 @@ def test_product_attempt_uses_existing_ledger_claim_and_telemetry(
 
     assert references
     assert telemetry.observations[0].event_name == "attempt_started"
+
+
+def test_product_attempt_requires_reserved_usage_when_breaker_owns_admission() -> None:
+    run_id = RunId.new()
+    breaker = CircuitBreakerAdmissionController(
+        stage_id="stage-1",
+        stage_envelope=FrozenLimitEnvelope(
+            scope="stage",
+            source_sha256="a" * 64,
+            limits={"copilot_tokens": 1},
+        ),
+        run_envelopes={
+            run_id: FrozenLimitEnvelope(
+                scope="run",
+                source_sha256="b" * 64,
+                limits={"copilot_tokens": 1},
+            )
+        },
+    )
+    ledger = InMemoryLedger()
+    telemetry = InMemoryTelemetry()
+    stage = ProductTreatmentAttempt(
+        object(),  # type: ignore[arg-type]
+        AttemptTerminalRecorder(ledger, telemetry),
+        telemetry,
+        breaker,
+    )
+
+    with pytest.raises(StageControlError) as failure:
+        asyncio.run(
+            stage.provision(
+                object(),
+                attempt_id=AttemptId.new(),
+                run_id=run_id,
+            )
+        )
+
+    assert failure.value.code == "circuit_breaker_reservation_required"
 
 
 def test_parallel_product_attempts_keep_attempt_scoped_paths_distinct(
