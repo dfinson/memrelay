@@ -412,7 +412,7 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "spawn_code='import socket,sys;sys.exit(0 if socket.socket().connect_ex("
         "(\"127.0.0.1\",'+str(port)+')) else 1)'\n"
         "popen=captured_popen((sys.executable,'-c',spawn_code)).wait() == 0\n"
-        "system=captured_system(shlex.join((sys.executable,'-c',spawn_code))) != 0\n"
+        "system=captured_system(shlex.join((sys.executable,'-c',spawn_code))) == 0\n"
         "native_ssl=denied(lambda: ssl.create_default_context().wrap_socket("
         "socket.socket(),server_hostname='localhost').connect(('127.0.0.1',port)))\n"
         "ipv6=denied(lambda: socket.create_connection(('::1', port), timeout=0.2)) "
