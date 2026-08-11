@@ -16,6 +16,7 @@ from memrelay_eval.scoring.blinding import BlindingPolicy, detect_direct_leaks
 
 JUDGE_PROTOCOL_VERSION = "1.0.0"
 JUDGE_RECORD_SCHEMA_VERSION = "1.0.0"
+NATIVE_DECODING_CONTROLS = MappingProxyType({"session_defaults": "github-copilot-sdk-1.0.8"})
 JUDGE_CRITERIA = (
     "uncovered_requirement_satisfaction",
     "semantic_appropriateness",
@@ -109,7 +110,7 @@ class FrozenJudgeRubric:
         )
     )
     decoding_controls: Mapping[str, object] = field(
-        default_factory=lambda: MappingProxyType({"temperature": 0, "top_p": 1})
+        default_factory=lambda: NATIVE_DECODING_CONTROLS
     )
     version: str = JUDGE_PROTOCOL_VERSION
 
@@ -119,10 +120,8 @@ class FrozenJudgeRubric:
         tools = tuple(dict(tool) for tool in self.tool_schemas)
         if not tools or any(tool.get("read_only") is not True for tool in tools):
             raise JudgePanelConformanceError("judge_tools_must_be_read_only")
-        if set(self.decoding_controls) != {"temperature", "top_p"}:
+        if dict(self.decoding_controls) != dict(NATIVE_DECODING_CONTROLS):
             raise JudgePanelConformanceError("judge_decoding_controls_invalid")
-        if self.decoding_controls["temperature"] != 0 or self.decoding_controls["top_p"] != 1:
-            raise JudgePanelConformanceError("judge_decoding_controls_not_frozen")
         object.__setattr__(self, "tool_schemas", tuple(MappingProxyType(tool) for tool in tools))
         object.__setattr__(
             self, "decoding_controls", MappingProxyType(dict(self.decoding_controls))
@@ -309,6 +308,7 @@ class JudgeSessionRequest:
     decoding_controls: Mapping[str, object]
     view_bytes: bytes
     wall_seconds_limit: float
+    authorized_blinded_artifacts: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if (
@@ -321,13 +321,29 @@ class JudgeSessionRequest:
             or self.wall_seconds_limit <= 0
         ):
             raise JudgePanelConformanceError("judge_session_request_invalid")
-        if any(tool.get("read_only") is not True for tool in self.tools):
+        if (
+            len(self.tools) != 1
+            or self.tools[0].get("name") != "read_blinded_artifact"
+            or self.tools[0].get("read_only") is not True
+        ):
             raise JudgePanelConformanceError("judge_session_tools_not_read_only")
+        if any(
+            not isinstance(location, str)
+            or not _ARTIFACT_LOCATION.fullmatch(location)
+            or not isinstance(content, str)
+            for location, content in self.authorized_blinded_artifacts.items()
+        ):
+            raise JudgePanelConformanceError("judge_session_artifacts_invalid")
         object.__setattr__(
             self, "tools", tuple(MappingProxyType(dict(tool)) for tool in self.tools)
         )
         object.__setattr__(
             self, "decoding_controls", MappingProxyType(dict(self.decoding_controls))
+        )
+        object.__setattr__(
+            self,
+            "authorized_blinded_artifacts",
+            MappingProxyType(dict(self.authorized_blinded_artifacts)),
         )
 
     @property

@@ -46,10 +46,17 @@ class IsolatedJudgeProcessRuntime:
         if not isinstance(session, JudgeSessionRequest):
             raise JudgePanelConformanceError("judge_process_request_invalid")
         worker_dir = self._worker_root / sha256(session.session_id.encode("utf-8")).hexdigest()
-        worker_dir.mkdir(parents=True, exist_ok=False)
         request_path = worker_dir / "request.json"
         result_path = worker_dir / "result.json"
-        request_path.write_bytes(_request_bytes(session))
+        try:
+            worker_dir.mkdir(parents=True, exist_ok=False)
+            request_path.write_bytes(_request_bytes(session))
+        except FileExistsError:
+            return JudgeRuntimeResult(
+                "failed", None, failure_code="judge_process_directory_conflict"
+            )
+        except OSError:
+            return JudgeRuntimeResult("failed", None, failure_code="judge_process_io_failure")
         environment = build_process_environment(
             ProcessRole.JUDGE,
             runtime_environment=self._runtime_environment,
@@ -79,7 +86,10 @@ class IsolatedJudgeProcessRuntime:
             or not result_path.is_file()
         ):
             return JudgeRuntimeResult("failed", None, failure_code="judge_process_terminal_failure")
-        return _result_from_bytes(result_path.read_bytes())
+        try:
+            return _result_from_bytes(result_path.read_bytes())
+        except OSError:
+            return JudgeRuntimeResult("failed", None, failure_code="judge_process_io_failure")
 
 
 def _request_bytes(session: JudgeSessionRequest) -> bytes:
@@ -94,6 +104,7 @@ def _request_bytes(session: JudgeSessionRequest) -> bytes:
             "rubric_sha256": session.rubric_sha256,
             "tools": [dict(tool) for tool in session.tools],
             "decoding_controls": dict(session.decoding_controls),
+            "authorized_blinded_artifacts": dict(session.authorized_blinded_artifacts),
             "view": session.view_bytes.decode("utf-8"),
             "wall_seconds_limit": session.wall_seconds_limit,
         },

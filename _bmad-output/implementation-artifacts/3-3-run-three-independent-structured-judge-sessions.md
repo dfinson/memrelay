@@ -107,12 +107,14 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - `py -3.13 -m pytest evaluation\\tests` (1130 passed, 46 skipped)
 - `py -3.13 -m pytest tests\\eval` (18 passed)
 - `ruff check` and `ruff format --check` on all Story 3.3 source and test paths (passed)
+- SDK tool integration follow-up: focused judge/runtime/worker/process-boundary suite (36 passed); root `ruff check .` and `ruff format --check .` passed.
 
 ### Completion Notes List
 
 - Added a frozen six-criterion rubric, deterministic sealed panel schedule, judge-record schema, direct-leak and citation verification, and canonical record/protocol evidence.
 - Added exactly-three pinned judge-slot selection, diversity scarcity labeling, sealed-order enforcement, quota reservation, immutable replay retention, unavailable evidence handling, and fail-closed partial-panel outcomes.
 - Routed SDK sessions through a disposable `ProcessRole.JUDGE` transport with the existing Copilot-only credential allowlist; each worker creates and disconnects a fresh official SDK session.
+- Materialized frozen tool schemas as official SDK `Tool` objects, with a handler restricted to verified blinded-view locations; malformed, unauthorized, unsupported, and stale-worker paths retain typed failures.
 - Kept paid/study authority blocked behind the inherited unpaid-conformance artifact port and added fake runtime/process contracts without provider calls.
 
 ### File List
@@ -132,3 +134,4 @@ GPT-5.6 Terra (gpt-5.6-terra)
 - `evaluation/tests/unit/judge/test_panel.py`
 - `evaluation/tests/unit/judge/test_process_runtime.py`
 - `evaluation/tests/unit/judge/test_sdk_runtime.py`
+- `evaluation/tests/unit/judge/test_judge_worker.py`

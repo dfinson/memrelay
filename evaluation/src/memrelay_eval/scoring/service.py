@@ -363,6 +363,7 @@ class JudgePanelRunner:
         protocol_artifact: ArtifactRef,
     ) -> JudgePanelOutcome:
         records: list[JudgeRecord] = []
+        authorized_artifacts = _authorized_blinded_artifacts(blinded_view)
         for slot in self._slots:
             if not self._usage.can_authorize(self._schedule.limits):
                 records.append(
@@ -383,6 +384,7 @@ class JudgePanelRunner:
                 decoding_controls=self._rubric.decoding_controls,
                 view_bytes=view_bytes,
                 wall_seconds_limit=self._schedule.limits.per_session_wall_seconds,
+                authorized_blinded_artifacts=authorized_artifacts,
             )
             try:
                 result = await self._judge_process.run_judge_session(request)
@@ -579,3 +581,20 @@ def _required_hash(document: Mapping[str, object], key: str, code: str) -> str:
 
 def _is_sha256(value: str) -> bool:
     return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+
+
+def _authorized_blinded_artifacts(view: Mapping[str, object]) -> Mapping[str, str]:
+    """Derive the only tool-readable content from the verified blinded view."""
+
+    evidence = view.get("evidence")
+    locations = view.get("artifact_locations")
+    if not isinstance(evidence, Mapping) or not isinstance(locations, Mapping):
+        raise JudgePanelConformanceError("judge_view_not_blinded")
+    artifacts: dict[str, str] = {}
+    for name, location in locations.items():
+        if not isinstance(name, str) or not isinstance(location, str):
+            raise JudgePanelConformanceError("judge_view_not_blinded")
+        artifacts[location] = canonical_bytes(
+            {"artifact_location": location, "evidence": evidence.get(name)}
+        ).decode("utf-8")
+    return artifacts

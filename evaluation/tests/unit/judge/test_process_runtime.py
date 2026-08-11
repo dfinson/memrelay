@@ -26,11 +26,12 @@ def _request() -> JudgeSessionRequest:
         tools=(
             {
                 "name": "read_blinded_artifact",
+                "description": "Read the supplied blinded artifact.",
                 "read_only": True,
                 "input_schema": {"type": "object"},
             },
         ),
-        decoding_controls={"temperature": 0, "top_p": 1},
+        decoding_controls={"session_defaults": "github-copilot-sdk-1.0.8"},
         view_bytes=b'{"schema_version":"1.0.0"}',
         wall_seconds_limit=10,
     )
@@ -82,3 +83,21 @@ def test_isolated_runtime_serializes_only_blinded_input_to_a_judge_allowlist(
     assert set(request.environment) == {"PATH", "SYSTEMROOT", "COPILOT_AUTH_TOKEN"}
     assert "OPENAI_API_KEY" not in request.environment
     assert request.command[1:3] == ("-m", "memrelay_eval.adapters.copilot.judge_worker")
+
+
+def test_isolated_runtime_turns_stale_worker_directory_into_a_typed_failure(tmp_path: Path) -> None:
+    launcher = _Launcher()
+    runtime = IsolatedJudgeProcessRuntime(
+        launcher,
+        tmp_path,
+        {"PATH": "path", "SYSTEMROOT": "system"},
+        (CredentialReference("COPILOT_AUTH_TOKEN", CredentialDomain.COPILOT, ProcessRole.JUDGE),),
+        {"COPILOT_AUTH_TOKEN": "host-auth"},
+    )
+
+    asyncio.run(runtime.run_judge_session(_request()))
+    retry = asyncio.run(runtime.run_judge_session(_request()))
+
+    assert retry.status == "failed"
+    assert retry.failure_code == "judge_process_directory_conflict"
+    assert len(launcher.requests) == 1

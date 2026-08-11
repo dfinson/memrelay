@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
+from copilot import Tool, ToolInvocation
 from memrelay_eval.adapters.copilot.session import CopilotSdkSessionRuntime
 from memrelay_eval.scoring.rubric import JudgeSessionRequest
 
@@ -18,11 +20,12 @@ def _request(index: int) -> JudgeSessionRequest:
         tools=(
             {
                 "name": "read_blinded_artifact",
+                "description": "Read the supplied blinded artifact.",
                 "read_only": True,
                 "input_schema": {"type": "object"},
             },
         ),
-        decoding_controls={"temperature": 0, "top_p": 1},
+        decoding_controls={"session_defaults": "github-copilot-sdk-1.0.8"},
         view_bytes=(
             b'{"schema_version":"1.0.0","source":{"artifact_id":"art_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",'
             b'"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},'
@@ -109,8 +112,8 @@ def test_judge_runtime_creates_fresh_pinned_sdk_sessions_without_credential_opti
     assert len(clients) == 3
     assert all(client.started and client.stopped for client in clients)
     assert all(client.sessions[0].disconnected for client in clients)
-    assert all(client.options[0]["temperature"] == 0 for client in clients)
-    assert all(client.options[0]["top_p"] == 1 for client in clients)
+    assert all(isinstance(client.options[0]["tools"][0], Tool) for client in clients)
+    assert all(client.options[0]["tools"][0].parameters == {"type": "object"} for client in clients)
     assert all("github_token" not in client.options[0] for client in clients)
 
 
@@ -135,3 +138,36 @@ def test_judge_runtime_rejects_success_without_native_usage_metering() -> None:
 
     assert result.status == "failed"
     assert result.failure_code == "judge_native_usage_unavailable"
+
+
+def test_judge_runtime_uses_sdk_tool_objects_and_denies_unapproved_artifacts() -> None:
+    allowed = f"artifact://blinded/{'c' * 64}"
+
+    class ToolShapeClient(_Client):
+        async def create_session(self, **options: object) -> _Session:
+            tool = options["tools"][0]
+            assert isinstance(tool, Tool)
+            assert tool.name == "read_blinded_artifact"
+            assert tool.description == "Read the supplied blinded artifact."
+            assert tool.parameters == {"type": "object"}
+            allowed_result = tool.handler(
+                ToolInvocation(
+                    tool_name="read_blinded_artifact",
+                    arguments={"location": allowed},
+                )
+            )
+            denied_result = tool.handler(
+                ToolInvocation(
+                    tool_name="read_blinded_artifact",
+                    arguments={"location": f"artifact://blinded/{'d' * 64}"},
+                )
+            )
+            assert allowed_result.text_result_for_llm == "authorized evidence"
+            assert allowed_result.tool_references == [allowed]
+            assert denied_result.result_type == "denied"
+            return await super().create_session(**options)
+
+    request = replace(_request(1), authorized_blinded_artifacts={allowed: "authorized evidence"})
+    result = asyncio.run(CopilotSdkSessionRuntime(ToolShapeClient).run_session(request))
+
+    assert result.status == "completed"

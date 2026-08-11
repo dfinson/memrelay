@@ -182,8 +182,7 @@ class CopilotSdkSessionRuntime:
         try:
             options: dict[str, object] = {
                 "model": session.model_id,
-                "tools": [dict(tool) for tool in session.tools],
-                **dict(session.decoding_controls),
+                "tools": _judge_tools(session),
             }
             if session.reasoning_effort != "unavailable":
                 options["reasoning_effort"] = session.reasoning_effort
@@ -191,10 +190,10 @@ class CopilotSdkSessionRuntime:
                 options["context_tier"] = session.context_tier
             try:
                 sdk_session = await create_session(**options)
-            except TypeError as error:
+            except (AttributeError, TypeError, ValueError) as error:
                 raise ConformancePauseError(
-                    "sdk_judge_controls_unsupported",
-                    "official SDK session does not accept the frozen judge controls",
+                    "sdk_judge_session_shape_unsupported",
+                    "official SDK session does not accept the frozen judge tool or control shape",
                 ) from error
             send_and_wait = getattr(sdk_session, "send_and_wait", None)
             if not callable(send_and_wait):
@@ -292,6 +291,80 @@ async def _disconnect_session(session: object | None) -> None:
         result = disconnect()
         if hasattr(result, "__await__"):
             await result
+
+
+def _judge_tools(session: JudgeSessionRequest) -> list[object]:
+    """Materialize the official SDK Tool contract from the immutable rubric schema."""
+
+    if dict(session.decoding_controls) != {"session_defaults": "github-copilot-sdk-1.0.8"}:
+        raise ConformancePauseError(
+            "sdk_judge_controls_unsupported",
+            "frozen judge controls are not supported by the locked SDK session API",
+        )
+    try:
+        module = importlib.import_module("copilot")
+        tool_type = module.Tool
+        result_type = module.ToolResult
+    except (ImportError, AttributeError) as error:
+        raise ConformancePauseError(
+            "sdk_judge_tools_unsupported", "official SDK Tool API is unavailable"
+        ) from error
+    if not callable(tool_type) or not callable(result_type):
+        raise ConformancePauseError(
+            "sdk_judge_tools_unsupported", "official SDK Tool API is unavailable"
+        )
+    tools: list[object] = []
+    for schema in session.tools:
+        name = schema.get("name")
+        description = schema.get("description")
+        parameters = schema.get("input_schema")
+        if (
+            name != "read_blinded_artifact"
+            or not isinstance(description, str)
+            or not description
+            or not isinstance(parameters, Mapping)
+            or schema.get("read_only") is not True
+        ):
+            raise ConformancePauseError(
+                "sdk_judge_tool_schema_invalid", "frozen judge tool schema is invalid"
+            )
+        tools.append(
+            tool_type(
+                name=name,
+                description=description,
+                parameters=dict(parameters),
+                handler=_blinded_artifact_handler(
+                    session.authorized_blinded_artifacts, result_type
+                ),
+                skip_permission=True,
+            )
+        )
+    return tools
+
+
+def _blinded_artifact_handler(
+    artifacts: Mapping[str, str], result_type: Callable[..., object]
+) -> Callable[[object], object]:
+    """Build a handler that can resolve only locations explicitly supplied to this judge."""
+
+    def handler(invocation: object) -> object:
+        arguments = getattr(invocation, "arguments", None)
+        tool_name = getattr(invocation, "tool_name", None)
+        if (
+            tool_name != "read_blinded_artifact"
+            or not isinstance(arguments, Mapping)
+            or set(arguments) != {"location"}
+            or not isinstance(arguments.get("location"), str)
+            or arguments["location"] not in artifacts
+        ):
+            return result_type(result_type="denied", error="judge_artifact_access_denied")
+        location = arguments["location"]
+        return result_type(
+            text_result_for_llm=artifacts[location],
+            tool_references=[location],
+        )
+
+    return handler
 
 
 def _terminal_record(event: object) -> NativeTerminalRecord:
