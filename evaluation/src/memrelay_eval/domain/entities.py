@@ -376,6 +376,17 @@ class CostEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class CostLedgerLink:
+    """Thin query projection for one immutable quantity artifact."""
+
+    cost_entry_id: CostEntryId
+    run_id: RunId
+    attempt_id: AttemptId
+    logical_ledger: str
+    artifact_ref: ArtifactRef
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactRef:
     """Immutable content-addressed bytes."""
 

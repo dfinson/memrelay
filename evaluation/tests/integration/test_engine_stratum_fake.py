@@ -187,12 +187,41 @@ def test_fault_retains_partial_evidence_closes_and_does_not_invent_terminal(
     assert not ledger.eligible_for_paid_or_study
     assert not telemetry.eligible_for_paid_or_study
     assert not store.eligible_for_paid_or_study
+    assert {link.logical_ledger for link in ledger.cost_ledger_entries_for(attempt.attempt_id)} == {
+        "framework_openai",
+        "local_resources",
+    }
     assert {span.span_class for span in telemetry.semantic_spans} >= {
         SpanClass.ARTIFACT_PERSISTENCE,
         SpanClass.DAEMON_DISPATCH,
         SpanClass.FRAMEWORK_EXTRACTION,
         SpanClass.MEMORY_WRITE,
     }
+
+
+def test_engine_success_publishes_separate_framework_and_local_quantity_ledgers(
+    tmp_path: Path,
+) -> None:
+    store = InMemoryArtifactStore()
+    ledger = InMemoryLedger()
+    attempt = replace(_attempt(tmp_path, "success.db"), search_query=None)
+    FaultingEngine.graph_path = str(attempt.isolation.graph_path)
+    FaultingEngine.fault_method = "none"
+    adapter = DirectEngineAdapter(
+        store,
+        ledger,
+        InMemoryTelemetry(),
+        DirectEngineGraphClaimRegistry(),
+        unpaid_runtime=UnpaidEngineRuntime(
+            FaultingEngine, lambda value: value.framework.to_document()
+        ),
+    )
+
+    asyncio.run(adapter.execute(attempt))
+
+    links = ledger.cost_ledger_entries_for(attempt.attempt_id)
+    assert {link.logical_ledger for link in links} == {"framework_openai", "local_resources"}
+    assert all(store.open_verified(link.artifact_ref) for link in links)
 
 
 def test_graph_claim_is_unique_and_product_graph_is_rejected(tmp_path: Path) -> None:

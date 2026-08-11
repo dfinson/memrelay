@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/cost-unit-conversion-1.0.0.json",
+  "title": "Frozen Cost Unit Conversion Table",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "sha256", "conversions"],
+  "properties": {
+    "version": {"pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "sha256": {"pattern": "^[a-f0-9]{64}$"},
+    "conversions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source_unit", "target_unit", "numerator", "denominator"],
+        "properties": {
+          "source_unit": {"type": "string"},
+          "target_unit": {"type": "string"},
+          "numerator": {"type": "integer", "minimum": 1},
+          "denominator": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}
