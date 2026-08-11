@@ -119,7 +119,6 @@ def test_partial_generation_never_becomes_a_valid_receipt(tmp_path) -> None:
     assert error.value.code in {
         "backup_generation_incomplete",
         "backup_stale_or_tampered_receipt",
-        "backup_receipt_link_failed",
     }
     ledger.close()
 

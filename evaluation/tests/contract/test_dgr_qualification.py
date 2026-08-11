@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -13,11 +14,10 @@ from memrelay_eval.domain.ids import (
     RepositoryId,
 )
 from memrelay_eval.evidence.governance import (
-    REQUIRED_DGR_CONTROLS,
     DgrBundle,
     DgrControl,
-    DgrProof,
     DgrProofStatus,
+    DgrQualificationAuthority,
     load_dgr_bundle,
 )
 
@@ -62,27 +62,19 @@ def make_bundle(*, status: DgrProofStatus = DgrProofStatus.PASSED) -> DgrBundle:
         RepositoryId.from_digest(f"{number:02x}" + "0" * 62) for number in range(24)
     )
     policy = PolicyVersionId.new()
-    proofs = tuple(
-        DgrProof(
-            control=control,
-            repository_id=repository,
-            issuer_id="synthetic-issuer",
-            authority_id="synthetic-governance-authority",
-            policy_version=str(policy),
-            schema_version="1.0.0",
-            proof_version="1.0.0",
-            policy_sha256=_HASH,
-            schema_sha256=_HASH,
-            evidence_sha256=_HASH,
-            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
-            valid_until=datetime(2027, 1, 1, tzinfo=UTC),
-            revocation_generation=7,
-            status=status,
-        )
-        for repository in repositories
-        for control in REQUIRED_DGR_CONTROLS
-    )
-    return DgrBundle(
+    bundle = DgrQualificationAuthority(
+        issuer_id="synthetic-issuer",
+        authority_id="synthetic-governance-authority",
+        restore_probe=lambda: {
+            "quarantine_only": True,
+            "tombstones_applied": True,
+            "authorization_rechecked": True,
+            "revocation_rechecked": True,
+            "negative_retrieval": True,
+            "active_index_restore_denied": True,
+        },
+    ).qualify(
+        repositories=repositories,
         principal_id=str(PrincipalId.new()),
         authorization_id=str(AuthorizationId.new()),
         authorization_version=str(AuthorizationVersionId.new()),
@@ -90,7 +82,20 @@ def make_bundle(*, status: DgrProofStatus = DgrProofStatus.PASSED) -> DgrBundle:
         purpose_version=str(PurposeVersionId.new()),
         policy_version=str(policy),
         revocation_generation=7,
-        proofs=proofs,
+        valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+        valid_until=datetime(2027, 1, 1, tzinfo=UTC),
+    )
+    if status is DgrProofStatus.PASSED:
+        return bundle
+    return DgrBundle(
+        principal_id=bundle.principal_id,
+        authorization_id=bundle.authorization_id,
+        authorization_version=bundle.authorization_version,
+        purpose_id=bundle.purpose_id,
+        purpose_version=bundle.purpose_version,
+        policy_version=bundle.policy_version,
+        revocation_generation=bundle.revocation_generation,
+        proofs=tuple(replace(proof, status=status) for proof in bundle.proofs),
     )
 
 
@@ -105,6 +110,9 @@ def test_each_frozen_governance_control_has_a_typed_repository_scoped_proof(
     assert tea_id.startswith("GOV-")
     assert len(matching) == 24
     assert all(proof.is_current(_NOW, revocation_generation=7) for proof in matching)
+    assert all(proof.observed_outputs["contract_satisfied"] is True for proof in matching)
+    assert all(proof.failure_evidence for proof in matching)
+    assert all(proof.evidence_sha256 != _HASH for proof in matching)
 
 
 def test_dgr_bundle_is_canonical_complete_and_current_for_every_cluster_scope() -> None:
@@ -125,5 +133,50 @@ def test_failed_or_revoked_control_cannot_be_current() -> None:
     assert bundle.is_current(_NOW) is False
 
 
+def test_proof_rejects_tampered_behavioral_observations() -> None:
+    proof = make_bundle().proofs[0]
+
+    with pytest.raises(Exception, match="observation hash invalid"):
+        replace(proof, observed_outputs={"contract_satisfied": False})
+
+
 def test_frozen_tea_registry_keeps_scope_envelope_and_blocker_objectives() -> None:
     assert {"SCOPE-R-AUTH", "OPS-STAGE-ENVELOPE", "BLOCK-GOVERNANCE"} <= FROZEN_TEA_IDS
+
+
+@pytest.mark.parametrize("control,tea_id", tuple(TEA_IDS.items()))
+def test_each_control_has_a_behavioral_negative_proof_of_concept(
+    control: DgrControl, tea_id: str
+) -> None:
+    repositories = tuple(
+        RepositoryId.from_digest(f"{number:02x}" + "f" * 62) for number in range(24)
+    )
+    policy = PolicyVersionId.new()
+    authority = DgrQualificationAuthority(
+        issuer_id="synthetic-issuer",
+        authority_id="synthetic-governance-authority",
+        restore_probe=lambda: {
+            "quarantine_only": True,
+            "tombstones_applied": True,
+            "authorization_rechecked": True,
+            "revocation_rechecked": True,
+            "negative_retrieval": True,
+            "active_index_restore_denied": True,
+        },
+        fault_controls=frozenset({control}),
+    )
+
+    with pytest.raises(Exception, match="control behavior failed"):
+        authority.qualify(
+            repositories=repositories,
+            principal_id=str(PrincipalId.new()),
+            authorization_id=str(AuthorizationId.new()),
+            authorization_version=str(AuthorizationVersionId.new()),
+            purpose_id=str(PurposeId.new()),
+            purpose_version=str(PurposeVersionId.new()),
+            policy_version=str(policy),
+            revocation_generation=7,
+            valid_from=datetime(2026, 1, 1, tzinfo=UTC),
+            valid_until=datetime(2027, 1, 1, tzinfo=UTC),
+        )
+    assert tea_id.startswith("GOV-")

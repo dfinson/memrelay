@@ -127,6 +127,13 @@ class CrossRepositoryAdmissionController:
         self._evidence_sink = evidence_sink or InMemoryDenialEvidenceSink()
         self._circuit_breaker = circuit_breaker
         self._admission_lock = Lock()
+        if circuit_breaker is not None:
+            from memrelay_eval.evidence.governance import DgrRepositoryAuthorization
+
+            if isinstance(authority, DgrRepositoryAuthorization):
+                authority.bind_revocation_callback(
+                    lambda: circuit_breaker.trip(CircuitBreakerReason.GOVERNANCE_REVOKED)
+                )
 
     def authorize_at_entry(self, request: RepositoryAccessRequest, now: datetime) -> None:
         self._authorize(request, now)
