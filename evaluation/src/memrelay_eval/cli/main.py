@@ -98,6 +98,38 @@ def build_parser() -> argparse.ArgumentParser:
         default="artifacts",
         help="root under which the append-only command manifest is written",
     )
+    run.add_argument(
+        "--task-plan",
+        help="canonical JSON task-family plan required to materialize primary or secondary units",
+    )
+    run.add_argument(
+        "--limits",
+        help="canonical JSON sealed paid-limit document required for primary or secondary",
+    )
+    run.add_argument(
+        "--primary-plan",
+        help="immutable primary plan required by a secondary request",
+    )
+    run.add_argument(
+        "--primary-conclusion",
+        help="immutable reconciled primary conclusion required by a secondary request",
+    )
+    run.add_argument(
+        "--model-lock",
+        help="verified Story 2.1 native model qualification lock required by secondary",
+    )
+    run.add_argument(
+        "--secondary-entry",
+        action="append",
+        metavar="ROLE:PATH",
+        help="one M1/M2 secondary entry bundle; repeat for each qualified role",
+    )
+    run.add_argument(
+        "--secondary-authorization",
+        action="append",
+        metavar="ROLE:PATH",
+        help="matching M1/M2 secondary authorization; repeat for each qualified role",
+    )
     run.set_defaults(handler=run_stage)
     bootstrap_parser = subcommands.add_parser(
         "bootstrap", help="explicitly verify and lock the official Copilot runtime"
