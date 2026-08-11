@@ -17,6 +17,14 @@ from .controls import (
     verify_framework_preflight,
 )
 from .engine import DirectEngineAdapter, DirectEngineAttempt, DirectEngineEvidence
+from .observation import (
+    OBSERVATION_RECONCILIATION_POLICY_VERSION,
+    ObservationQualificationDecision,
+    ObservationQualificationService,
+    PersistedObservationQualification,
+    build_observation_identity,
+    hash_observation_sources,
+)
 from .product import (
     AgentMCPServerConfiguration,
     MCPToolCallEvidence,
@@ -41,7 +49,11 @@ __all__ = [
     "FrameworkPreflightEvidence",
     "MCPToolCallEvidence",
     "MemrelayProductTreatment",
+    "OBSERVATION_RECONCILIATION_POLICY_VERSION",
+    "ObservationQualificationDecision",
+    "ObservationQualificationService",
     "PRODUCT_SHIPPED_TOOL_NAMES",
+    "PersistedObservationQualification",
     "ProductCleanupEvidence",
     "ProductIdentityEnvelope",
     "ProductProvisionRequest",
@@ -51,8 +63,10 @@ __all__ = [
     "ProductTreatmentHandle",
     "ProductTreatmentPaths",
     "build_framework_process_environments",
+    "build_observation_identity",
     "build_product_identity_chain",
     "product_tool_contract",
+    "hash_observation_sources",
     "require_product_tool_visibility",
     "shipped_observation_path",
     "verify_framework_preflight",

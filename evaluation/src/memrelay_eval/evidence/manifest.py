@@ -255,3 +255,34 @@ def stage_command_manifest(
         document["prior_error_code"] = prior_error_code
     document["digest"] = canonical_digest(document)
     return canonical_json_bytes(document)
+
+
+def observation_qualification_manifest(
+    *,
+    path: str,
+    conformance_sha256: str,
+    protocol_version: str,
+    protocol_sha256: str,
+    terminal_status: str,
+    error_code: str | None,
+    input_hashes: Mapping[str, str],
+    output_hashes: Mapping[str, str],
+    runtime_lock_sha256: str,
+) -> bytes:
+    """Bind one path-scoped sentinel decision without relabeling prior evidence."""
+
+    document = {
+        "schema_version": "1.0.0",
+        "command": "observation-conformance",
+        "path": path,
+        "conformance_sha256": conformance_sha256,
+        "protocol_version": protocol_version,
+        "protocol_sha256": protocol_sha256,
+        "terminal_status": terminal_status,
+        "error_code": error_code,
+        "input_hashes": dict(sorted(input_hashes.items())),
+        "output_hashes": dict(sorted(output_hashes.items())),
+        "runtime_lock_sha256": runtime_lock_sha256,
+    }
+    document["digest"] = canonical_digest(document)
+    return canonical_json_bytes(document)
