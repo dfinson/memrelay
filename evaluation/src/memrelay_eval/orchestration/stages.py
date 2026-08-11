@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 import os
+import types
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from memrelay_eval.canonical import attach_digest, canonical_bytes, canonical_digest, verify_digest
+from memrelay_eval.canonical import (
+    CanonicalizationError,
+    attach_digest,
+    canonical_bytes,
+    canonical_digest,
+    verify_digest,
+)
 from memrelay_eval.domain.engine import (
     FrameworkConfiguration,
     StratumAuthority,
@@ -219,7 +226,7 @@ class StageEntryBundle:
     def __post_init__(self) -> None:
         require_stage_entry_locks(self.locks)
         require_stage_predecessor(self.stage_kind, self.predecessor_stage_kind)
-        object.__setattr__(self, "locks", dict(sorted(self.locks.items())))
+        object.__setattr__(self, "locks", types.MappingProxyType(dict(sorted(self.locks.items()))))
 
     def to_document(self) -> dict[str, object]:
         return {
@@ -568,7 +575,16 @@ class StageBundleStore:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(staged, path)
+            try:
+                # Publish atomically and exclusively on the final path itself: the
+                # fully written staged file is hard-linked into place, so a losing
+                # concurrent writer sees FileExistsError over complete bytes and can
+                # never silently clobber a differing seal.
+                os.link(staged, path)
+            except FileExistsError:
+                if not path.is_file() or path.read_bytes() != data:
+                    raise StageControlError(conflict_code, (path.name,)) from None
+                return "reused"
         finally:
             if staged.exists():
                 staged.unlink()
@@ -672,6 +688,12 @@ def _canonical_stage_document(data: bytes, code: str) -> dict[str, object]:
         document = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates)
     except (UnicodeDecodeError, ValueError) as error:
         raise StageControlError(code) from error
-    if not isinstance(document, dict) or canonical_bytes(document) != data:
+    if not isinstance(document, dict):
+        raise StageControlError(code)
+    try:
+        canonical = canonical_bytes(document)
+    except CanonicalizationError as error:
+        raise StageControlError(code) from error
+    if canonical != data:
         raise StageControlError(code)
     return document

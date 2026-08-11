@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import uuid
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
@@ -270,7 +271,7 @@ def _write_immutable_stage_manifest(path: Path, data: bytes) -> None:
         if not path.is_file() or path.read_bytes() != data:
             raise StageControlError("stage_command_manifest_conflict", (str(path),))
         return
-    temporary = path.with_name(f".{path.name}.tmp")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     try:
         temporary.write_bytes(data)
         temporary.replace(path)
@@ -281,6 +282,8 @@ def _write_immutable_stage_manifest(path: Path, data: bytes) -> None:
     finally:
         if temporary.exists():
             temporary.unlink()
+    if not path.is_file() or path.read_bytes() != data:
+        raise StageControlError("stage_command_manifest_publish_failed", (str(path),))
 
 
 def bootstrap(

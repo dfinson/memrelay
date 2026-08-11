@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -230,6 +231,66 @@ def test_bundle_store_reseal_conflict_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(StageControlError) as failure:
         store.seal_entry(entry)
     assert failure.value.code == "stage_bundle_mutation"
+
+
+def test_bundle_store_concurrent_differing_writer_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A concurrent writer publishes *different* bytes for the same logical identity
+    # after our existence check but before we publish. The exclusive publish must
+    # observe the winner and fail closed instead of silently clobbering it.
+    import memrelay_eval.orchestration.stages as stages_module
+
+    entry, _predecessor, _authorization = _bundles()
+    store = StageBundleStore(tmp_path)
+    real_link = os.link
+
+    def racing_link(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        Path(dst).write_bytes(b"conflicting-content")  # losing race with different bytes
+        return real_link(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(stages_module.os, "link", racing_link)
+    with pytest.raises(StageControlError) as failure:
+        store.seal_entry(entry)
+    assert failure.value.code == "stage_bundle_mutation"
+
+
+def test_bundle_store_concurrent_identical_writer_reuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A concurrent writer publishes *identical* bytes; the race must resolve to a
+    # reuse (data preserved) rather than a spurious conflict.
+    import memrelay_eval.orchestration.stages as stages_module
+
+    entry, _predecessor, _authorization = _bundles()
+    store = StageBundleStore(tmp_path)
+    real_link = os.link
+
+    def racing_link(src: object, dst: object, *args: object, **kwargs: object) -> None:
+        Path(dst).write_bytes(Path(src).read_bytes())  # identical content wins the race
+        return real_link(src, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(stages_module.os, "link", racing_link)
+    path, outcome = store.seal_entry(entry)
+    assert outcome == "reused"
+    assert path.read_bytes() == entry.bytes()
+
+
+def test_entry_bundle_with_nan_token_fails_closed() -> None:
+    # json.loads accepts the bare NaN token, but the canonical hashing service
+    # rejects it. The loader must fail closed with the typed code instead of
+    # letting CanonicalizationError escape and crash the CLI.
+    with pytest.raises(StageControlError) as failure:
+        load_entry_bundle(b'{"artifact_type": "stage_entry_bundle", "value": NaN}')
+    assert failure.value.code == "stage_entry_bundle_corrupt"
+
+
+def test_entry_bundle_locks_are_immutable_after_seal() -> None:
+    # A sealed entry bundle must reject in-place lock mutation so the lazily
+    # computed digest/envelope can never be silently redirected.
+    entry, _predecessor, _authorization = _bundles()
+    with pytest.raises(TypeError):
+        entry.locks["runtime_lock_sha256"] = "0" * 64  # type: ignore[index]
 
 
 def test_resume_returns_only_unfinished_units() -> None:
