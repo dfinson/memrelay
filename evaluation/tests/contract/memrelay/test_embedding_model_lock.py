@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,7 @@ from memrelay_eval.adapters.memrelay import (
     ProductProvisionRequest,
     build_framework_process_environments,
 )
+from memrelay_eval.adapters.memrelay.controls import verify_framework_preflight
 from memrelay_eval.domain.errors import ConformancePauseError
 
 from memrelay.engine import model_lock
@@ -113,7 +115,7 @@ def test_empty_or_malformed_digest_cannot_form_an_authority(files: dict[str, str
     ),
 )
 def test_unverified_model_configuration_never_launches_or_falls_back(
-    tmp_path: Path, frozen_embedding_artifact, failure: str
+    tmp_path: Path, frozen_embedding_artifact, failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home, workspace = _paths(tmp_path)
     if failure != "alternate_path":
@@ -124,6 +126,15 @@ def test_unverified_model_configuration_never_launches_or_falls_back(
         alternate = home / "models" / "alternate-model"
         alternate.mkdir(parents=True)
         (alternate / "model_optimized.onnx").write_bytes(b"favorable alternate")
+
+        def reject_download(*_args: object) -> None:
+            raise EmbeddingModelIntegrityError("embedding_download_failed")
+
+        monkeypatch.setattr(
+            model_lock,
+            "_download_locked_embedding_model",
+            reject_download,
+        )
     if failure == "config_drift":
         (home / "config.toml").write_text(
             '[embeddings]\nprovider = "local"\nmodel = "alternate/model"\n',
@@ -162,3 +173,61 @@ def test_source_mutation_during_snapshot_materialization_fails_closed(
 
     with pytest.raises(EmbeddingModelIntegrityError, match="digest"):
         materialize_verified_embedding_model(home / "models")
+
+
+def test_product_preflight_bootstraps_a_fresh_locked_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The shipped product preflight reaches the same authority-controlled first use."""
+
+    home, _ = _paths(tmp_path)
+    daemon, agent, mcp = build_framework_process_environments()
+    lock = model_lock.EMBEDDING_MODEL_LOCK
+    payloads = {name: f"product-bootstrap:{name}".encode() for name in lock.files}
+    replacement = EmbeddingModelLock(
+        model_name=lock.model_name,
+        source_repository=lock.source_repository,
+        source_revision=lock.source_revision,
+        files={name: sha256(payload).hexdigest() for name, payload in payloads.items()},
+    )
+    monkeypatch.setattr(model_lock, "EMBEDDING_MODEL_LOCK", replacement)
+    downloads: list[object] = []
+
+    def download(staging: Path, authority: EmbeddingModelLock) -> None:
+        downloads.append(authority)
+        for name, payload in payloads.items():
+            (staging / name).write_bytes(payload)
+
+    monkeypatch.setattr(model_lock, "_download_locked_embedding_model", download)
+    preflight = verify_framework_preflight(
+        llm_strategy="byo-key",
+        framework_model="gpt-4.1-mini-2025-04-14",
+        openai_base_url="https://api.openai.com/v1",
+        daemon_environment=daemon,
+        agent_environment=agent,
+        mcp_environment=mcp,
+        embedding_cache_dir=home / "models",
+    )
+
+    assert preflight.is_ready
+    assert downloads == [replacement]
+
+
+def test_failed_fresh_bootstrap_never_launches_product_process(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A downloader failure pauses the product treatment before its launcher is called."""
+
+    home, workspace = _paths(tmp_path)
+    launcher = _NoLaunch()
+    treatment = MemrelayProductTreatment(launcher=launcher)  # type: ignore[arg-type]
+
+    def offline(*_args: object) -> None:
+        raise EmbeddingModelIntegrityError("embedding_download_failed")
+
+    monkeypatch.setattr(model_lock, "_download_locked_embedding_model", offline)
+
+    with pytest.raises(ConformancePauseError):
+        asyncio.run(treatment.provision(_request(home, workspace)))
+
+    assert not launcher.started

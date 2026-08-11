@@ -109,16 +109,6 @@ def _resolve_provider(
     return registry.resolve()
 
 
-def _model_cache_populated(cfg: Config) -> bool:
-    """Best-effort: True if the embedding-model cache dir already holds files.
-
-    Used only to keep an ``init`` re-run fast and to word the console message; the
-    daemon's own embedder construction is the real guarantee the model is usable.
-    """
-    models_dir = cfg.home_path / "models"
-    return models_dir.is_dir() and any(models_dir.iterdir())
-
-
 def _embedding_model_size_hint(model_name: str) -> str:
     """Human-readable size suffix for the download message ('' when unknown).
 
@@ -145,11 +135,11 @@ def _embedding_model_size_hint(model_name: str) -> str:
 
 
 def _prefetch_embedding_model(cfg: Config) -> None:
-    """Trigger the one-time embedding-model download so first run is self-contained (#13).
+    """Bootstrap the frozen embedding artifact so first run is self-contained (#13).
 
-    Constructing the local embedder makes fastembed download the quantized ONNX model and
-    cache it under ``<home>/models``; a re-run with the model already cached neither
-    re-downloads nor reconstructs (kept fast). Only the key-less ``local`` provider has a
+    The model lock owns the repository, immutable revision, filenames, and digests. A re-run
+    verifies/materializes the existing artifact without a network request; only an absent
+    locked path permits the controlled download. Only the key-less ``local`` provider has a
     model to fetch — byo-key providers resolve lazily and need no local download.
 
     Failure is non-fatal by contract: ``init`` has already created the home, written the
@@ -160,19 +150,15 @@ def _prefetch_embedding_model(cfg: Config) -> None:
     if provider != "local":
         click.echo(f"embedding model: none to prefetch (provider {provider!r}).")
         return
-    if _model_cache_populated(cfg):
-        click.echo("embedding model: already present (skipping download).")
-        return
-
     model_name = cfg.embeddings.model
     size_hint = _embedding_model_size_hint(model_name)
-    click.echo(f"embedding model: downloading {model_name} (one-time{size_hint})...")
+    click.echo(f"embedding model: preparing {model_name} (one-time{size_hint})...")
     try:
-        # Lazy import: keeps `--help`/`config` fast and confines the fastembed/onnxruntime
-        # dependency to the one command that needs it.
-        from memrelay.engine.graphiti import build_embedder
+        # Lazy import: keeps `--help`/`config` fast and does not start FastEmbed during setup.
+        # The materializer is the sole controlled bootstrap path and validates every byte.
+        from memrelay.engine.model_lock import materialize_verified_embedding_model
 
-        build_embedder(cfg)  # constructing the embedder is the download trigger
+        materialize_verified_embedding_model(cfg.home_path / "models")
     except Exception as exc:  # noqa: BLE001 - any failure must not abort init
         click.echo(
             f"embedding model: could not download now ({exc}); memrelay will fetch it "

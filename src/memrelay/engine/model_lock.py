@@ -7,10 +7,12 @@ only accepted BGE artifact lineage and verifies the complete runtime file set.
 
 from __future__ import annotations
 
+import errno
 import os
 import shutil
 import stat
 import tempfile
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
@@ -20,6 +22,10 @@ from types import MappingProxyType
 
 class EmbeddingModelIntegrityError(RuntimeError):
     """Raised when the frozen local embedding artifact is unavailable or changed."""
+
+
+_BOOTSTRAP_LOCKS_GUARD = threading.Lock()
+_BOOTSTRAP_LOCKS: dict[str, threading.Lock] = {}
 
 
 def _is_sha256(value: object) -> bool:
@@ -122,14 +128,14 @@ def verify_embedding_model_cache(cache_dir: Path | str | None) -> VerifiedEmbedd
 
 
 def materialize_verified_embedding_model(cache_dir: Path | str | None) -> VerifiedEmbeddingModel:
-    """Copy verified bytes to a fixed private snapshot and recheck the source.
+    """Bootstrap (only when absent), then copy verified bytes to a private snapshot.
 
     FastEmbed receives this snapshot rather than the mutable downloader cache.
     Rechecking the source after copying turns a detected replacement during the
     check/copy interval into a hard startup failure.
     """
 
-    cache_root = _cache_root(cache_dir)
+    cache_root = _cache_root(cache_dir, create=True)
     lock = EMBEDDING_MODEL_LOCK
     snapshots = cache_root / ".memrelay-verified-models"
     if snapshots.is_symlink():
@@ -141,7 +147,7 @@ def materialize_verified_embedding_model(cache_dir: Path | str | None) -> Verifi
     if destination.exists():
         _verify_model_directory(snapshots, destination, lock)
     else:
-        source = verify_embedding_model_cache(cache_root)
+        source = _bootstrap_verified_embedding_model(cache_root)
         temporary: Path | None = Path(tempfile.mkdtemp(prefix=".model-", dir=snapshots))
         try:
             _copy_model_directory(source.source_directory, temporary, source.lock)
@@ -151,7 +157,9 @@ def materialize_verified_embedding_model(cache_dir: Path | str | None) -> Verifi
             verify_embedding_model_cache(cache_root)
             try:
                 os.replace(temporary, destination)
-            except FileExistsError:
+            except OSError as error:
+                if not _is_publish_collision(error, destination):
+                    raise
                 _verify_model_directory(snapshots, destination, source.lock)
             else:
                 temporary = None
@@ -161,6 +169,131 @@ def materialize_verified_embedding_model(cache_dir: Path | str | None) -> Verifi
 
     _verify_model_directory(snapshots, destination, lock)
     return VerifiedEmbeddingModel(destination, lock)
+
+
+def _bootstrap_verified_embedding_model(cache_root: Path) -> VerifiedEmbeddingModel:
+    """Return the locked raw cache, downloading it only when its exact path is absent."""
+
+    lock = EMBEDDING_MODEL_LOCK
+    source_directory = _locked_source_directory(cache_root, lock)
+    if os.path.lexists(source_directory):
+        _verify_model_directory(cache_root, source_directory, lock)
+        return VerifiedEmbeddingModel(source_directory, lock)
+
+    bootstrap_lock = _bootstrap_lock(source_directory)
+    with bootstrap_lock:
+        if os.path.lexists(source_directory):
+            _verify_model_directory(cache_root, source_directory, lock)
+            return VerifiedEmbeddingModel(source_directory, lock)
+
+        snapshots = _locked_snapshots_directory(cache_root, lock)
+        staging_root = cache_root / ".memrelay-embedding-downloads"
+        staging_root.mkdir(mode=0o700, exist_ok=True)
+        staging_root = _require_directory(staging_root, "embedding_download_staging_unsafe")
+        staging: Path | None = Path(tempfile.mkdtemp(prefix=".attempt-", dir=staging_root))
+        published: Path | None = None
+        try:
+            _download_locked_embedding_model(staging, lock)
+            _remove_downloader_metadata(staging)
+            _verify_model_directory(staging.parent, staging, lock)
+
+            published = Path(tempfile.mkdtemp(prefix=".publish-", dir=snapshots))
+            _copy_model_directory(staging, published, lock)
+            _verify_model_directory(snapshots, published, lock)
+            try:
+                os.replace(published, source_directory)
+            except OSError as error:
+                if not _is_publish_collision(error, source_directory):
+                    raise
+                _verify_model_directory(cache_root, source_directory, lock)
+            else:
+                published = None
+            _verify_model_directory(cache_root, source_directory, lock)
+            return VerifiedEmbeddingModel(source_directory, lock)
+        finally:
+            if published is not None:
+                shutil.rmtree(published, ignore_errors=True)
+            if staging is not None:
+                shutil.rmtree(staging, ignore_errors=True)
+
+
+def _locked_source_directory(cache_root: Path, lock: EmbeddingModelLock) -> Path:
+    return (
+        cache_root
+        / f"models--{lock.source_repository.replace('/', '--')}"
+        / "snapshots"
+        / lock.source_revision
+    )
+
+
+def _locked_snapshots_directory(cache_root: Path, lock: EmbeddingModelLock) -> Path:
+    lineage = cache_root / f"models--{lock.source_repository.replace('/', '--')}"
+    lineage.mkdir(mode=0o700, exist_ok=True)
+    lineage = _require_directory(lineage, "embedding_cache_missing_or_unsafe")
+    snapshots = lineage / "snapshots"
+    snapshots.mkdir(mode=0o700, exist_ok=True)
+    return _require_directory(snapshots, "embedding_cache_missing_or_unsafe")
+
+
+def _bootstrap_lock(source_directory: Path) -> threading.Lock:
+    """Serialize same-process first use; cross-process publication remains atomic."""
+
+    key = str(source_directory)
+    with _BOOTSTRAP_LOCKS_GUARD:
+        return _BOOTSTRAP_LOCKS.setdefault(key, threading.Lock())
+
+
+def _download_locked_embedding_model(staging: Path, lock: EmbeddingModelLock) -> None:
+    """Download only the lock's commit and files into an attempt-scoped staging directory."""
+
+    try:
+        from huggingface_hub import HfApi, snapshot_download
+    except ImportError as error:
+        raise EmbeddingModelIntegrityError("embedding_downloader_unavailable") from error
+
+    try:
+        api = HfApi()
+        before = api.model_info(repo_id=lock.source_repository, revision=lock.source_revision)
+        if getattr(before, "sha", None) != lock.source_revision:
+            raise EmbeddingModelIntegrityError("embedding_source_revision_mismatch")
+        returned = Path(
+            snapshot_download(
+                repo_id=lock.source_repository,
+                revision=lock.source_revision,
+                local_dir=staging,
+                local_dir_use_symlinks=False,
+                allow_patterns=sorted(lock.files),
+                token=False,
+            )
+        )
+        if returned.resolve(strict=True) != staging.resolve(strict=True):
+            raise EmbeddingModelIntegrityError("embedding_download_destination_drift")
+        after = api.model_info(repo_id=lock.source_repository, revision=lock.source_revision)
+        if getattr(after, "sha", None) != lock.source_revision:
+            raise EmbeddingModelIntegrityError("embedding_source_revision_mismatch")
+    except EmbeddingModelIntegrityError:
+        raise
+    except Exception as error:
+        raise EmbeddingModelIntegrityError("embedding_download_failed") from error
+
+
+def _remove_downloader_metadata(staging: Path) -> None:
+    """Remove Hugging Face's local-dir bookkeeping before exact file-set verification."""
+
+    metadata = staging / ".cache"
+    if not os.path.lexists(metadata):
+        return
+    if metadata.is_symlink() or not metadata.is_dir():
+        raise EmbeddingModelIntegrityError("embedding_download_metadata_unsafe")
+    shutil.rmtree(metadata)
+
+
+def _is_publish_collision(error: OSError, destination: Path) -> bool:
+    """Recognize only destination-exists races, including Windows' directory EACCES."""
+
+    return error.errno in {errno.EEXIST, errno.ENOTEMPTY} or (
+        getattr(error, "winerror", None) == 5 and os.path.lexists(destination)
+    )
 
 
 def verify_materialized_embedding_model(model: VerifiedEmbeddingModel) -> None:
@@ -238,10 +371,16 @@ def _require_directory(path: Path, code: str) -> Path:
     return resolved
 
 
-def _cache_root(cache_dir: Path | str | None) -> Path:
+def _cache_root(cache_dir: Path | str | None, *, create: bool = False) -> Path:
     if cache_dir is None:
         raise EmbeddingModelIntegrityError("embedding_cache_missing_or_unsafe")
-    return _require_directory(Path(cache_dir), "embedding_cache_missing_or_unsafe")
+    root = Path(cache_dir)
+    if create:
+        try:
+            root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as error:
+            raise EmbeddingModelIntegrityError("embedding_cache_missing_or_unsafe") from error
+    return _require_directory(root, "embedding_cache_missing_or_unsafe")
 
 
 def _file_identity(status: os.stat_result) -> tuple[int, int, int, int]:
