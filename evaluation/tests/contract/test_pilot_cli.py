@@ -20,6 +20,16 @@ from memrelay_eval.orchestration.pilot import (
 from memrelay_eval.orchestration.stages import StageAuthorization, StageEntryBundle, StageExitBundle
 
 HASH = "a" * 64
+CI_MARKERS = (
+    "CI",
+    "GITHUB_ACTIONS",
+    "GITLAB_CI",
+    "BUILDKITE",
+    "JENKINS_URL",
+    "TF_BUILD",
+    "TEAMCITY_VERSION",
+    "CIRCLECI",
+)
 
 
 def _pilot_plan(stage_id: StageId, protocol_id: ProtocolId) -> FrozenPilotPlan:
@@ -62,7 +72,8 @@ def _exit_evidence(plan: FrozenPilotPlan) -> PilotExitEvidence:
 def test_pilot_entry_requires_sealed_128_unit_plan(
     monkeypatch, tmp_path, capsys
 ) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.delenv("CI", raising=False)
+    for marker in CI_MARKERS:
+        monkeypatch.delenv(marker, raising=False)
     predecessor = StageExitBundle(
         StageId.new(),
         StageKind.INTEGRATION,
