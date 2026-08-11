@@ -10,6 +10,7 @@ from memrelay_eval.analysis.schemas import (
     ELIGIBLE_OUTCOMES_TABLE,
     PARQUET_SCHEMA_VERSION,
     PYARROW_VERSION,
+    SAFETY_SCHEMA_VERSION,
     assigned_units_schema,
     eligible_outcomes_schema,
     schema_sha256,
@@ -39,6 +40,12 @@ def test_committed_json_schema_versions_describe_the_parquet_boundary() -> None:
         "parquet-eligible-outcomes.schema.json",
         "parquet-dataset-manifest.schema.json",
         "eligible-outcome-authority.schema.json",
+        "safety-report.schema.json",
+        "task-audit-disposition.schema.json",
+        "categorical-gate-decision.schema.json",
     ):
         document = json.loads((schemas / name).read_text(encoding="utf-8"))
-        assert document["properties"]["schema_version"]["const"] == PARQUET_SCHEMA_VERSION
+        assert document["properties"]["schema_version"]["const"] in {
+            PARQUET_SCHEMA_VERSION,
+            SAFETY_SCHEMA_VERSION,
+        }

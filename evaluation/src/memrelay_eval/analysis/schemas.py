@@ -14,6 +14,7 @@ PARQUET_SCHEMA_VERSION: Final = "1.0.0"
 PYARROW_VERSION: Final = "25.0.0"
 ASSIGNED_UNITS_TABLE: Final = "assigned_units"
 ELIGIBLE_OUTCOMES_TABLE: Final = "eligible_outcomes"
+SAFETY_SCHEMA_VERSION: Final = "1.0.0"
 
 _STATUS_CATEGORIES: Final = (
     "included",
