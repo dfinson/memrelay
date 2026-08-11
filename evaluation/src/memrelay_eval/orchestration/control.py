@@ -173,7 +173,18 @@ class CrossRepositoryAdmissionController:
             self._deny_if_needed(request, self._authority_result(request, now))
 
     def _authorize_local_policy(self, request: RepositoryAccessRequest, now: datetime) -> None:
+        if request.stage.value == "cross-repo" and self._is_verified_dgr_authority():
+            return
         self._deny_if_needed(request, self._deny_by_default.authorize(request, now))
+
+    def _is_verified_dgr_authority(self) -> bool:
+        """Only the typed, immutable DG-R authority can pass the Story 7.3 guard."""
+
+        if self._authority is None:
+            return False
+        from memrelay_eval.evidence.governance import DgrRepositoryAuthorization
+
+        return isinstance(self._authority, DgrRepositoryAuthorization)
 
     def _authority_result(
         self, request: RepositoryAccessRequest, now: datetime

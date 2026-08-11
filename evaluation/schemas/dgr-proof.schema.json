@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["artifact_type", "control", "repository_id", "issuer_id", "authority_id", "policy_version", "proof_schema_version", "proof_version", "policy_sha256", "schema_sha256", "evidence_sha256", "valid_from", "valid_until", "revocation_generation", "status"],
+  "properties": {
+    "artifact_type": {"const": "dgr_proof"},
+    "repository_id": {"type": "string", "pattern": "^repository_[a-f0-9]{32}$"},
+    "policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "schema_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "status": {"enum": ["passed", "failed", "revoked"]}
+  }
+}

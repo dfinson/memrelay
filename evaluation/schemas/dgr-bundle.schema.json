@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["artifact_type", "repository_ids", "principal_id", "authorization_id", "authorization_version", "purpose_id", "purpose_version", "policy_version", "revocation_generation", "proofs", "digest"],
+  "properties": {
+    "artifact_type": {"const": "dgr_bundle"},
+    "repository_ids": {"type": "array", "minItems": 24, "items": {"type": "string", "pattern": "^repository_[a-f0-9]{32}$"}},
+    "proofs": {"type": "array", "minItems": 504}
+  }
+}
