@@ -291,6 +291,7 @@ class TerminalEvidenceBackup:
                     )
                     _write_bytes(staging / "backup-receipt.json", receipt.bytes())
                     _fsync_tree(staging)
+                    self._reject_prior_generation_for_attempt(receipt)
                     self._publish_or_verify_generation(staging, receipt)
                     self._link_receipt(receipt, run_id, attempt_id)
                     gate.record_backup(receipt)
@@ -336,6 +337,21 @@ class TerminalEvidenceBackup:
             _verify_generation(destination, receipt)
         _fsync_directory(generations)
         _verify_generation(destination, receipt)
+
+    def _reject_prior_generation_for_attempt(self, receipt: BackupReceipt) -> None:
+        """Never replace a failed terminal backup with a new generation for the same attempt."""
+
+        generations = self.backup_root / "generations"
+        if not generations.exists():
+            return
+        for candidate in sorted(generations.iterdir()):
+            if not candidate.is_dir() or candidate.is_symlink():
+                continue
+            existing = _load_receipt(candidate)
+            if existing.run_id != receipt.run_id or existing.attempt_id != receipt.attempt_id:
+                continue
+            _verify_generation(candidate, existing)
+            raise BackupConformanceError("backup_attempt_already_backed_up")
 
     def _link_receipt(self, receipt: BackupReceipt, run_id: RunId, attempt_id: AttemptId) -> None:
         store = FilesystemArtifactStore(self.artifacts_root)
