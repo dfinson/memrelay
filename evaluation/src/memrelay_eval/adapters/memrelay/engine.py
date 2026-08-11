@@ -37,7 +37,11 @@ from memrelay_eval.domain.entities import (
     TelemetryObservation,
 )
 from memrelay_eval.domain.errors import DirectEngineBoundaryError
-from memrelay_eval.domain.identity import identity_for_span_class
+from memrelay_eval.domain.identity import (
+    framework_openai_identity,
+    identity_for_span_class,
+    local_identity,
+)
 from memrelay_eval.domain.ids import AssignmentId, AttemptId, RunId
 from memrelay_eval.domain.ports import ArtifactStorePort, LedgerPort, TelemetryPort
 from memrelay_eval.domain.states import (
@@ -45,6 +49,7 @@ from memrelay_eval.domain.states import (
     ExposureClassification,
     ExposurePhase,
 )
+from memrelay_eval.evidence.costs import publish_native_quantity_ledger
 
 
 class PublicMemoryEngine(Protocol):
@@ -181,6 +186,7 @@ class DirectEngineAdapter:
         self._telemetry_emitters: dict[AttemptId, TelemetryAttemptEmitter] = {}
 
     async def execute(self, attempt: DirectEngineAttempt) -> DirectEngineEvidence:
+        execution_started = time.monotonic()
         if attempt.telemetry_context is not None:
             self._telemetry_emitters[attempt.attempt_id] = TelemetryAttemptEmitter(
                 attempt.telemetry_context, self._telemetry
@@ -353,7 +359,11 @@ class DirectEngineAdapter:
                 close_artifact = self._event(attempt, "close", "not_constructed", artifacts)
 
         try:
-            self._record_consumed_usage(attempt, artifacts)
+            self._record_consumed_usage(
+                attempt,
+                artifacts,
+                execution_started=execution_started,
+            )
         except BaseException as usage_error:
             if failure is None:
                 failure = usage_error
@@ -575,7 +585,11 @@ class DirectEngineAdapter:
         )
 
     def _record_consumed_usage(
-        self, attempt: DirectEngineAttempt, artifacts: list[ArtifactRef]
+        self,
+        attempt: DirectEngineAttempt,
+        artifacts: list[ArtifactRef],
+        *,
+        execution_started: float,
     ) -> None:
         if self._live_usage_meter is None:
             consumed: Mapping[str, object] = {
@@ -586,7 +600,7 @@ class DirectEngineAdapter:
             }
         else:
             consumed = self._live_usage_meter.snapshot()
-        self._record(
+        usage_artifact = self._record(
             attempt,
             "engine_consumed_usage",
             {
@@ -597,6 +611,38 @@ class DirectEngineAdapter:
                 "consumed": dict(consumed),
             },
             artifacts,
+        )
+        request_count = consumed.get("calls")
+        framework_raw = (
+            {"requests": request_count}
+            if isinstance(request_count, int) and not isinstance(request_count, bool)
+            else {}
+        )
+        publish_native_quantity_ledger(
+            attempt_id=attempt.attempt_id,
+            run_id=attempt.run_id,
+            identity=framework_openai_identity(),
+            source_authority="native_provider",
+            source_ref="framework_usage_meter",
+            source_evidence=usage_artifact,
+            raw_quantities=framework_raw,
+            instrumentation_active=True,
+            artifact_store=self._store,
+            ledger=self._ledger,
+            observed_at=datetime.now(UTC),
+        )
+        publish_native_quantity_ledger(
+            attempt_id=attempt.attempt_id,
+            run_id=attempt.run_id,
+            identity=local_identity("local_control"),
+            source_authority="native_control_clock",
+            source_ref="control_monotonic_clock",
+            source_evidence=usage_artifact,
+            raw_quantities={"wall_seconds": max(0, int(time.monotonic() - execution_started))},
+            instrumentation_active=True,
+            artifact_store=self._store,
+            ledger=self._ledger,
+            observed_at=datetime.now(UTC),
         )
         self._require_usage_within_envelope(attempt, consumed)
 

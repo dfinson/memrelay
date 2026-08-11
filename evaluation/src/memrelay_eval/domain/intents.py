@@ -14,7 +14,7 @@ from typing import ClassVar
 from memrelay_eval.canonical import canonical_bytes
 
 from .entities import ArtifactLink, ArtifactRef, InclusionDecision
-from .ids import AssignmentId, AttemptId, ExperimentId, IntentId, ProtocolId, RunId
+from .ids import AssignmentId, AttemptId, CostEntryId, ExperimentId, IntentId, ProtocolId, RunId
 from .states import AttemptTerminalKind, LedgerIntentKind, RunState
 
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
@@ -293,6 +293,31 @@ class AuthorityConflictIntent(LedgerIntent):
         }
 
 
+@dataclass(frozen=True, slots=True)
+class CostLedgerIntent(LedgerIntent):
+    """Thin, control-owned link to one immutable quantity artifact."""
+
+    metadata: IntentMetadata
+    cost_entry_id: CostEntryId
+    run_id: RunId
+    attempt_id: AttemptId
+    logical_ledger: str
+    artifact_ref: ArtifactRef
+    source_evidence_ref: ArtifactRef
+
+    kind: ClassVar[LedgerIntentKind] = LedgerIntentKind.COST_LEDGER
+
+    def _operation_payload(self) -> dict[str, object]:
+        return {
+            "cost_entry_id": str(self.cost_entry_id),
+            "run_id": str(self.run_id),
+            "attempt_id": str(self.attempt_id),
+            "logical_ledger": self.logical_ledger,
+            "artifact": _artifact_payload(self.artifact_ref),
+            "source_evidence": _artifact_payload(self.source_evidence_ref),
+        }
+
+
 LedgerIntentType = (
     CreateExperimentIntent
     | CreateRunIntent
@@ -303,6 +328,7 @@ LedgerIntentType = (
     | RetryLineageIntent
     | InclusionDecisionIntent
     | AuthorityConflictIntent
+    | CostLedgerIntent
 )
 
 
@@ -405,6 +431,18 @@ def preflight_intent_rejection(intent: object) -> str | None:
                 isinstance(field, str) and _REASON_CODE.fullmatch(field)
                 for field in intent.conflict_fields
             )
+        )
+    elif isinstance(intent, CostLedgerIntent):
+        valid = (
+            isinstance(intent.cost_entry_id, CostEntryId)
+            and isinstance(intent.run_id, RunId)
+            and isinstance(intent.attempt_id, AttemptId)
+            and intent.logical_ledger
+            in {"copilot_subscription", "framework_openai", "local_resources"}
+            and isinstance(intent.artifact_ref, ArtifactRef)
+            and isinstance(intent.source_evidence_ref, ArtifactRef)
+            and intent.artifact_ref in metadata.evidence_refs
+            and intent.source_evidence_ref in metadata.evidence_refs
         )
     else:
         valid = False

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -25,14 +26,16 @@ from memrelay_eval.adapters.telemetry.semantics import (
 from memrelay_eval.domain.entities import AttemptTerminal
 from memrelay_eval.domain.errors import (
     AgentParityMismatchError,
+    AuthorityConflictError,
     ExecutionAdapterError,
     ExecutionEvidenceConflictError,
     SecretBoundaryViolationError,
 )
-from memrelay_eval.domain.identity import identity_for_span_class
+from memrelay_eval.domain.identity import copilot_identity, identity_for_span_class
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import AttemptTerminalKind
+from memrelay_eval.evidence.costs import publish_native_quantity_ledger
 from memrelay_eval.evidence.required import require_unpaid_conformance_ports
 from memrelay_eval.evidence.secret_scan import SecretScanFinding, require_secret_boundary_clear
 
@@ -186,6 +189,19 @@ class InspectAttemptController:
                 started_at=export_started,
                 failure_code=native.failure_code,
             )
+            publish_native_quantity_ledger(
+                attempt_id=attempt_id,
+                run_id=run_id,
+                identity=copilot_identity(),
+                source_authority="native_provider",
+                source_ref="native_sdk_usage",
+                source_evidence=evidence.inventory.artifacts["usage"],
+                raw_quantities=_copilot_raw_quantities(native.usage),
+                instrumentation_active=True,
+                artifact_store=self._store,
+                ledger=self._recorder.ledger,
+                observed_at=datetime.now(UTC),
+            )
             _emit_boundary(
                 emitter,
                 SpanClass.ARTIFACT_PERSISTENCE,
@@ -201,6 +217,18 @@ class InspectAttemptController:
                     datetime.now(UTC),
                     _secret_terminal_code(error.findings),
                     tuple(error.evidence_refs),
+                )
+            )
+            raise
+        except AuthorityConflictError as error:
+            self._recorder.append(
+                AttemptTerminal(
+                    attempt_id,
+                    run_id,
+                    AttemptTerminalKind.EVIDENCE_INCOMPLETE,
+                    datetime.now(UTC),
+                    error.code,
+                    tuple(evidence.inventory.artifacts.values()),
                 )
             )
             raise
@@ -353,3 +381,34 @@ def _emit_boundary(
         failure_code=failure_code or None,
         identity=identity_for_span_class(span_class.value),
     )
+
+
+def _copilot_raw_quantities(usage: Mapping[str, object] | object) -> dict[str, int]:
+    """Accept only exact integer fields exposed by the native SDK usage authority."""
+
+    if not isinstance(usage, Mapping):
+        return {}
+    fields = {
+        "input_tokens": "input_tokens",
+        "cached_input_tokens": "cached_input_tokens",
+        "cache_write_tokens": "cache_write_tokens",
+        "output_tokens": "output_tokens",
+        "reasoning_tokens": "reasoning_tokens",
+        "ai_credits": "ai_credits",
+        "tool_calls": "tool_calls",
+        "requests": "requests",
+        "quota_rejections": "quota_rejections",
+        "throttles": "throttles",
+        "resets": "resets",
+        "allowance": "allowance",
+        "billing_periods": "billing_periods",
+    }
+    normalized: dict[str, int] = {}
+    for source, target in fields.items():
+        value = usage.get(source)
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise AuthorityConflictError("authority_conflict", ("invalid_native_usage_quantity",))
+        normalized[target] = value
+    return normalized

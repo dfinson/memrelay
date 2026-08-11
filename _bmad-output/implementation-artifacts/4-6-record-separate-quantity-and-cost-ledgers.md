@@ -1,6 +1,6 @@
 # Story 4.6: Record Separate Quantity and Cost Ledgers
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -34,25 +34,25 @@ So that unsupported fields and unlike quantities are not mistaken for zero or co
 
 ## Tasks / Subtasks
 
-- [ ] Define versioned common cost/quantity entry schema (AC: 1, 2)
-  - [ ] Require opaque cost-entry/attempt IDs, provider, credential domain, cost source, source authority/ref, quantity or explicit unavailable status, canonical unit, price-table version/ref, currency where applicable, measurement status, and UTC observation time.
-  - [ ] Distinguish `metered`, `estimated`, `subscription_normalized`, `invoice_reconciled`, and `unavailable`; never encode status through null/zero alone.
-  - [ ] Require explicit `not_applicable` authority where a raw quantity has no currency or price table yet; never invent a price-table/currency value to satisfy shape.
-- [ ] Implement three separately queryable logical ledgers (AC: 1, 2)
-  - [ ] Copilot subscription quantities: requests/model calls, exposed input/cached-input/cache-write/output/reasoning tokens, AI credits or legacy units, tool calls, provider latency, throttles, quota rejections, allowance at start/end, reset, plan, and billing period where native evidence exposes them.
-  - [ ] Framework OpenAI: exact operation/model, input/cached/output tokens, tools/requests, service tier, region, retries, dated price/invoice authority, and actual API cost where supported; never include coding-agent inference.
-  - [ ] Local resources: CPU/process seconds, active/queue/provisioning/backoff/cleanup wall clocks, peak and byte-second memory, disk byte/second measures, Collector/telemetry overhead, storage reads/writes, and network operations as frozen units permit.
-- [ ] Define canonical unit vocabulary and conversion tables (AC: 3)
-  - [ ] Include at least `input_token`, `cached_input_token`, `output_token`, `reasoning_token`, `ai_credit`, `tool_call`, `request`, `usd`, `cpu_second`, `byte_second`, `disk_byte`, and `wall_second`.
-  - [ ] Reject cross-provider token addition and incompatible dimensions; conversions require a versioned/hash-linked table and exact source/target unit.
-  - [ ] Add any needed cache-write, provider-latency, disk-time, storage-operation, network, GB-month, or billing-period units by versioning the vocabulary; do not overload an existing unit.
-- [ ] Preserve source-of-truth and missingness (AC: 1-3)
-  - [ ] Keep native provider records authoritative for exposed quantities; normalized rows are derived projections with source hashes.
-  - [ ] Record unsupported/non-exposed fields as explicit `unavailable`, not zero; record observed zero only when instrumentation was active and authority supports it.
-  - [ ] Keep subscription allowance, shadow/normalized value, incremental cash, API invoice cost, local resource value, fully loaded cost, and study cost conceptually distinct.
-- [ ] Append immutable quantity artifacts/links (AC: 1, 2)
-  - [ ] Publish canonical records through CAS and typed ledger intents; retries/late sources create new linked records, never updates.
-- [ ] Add schema, arithmetic, authority, unit, missingness, and reconciliation tests (AC: 1-3).
+- [x] Define versioned common cost/quantity entry schema (AC: 1, 2)
+  - [x] Require opaque cost-entry/attempt IDs, provider, credential domain, cost source, source authority/ref, quantity or explicit unavailable status, canonical unit, price-table version/ref, currency where applicable, measurement status, and UTC observation time.
+  - [x] Distinguish `metered`, `estimated`, `subscription_normalized`, `invoice_reconciled`, and `unavailable`; never encode status through null/zero alone.
+  - [x] Require explicit `not_applicable` authority where a raw quantity has no currency or price table yet; never invent a price-table/currency value to satisfy shape.
+- [x] Implement three separately queryable logical ledgers (AC: 1, 2)
+  - [x] Copilot subscription quantities: requests/model calls, exposed input/cached-input/cache-write/output/reasoning tokens, AI credits or legacy units, tool calls, provider latency, throttles, quota rejections, allowance at start/end, reset, plan, and billing period where native evidence exposes them.
+  - [x] Framework OpenAI: exact operation/model, input/cached/output tokens, tools/requests, service tier, region, retries, dated price/invoice authority, and actual API cost where supported; never include coding-agent inference.
+  - [x] Local resources: CPU/process seconds, active/queue/provisioning/backoff/cleanup wall clocks, peak and byte-second memory, disk byte/second measures, Collector/telemetry overhead, storage reads/writes, and network operations as frozen units permit.
+- [x] Define canonical unit vocabulary and conversion tables (AC: 3)
+  - [x] Include at least `input_token`, `cached_input_token`, `output_token`, `reasoning_token`, `ai_credit`, `tool_call`, `request`, `usd`, `cpu_second`, `byte_second`, `disk_byte`, and `wall_second`.
+  - [x] Reject cross-provider token addition and incompatible dimensions; conversions require a versioned/hash-linked table and exact source/target unit.
+  - [x] Add any needed cache-write, provider-latency, disk-time, storage-operation, network, GB-month, or billing-period units by versioning the vocabulary; do not overload an existing unit.
+- [x] Preserve source-of-truth and missingness (AC: 1-3)
+  - [x] Keep native provider records authoritative for exposed quantities; normalized rows are derived projections with source hashes.
+  - [x] Record unsupported/non-exposed fields as explicit `unavailable`, not zero; record observed zero only when instrumentation was active and authority supports it.
+  - [x] Keep subscription allowance, shadow/normalized value, incremental cash, API invoice cost, local resource value, fully loaded cost, and study cost conceptually distinct.
+- [x] Append immutable quantity artifacts/links (AC: 1, 2)
+  - [x] Publish canonical records through CAS and typed ledger intents; retries/late sources create new linked records, never updates.
+- [x] Add schema, arithmetic, authority, unit, missingness, and reconciliation tests (AC: 1-3).
 
 These are three logical evidence ledgers published as immutable artifacts and referenced by the evaluator ledger. They are not three writable SQLite databases and do not weaken Story 4.2's single control-owned writer.
 
@@ -115,12 +115,39 @@ Quantities are the durable economic source of truth. Currency is a derived view.
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
+
+- `py -3.13 -m pytest evaluation\tests -q` - 1046 passed, 4 skipped.
+- `py -3.13 -m pytest -q` - 1303 passed, 4 skipped.
+- `py -3.13 -m ruff check evaluation\src evaluation\tests` - passed.
+- `py -3.13 -m ruff format --check evaluation\src evaluation\tests` - passed.
+- `uv lock --project evaluation --check` - passed.
+- `git diff --check` - passed.
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable raw quantity records with frozen units, explicit unavailable values, price and
+  conversion authority, source hashes, observation time, and retry lineage.
+- Added three separately queryable cost-ledger links that retain only typed CAS references in the
+  control-owned SQLite writer; no worker-side SQLite path was added.
+- Added exact native-field normalization, conversion guards, conflict rejection, secret-safe source
+  validation, telemetry/resource identity separation, and replay/concurrency coverage.
+- Remediation: wired immutable Copilot quantity publication through the Inspect terminal-evidence
+  boundary and framework/local quantity publication through the direct-engine boundary, including
+  failed, timed-out, and observed-zero paths. Every cost intent now carries its native-source
+  artifact reference, and SQLite authority-conflict insertion has replay coverage.
+- Remediation: invalid native Copilot quantities are rejected before cost-row publication and append
+  exactly one `evidence_incomplete` terminal with retained native evidence, so a claimed attempt
+  cannot remain unterminated or fabricate a quantity ledger row.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/{4-6-record-separate-quantity-and-cost-ledgers.md,sprint-status.yaml}`
+- `evaluation/{schemas/{cost-ledger,cost-unit-conversion}.schema.json}`
+- `evaluation/src/memrelay_eval/{domain/{entities,intents,ports,states}.py,evidence/costs.py}`
+- `evaluation/src/memrelay_eval/{adapters/fakes.py,ledger/{repository,schema}.py}`
+- `evaluation/src/memrelay_eval/{adapters/memrelay/engine.py,orchestration/inspect.py}`
+- `evaluation/tests/{contract/{costs/test_cost_schema_units.py,identity/test_authority_matrix.py,ledger/test_repository.py},integration/{costs/{test_provider_ledgers.py,test_production_quantity_emission.py},test_engine_stratum_fake.py},fault/costs/test_missing_conflicting_usage.py}`
