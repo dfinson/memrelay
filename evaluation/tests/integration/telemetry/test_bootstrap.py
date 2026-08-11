@@ -131,7 +131,9 @@ def test_bootstrap_verification_fails_closed_on_config_drift(
     assert error.value.code == code
 
 
-def test_cli_bootstrap_runs_telemetry_before_runtime_and_retains_evidence(tmp_path: Path) -> None:
+def test_cli_bootstrap_runs_telemetry_before_runtime_and_retains_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path / "evaluation"
     (root / "collector").mkdir(parents=True)
     _write_config(root / "collector")
@@ -148,10 +150,12 @@ def test_cli_bootstrap_runs_telemetry_before_runtime_and_retains_evidence(tmp_pa
         calls.append("telemetry")
         return SimpleNamespace(evidence=evidence)
 
-    def runtime(*args: object) -> None:
+    def runtime(*args: object) -> dict[str, str]:
         del args
         calls.append("runtime")
+        return {"lock_sha256": "a" * 64}
 
+    monkeypatch.setenv("COPILOT_SKIP_CLI_DOWNLOAD", "1")
     result = bootstrap(
         Namespace(backup_root=str(tmp_path), collector_archive=str(archive)),
         evaluation_root=root,

@@ -88,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the immutable passed conformance report required before enrollment",
     )
     run.add_argument(
+        "--bootstrap-receipt",
+        dest="bootstrap_receipt",
+        help="path to the immutable environment-bound bootstrap receipt",
+    )
+    run.add_argument(
         "--output-root",
         dest="output_root",
         default="artifacts",
@@ -102,11 +107,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--collector-archive",
         help="path to the already-downloaded frozen otelcol-contrib archive",
     )
+    bootstrap_parser.add_argument(
+        "--mode",
+        choices=("unpaid_ci", "provider_qualification"),
+        default="provider_qualification",
+    )
+    bootstrap_parser.add_argument("--environment-sha256")
+    bootstrap_parser.add_argument("--protocol-sha256")
     _add_command_manifest_root(bootstrap_parser)
     bootstrap_parser.set_defaults(handler=bootstrap)
     conformance_parser = subcommands.add_parser(
         "conformance",
-        help="run the deterministic unpaid bootstrap/conformance proof closure",
+        help="run explicit unpaid CI or provider-qualification conformance",
     )
     conformance_parser.add_argument(
         "--catalog",
@@ -117,6 +129,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--stage-locks",
         required=True,
         help="canonical JSON map of the frozen integration-entry hashes",
+    )
+    conformance_parser.add_argument(
+        "--bootstrap-receipt",
+        required=True,
+        help="immutable bootstrap receipt bound to this runtime and environment",
+    )
+    conformance_parser.add_argument(
+        "--mode",
+        choices=("unpaid_ci", "provider_qualification"),
+        default="unpaid_ci",
+    )
+    conformance_parser.add_argument(
+        "--entry-bundle",
+        help="sealed Story 6.1 entry bundle required for provider qualification",
+    )
+    conformance_parser.add_argument(
+        "--authorization",
+        help="independent paid Story 6.1 authorization required for provider qualification",
     )
     conformance_parser.add_argument(
         "--output-root",
