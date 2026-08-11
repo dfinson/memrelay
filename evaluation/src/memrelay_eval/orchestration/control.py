@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 from pathlib import Path
@@ -18,7 +19,7 @@ from memrelay_eval.application.copilot_catalog import (
     qualification_summary,
     select_models,
 )
-from memrelay_eval.canonical import canonical_bytes
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.entities import (
     ModelQualification,
     QualificationCaps,
@@ -340,6 +341,105 @@ class LockRepository:
         if name not in {"runtime-lock.json", "model-lock.json"}:
             raise ValueError("unsupported lock document")
         return self._root / name
+
+
+@dataclass(frozen=True, slots=True)
+class SecondaryRoleQualification:
+    """A verified M1/M2 role from the sealed native catalog qualification lock."""
+
+    role: str
+    native_id: str
+    model_identity_sha256: str
+    model_lock_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.role not in {"M1", "M2"}
+            or not self.native_id
+            or not all(
+                isinstance(value, str)
+                and len(value) == 64
+                and all(character in "0123456789abcdef" for character in value)
+                for value in (self.model_identity_sha256, self.model_lock_sha256)
+            )
+        ):
+            raise ConformancePauseError(
+                "secondary_role_qualification_invalid",
+                "secondary role qualification is malformed",
+            )
+
+    @property
+    def qualification_sha256(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def to_document(self) -> dict[str, str]:
+        return {
+            "role": self.role,
+            "native_id": self.native_id,
+            "model_identity_sha256": self.model_identity_sha256,
+            "model_lock_sha256": self.model_lock_sha256,
+        }
+
+
+def verified_secondary_role_qualifications(
+    model_lock: Mapping[str, object],
+) -> tuple[dict[str, SecondaryRoleQualification], dict[str, str]]:
+    """Derive M1/M2 availability solely from an integrity-checked model lock.
+
+    The role labels, model identities, and qualification lock hash remain linked in
+    every secondary plan. A caller cannot supply an alias, fallback, or replacement.
+    """
+
+    _verify_lock_digest(model_lock)
+    lock_sha256 = model_lock.get("lock_sha256")
+    selected = model_lock.get("selected_models")
+    omissions = model_lock.get("omissions")
+    if (
+        not isinstance(lock_sha256, str)
+        or not isinstance(selected, list)
+        or not isinstance(omissions, Mapping)
+    ):
+        raise ConformancePauseError("model_lock_invalid", "model lock lacks selected role evidence")
+    by_role: dict[str, Mapping[str, object]] = {}
+    native_ids: set[str] = set()
+    for item in selected:
+        if not isinstance(item, Mapping):
+            raise ConformancePauseError("model_lock_invalid", "selected model record is malformed")
+        role = item.get("role")
+        native_id = item.get("native_id")
+        if role in {"M0", "M1", "M2"}:
+            if not isinstance(role, str) or not isinstance(native_id, str) or not native_id:
+                raise ConformancePauseError(
+                    "model_lock_invalid", "selected model identity is malformed"
+                )
+            if role in by_role or native_id in native_ids:
+                raise ConformancePauseError(
+                    "model_role_alias_substitution", "model identity is reused across study roles"
+                )
+            by_role[role] = item
+            native_ids.add(native_id)
+    if "M0" not in by_role:
+        raise ConformancePauseError("model_lock_invalid", "model lock lacks M0")
+    qualified: dict[str, SecondaryRoleQualification] = {}
+    unavailable: dict[str, str] = {}
+    for role in ("M1", "M2"):
+        item = by_role.get(role)
+        if item is None:
+            reason = omissions.get(role)
+            if not isinstance(reason, str) or not reason:
+                raise ConformancePauseError(
+                    "model_role_availability_unrecorded",
+                    "model lock does not record unavailable role",
+                )
+            unavailable[role] = "drifted" if reason == "drifted" else "unavailable"
+            continue
+        qualified[role] = SecondaryRoleQualification(
+            role=role,
+            native_id=str(item["native_id"]),
+            model_identity_sha256=canonical_digest(dict(item)),
+            model_lock_sha256=lock_sha256,
+        )
+    return qualified, unavailable
 
 
 def lock_digest(document: Mapping[str, object]) -> str:
