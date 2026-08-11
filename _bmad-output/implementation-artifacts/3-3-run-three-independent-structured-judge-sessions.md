@@ -1,6 +1,6 @@
 # Story 3.3: Run Three Independent Structured Judge Sessions
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -36,25 +36,25 @@ so that qualitative quality is measured as a separate co-primary endpoint.
 
 ## Tasks / Subtasks
 
-- [ ] Define frozen rubric, structured result schema, read-only tool policy, and panel schedule (AC: 1-3)
-  - [ ] Encode all six named criteria, normalized scores, uncertainty, artifact citations, typed refusal/failure, and evidence hashes.
-  - [ ] Freeze a treatment-neutral candidate-eligibility rule before outcomes. Gradeable failed patches remain candidates; missing/ungradeable evidence becomes an explicit unavailable panel outcome rather than an outcome-driven omission.
-  - [ ] Include the prospectively supplied human-calibration, duplicate, and sentinel items in the sealed schedule, with exact item/session counts charged to stage caps; Story 3.4 computes from these immutable records and makes no provider calls.
-- [ ] Select exactly three eligible judge slots from `model-lock.json` deterministically (AC: 1)
-  - [ ] Maximize distinct pinned model IDs/families and task-generator separation; never invent, substitute, or silently reduce judges.
-  - [ ] Label partial/homogeneous diversity and attach the prospectively frozen stronger calibration/shared-bias gates.
-- [ ] Launch three independent fresh Copilot SDK sessions (AC: 1, 2)
-  - [ ] Use one disposable judge process/session per assessment with only host Copilot authentication; exclude OpenAI keys/base URLs and unrelated credentials.
-  - [ ] Prevent shared session state, other judge output, judge identities, assignment, unblinded evidence, task-agent transcript identity, and cost data.
-- [ ] Randomize candidate order from a sealed seed and pin the complete judging envelope (AC: 2, 3)
-  - [ ] Hash model/runtime, prompt, rubric, tools, controls, order, view, and protocol before calls.
-- [ ] Bound provider use and preserve terminal evidence (AC: 1-4)
-  - [ ] Exactly three authorized judge sessions per candidate; enforce per-session/stage token, tool, active-time, elapsed-time, and concurrency caps.
-  - [ ] Key authorization by candidate/view/panel-protocol hashes; a repeated command returns the three retained records or a typed conflict and can never launch a fourth session.
-  - [ ] No hidden retries, replacement, repeated-until-success, fallback provider, or extra “tie-break” call; failures remain evidence and block panel completion.
-- [ ] Store immutable individual records through fake artifacts until CAS qualification (AC: 3, 4).
-  - [ ] Preserve inherited fake-ledger/fake-telemetry ineligibility; CAS conformance alone does not authorize paid/study use.
-- [ ] Add fake-runtime CI contracts and explicit paid integration tests (AC: 1-4).
+- [x] Define frozen rubric, structured result schema, read-only tool policy, and panel schedule (AC: 1-3)
+  - [x] Encode all six named criteria, normalized scores, uncertainty, artifact citations, typed refusal/failure, and evidence hashes.
+  - [x] Freeze a treatment-neutral candidate-eligibility rule before outcomes. Gradeable failed patches remain candidates; missing/ungradeable evidence becomes an explicit unavailable panel outcome rather than an outcome-driven omission.
+  - [x] Include the prospectively supplied human-calibration, duplicate, and sentinel items in the sealed schedule, with exact item/session counts charged to stage caps; Story 3.4 computes from these immutable records and makes no provider calls.
+- [x] Select exactly three eligible judge slots from `model-lock.json` deterministically (AC: 1)
+  - [x] Maximize distinct pinned model IDs/families and task-generator separation; never invent, substitute, or silently reduce judges.
+  - [x] Label partial/homogeneous diversity and attach the prospectively frozen stronger calibration/shared-bias gates.
+- [x] Launch three independent fresh Copilot SDK sessions (AC: 1, 2)
+  - [x] Use one disposable judge process/session per assessment with only host Copilot authentication; exclude OpenAI keys/base URLs and unrelated credentials.
+  - [x] Prevent shared session state, other judge output, judge identities, assignment, unblinded evidence, task-agent transcript identity, and cost data.
+- [x] Randomize candidate order from a sealed seed and pin the complete judging envelope (AC: 2, 3)
+  - [x] Hash model/runtime, prompt, rubric, tools, controls, order, view, and protocol before calls.
+- [x] Bound provider use and preserve terminal evidence (AC: 1-4)
+  - [x] Exactly three authorized judge sessions per candidate; enforce per-session/stage token, tool, active-time, elapsed-time, and concurrency caps.
+  - [x] Key authorization by candidate/view/panel-protocol hashes; a repeated command returns the three retained records or a typed conflict and can never launch a fourth session.
+  - [x] No hidden retries, replacement, repeated-until-success, fallback provider, or extra “tie-break” call; failures remain evidence and block panel completion.
+- [x] Store immutable individual records through fake artifacts until CAS qualification (AC: 3, 4).
+  - [x] Preserve inherited fake-ledger/fake-telemetry ineligibility; CAS conformance alone does not authorize paid/study use.
+- [x] Add fake-runtime CI contracts and explicit paid integration tests (AC: 1-4).
 
 ## Developer Context
 
@@ -99,12 +99,39 @@ Three fresh, independent, blinded Copilot SDK qualitative judges are a co-primar
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
+- `py -3.13 -m pytest evaluation\\tests\\unit\\judge evaluation\\tests\\contract\\judge evaluation\\tests\\architecture\\test_process_boundary.py evaluation\\tests\\contract\\catalog\\test_architecture_boundaries.py` (28 passed)
+- `py -3.13 -m pytest evaluation\\tests` (1130 passed, 46 skipped)
+- `py -3.13 -m pytest tests\\eval` (18 passed)
+- `ruff check` and `ruff format --check` on all Story 3.3 source and test paths (passed)
+- SDK tool integration follow-up: focused judge/runtime/worker/process-boundary suite (36 passed); root `ruff check .` and `ruff format --check .` passed.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a frozen six-criterion rubric, deterministic sealed panel schedule, judge-record schema, direct-leak and citation verification, and canonical record/protocol evidence.
+- Added exactly-three pinned judge-slot selection, diversity scarcity labeling, sealed-order enforcement, quota reservation, immutable replay retention, unavailable evidence handling, and fail-closed partial-panel outcomes.
+- Routed SDK sessions through a disposable `ProcessRole.JUDGE` transport with the existing Copilot-only credential allowlist; each worker creates and disconnects a fresh official SDK session.
+- Materialized frozen tool schemas as official SDK `Tool` objects, with a handler restricted to verified blinded-view locations; malformed, unauthorized, unsupported, and stale-worker paths retain typed failures.
+- Kept paid/study authority blocked behind the inherited unpaid-conformance artifact port and added fake runtime/process contracts without provider calls.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/3-3-run-three-independent-structured-judge-sessions.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/schemas/judge-record.schema.json`
+- `evaluation/src/memrelay_eval/adapters/copilot/judge_worker.py`
+- `evaluation/src/memrelay_eval/adapters/copilot/session.py`
+- `evaluation/src/memrelay_eval/adapters/process/__init__.py`
+- `evaluation/src/memrelay_eval/adapters/process/judge.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/ports.py`
+- `evaluation/src/memrelay_eval/scoring/rubric.py`
+- `evaluation/src/memrelay_eval/scoring/service.py`
+- `evaluation/tests/contract/judge/test_judge_record_schema.py`
+- `evaluation/tests/unit/judge/test_panel.py`
+- `evaluation/tests/unit/judge/test_process_runtime.py`
+- `evaluation/tests/unit/judge/test_sdk_runtime.py`
+- `evaluation/tests/unit/judge/test_judge_worker.py`

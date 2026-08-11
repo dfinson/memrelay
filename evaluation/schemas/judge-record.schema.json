@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/judge-record-1.0.0.json",
+  "title": "Structured Blinded Judge Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "view_sha256",
+    "panel_protocol_sha256",
+    "schedule_position",
+    "judge_slot",
+    "model",
+    "panel_diversity",
+    "pins",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "view_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "panel_protocol_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "schedule_position": {"type": "integer", "minimum": 0},
+    "judge_slot": {"enum": [1, 2, 3]},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "family"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "family": {"type": "string", "minLength": 1}
+      }
+    },
+    "panel_diversity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["label", "requires_stronger_calibration"],
+      "properties": {
+        "label": {"enum": ["diverse", "partial", "homogeneous"]},
+        "requires_stronger_calibration": {"type": "boolean"}
+      }
+    },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_lock_sha256",
+        "model_lock_sha256",
+        "rubric_sha256",
+        "system_prompt_sha256",
+        "tools_sha256",
+        "decoding_controls_sha256"
+      ],
+      "properties": {
+        "runtime_lock_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "model_lock_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "rubric_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "system_prompt_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "tools_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "decoding_controls_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "status": {"enum": ["completed", "failed", "unavailable"]},
+    "criteria": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uncovered_requirement_satisfaction",
+        "semantic_appropriateness",
+        "maintainability",
+        "unnecessary_complexity",
+        "repository_fit",
+        "evidence_supported_confidence"
+      ],
+      "properties": {
+        "uncovered_requirement_satisfaction": {"$ref": "#/$defs/criterion"},
+        "semantic_appropriateness": {"$ref": "#/$defs/criterion"},
+        "maintainability": {"$ref": "#/$defs/criterion"},
+        "unnecessary_complexity": {"$ref": "#/$defs/criterion"},
+        "repository_fit": {"$ref": "#/$defs/criterion"},
+        "evidence_supported_confidence": {"$ref": "#/$defs/criterion"}
+      }
+    },
+    "failure_code": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "criterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "uncertainty", "citations"],
+      "properties": {
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "pattern": "^artifact://blinded/[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "completed"}}},
+      "then": {"required": ["criteria"], "not": {"required": ["failure_code"]}},
+      "else": {"required": ["failure_code"], "not": {"required": ["criteria"]}}
+    }
+  ]
+}

@@ -24,6 +24,7 @@ from memrelay_eval.domain.entities import (
     QualificationUsage,
 )
 from memrelay_eval.domain.errors import ConformancePauseError, QualificationLimitError
+from memrelay_eval.scoring.rubric import JudgeRuntimeResult, JudgeSessionRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +153,64 @@ class CopilotSdkSessionRuntime:
         self._live_envelope = live_envelope
         self._native_factory = client_factory is None
         self._consumed = False
+        self._judge_session_ids: set[str] = set()
+
+    async def run_session(self, session: object) -> object:
+        """Run one fresh, pinned blinded-judge session through the official SDK only."""
+
+        if not isinstance(session, JudgeSessionRequest):
+            raise ConformancePauseError(
+                "sdk_judge_request_invalid",
+                "official SDK judge runtime requires a typed judge request",
+            )
+        if session.session_id in self._judge_session_ids:
+            raise ConformancePauseError(
+                "sdk_judge_session_reused", "a judge SDK session identity may be consumed only once"
+            )
+        self._judge_session_ids.add(session.session_id)
+        client = self._client_factory()
+        start = getattr(client, "start", None)
+        stop = getattr(client, "stop", None)
+        create_session = getattr(client, "create_session", None)
+        if not callable(start) or not callable(stop) or not callable(create_session):
+            raise ConformancePauseError(
+                "sdk_session_unsupported", "official SDK session API is unavailable"
+            )
+        await start()
+        sdk_session: object | None = None
+        started = time.monotonic()
+        try:
+            options: dict[str, object] = {
+                "model": session.model_id,
+                "tools": _judge_tools(session),
+            }
+            if session.reasoning_effort != "unavailable":
+                options["reasoning_effort"] = session.reasoning_effort
+            if session.context_tier != "unavailable":
+                options["context_tier"] = session.context_tier
+            try:
+                sdk_session = await create_session(**options)
+            except (AttributeError, TypeError, ValueError) as error:
+                raise ConformancePauseError(
+                    "sdk_judge_session_shape_unsupported",
+                    "official SDK session does not accept the frozen judge tool or control shape",
+                ) from error
+            send_and_wait = getattr(sdk_session, "send_and_wait", None)
+            if not callable(send_and_wait):
+                raise ConformancePauseError(
+                    "sdk_send_unsupported", "official SDK session cannot send judge assessments"
+                )
+            event = await send_and_wait(session.prompt, timeout=session.wall_seconds_limit)
+            return _judge_terminal_result(event, time.monotonic() - started)
+        except asyncio.CancelledError:
+            await _cancel_session(sdk_session)
+            return JudgeRuntimeResult("failed", None, failure_code="judge_cancelled")
+        except TimeoutError:
+            await _cancel_session(sdk_session)
+            return JudgeRuntimeResult("failed", None, failure_code="judge_timeout")
+        finally:
+            await _disconnect_session(sdk_session)
+            await stop()
 
     async def execute(self, task: InspectTaskRequest) -> NativeTerminalRecord:
         if self._native_factory:
@@ -232,6 +291,80 @@ async def _disconnect_session(session: object | None) -> None:
         result = disconnect()
         if hasattr(result, "__await__"):
             await result
+
+
+def _judge_tools(session: JudgeSessionRequest) -> list[object]:
+    """Materialize the official SDK Tool contract from the immutable rubric schema."""
+
+    if dict(session.decoding_controls) != {"session_defaults": "github-copilot-sdk-1.0.8"}:
+        raise ConformancePauseError(
+            "sdk_judge_controls_unsupported",
+            "frozen judge controls are not supported by the locked SDK session API",
+        )
+    try:
+        module = importlib.import_module("copilot")
+        tool_type = module.Tool
+        result_type = module.ToolResult
+    except (ImportError, AttributeError) as error:
+        raise ConformancePauseError(
+            "sdk_judge_tools_unsupported", "official SDK Tool API is unavailable"
+        ) from error
+    if not callable(tool_type) or not callable(result_type):
+        raise ConformancePauseError(
+            "sdk_judge_tools_unsupported", "official SDK Tool API is unavailable"
+        )
+    tools: list[object] = []
+    for schema in session.tools:
+        name = schema.get("name")
+        description = schema.get("description")
+        parameters = schema.get("input_schema")
+        if (
+            name != "read_blinded_artifact"
+            or not isinstance(description, str)
+            or not description
+            or not isinstance(parameters, Mapping)
+            or schema.get("read_only") is not True
+        ):
+            raise ConformancePauseError(
+                "sdk_judge_tool_schema_invalid", "frozen judge tool schema is invalid"
+            )
+        tools.append(
+            tool_type(
+                name=name,
+                description=description,
+                parameters=dict(parameters),
+                handler=_blinded_artifact_handler(
+                    session.authorized_blinded_artifacts, result_type
+                ),
+                skip_permission=True,
+            )
+        )
+    return tools
+
+
+def _blinded_artifact_handler(
+    artifacts: Mapping[str, str], result_type: Callable[..., object]
+) -> Callable[[object], object]:
+    """Build a handler that can resolve only locations explicitly supplied to this judge."""
+
+    def handler(invocation: object) -> object:
+        arguments = getattr(invocation, "arguments", None)
+        tool_name = getattr(invocation, "tool_name", None)
+        if (
+            tool_name != "read_blinded_artifact"
+            or not isinstance(arguments, Mapping)
+            or set(arguments) != {"location"}
+            or not isinstance(arguments.get("location"), str)
+            or arguments["location"] not in artifacts
+        ):
+            return result_type(result_type="denied", error="judge_artifact_access_denied")
+        location = arguments["location"]
+        return result_type(
+            text_result_for_llm=artifacts[location],
+            tool_references=[location],
+        )
+
+    return handler
 
 
 def _terminal_record(event: object) -> NativeTerminalRecord:
@@ -394,6 +527,61 @@ def _native_usage(event: object, elapsed: float) -> QualificationUsage:
         sessions=1,
         credits=float(credits),
         tokens=tokens,
+        active_seconds=elapsed,
+        wall_seconds=elapsed,
+    )
+
+
+def _judge_terminal_result(event: object, elapsed: float) -> JudgeRuntimeResult:
+    """Normalize the narrow structured-judge SDK response without retaining raw output."""
+
+    if event is None or not hasattr(event, "to_dict"):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_event_invalid")
+    try:
+        data = event.to_dict()
+    except (TypeError, ValueError):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_event_invalid")
+    if not isinstance(data, Mapping):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_event_invalid")
+    usage = _find_usage_mapping(data)
+    if usage is None:
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_usage_unavailable")
+    tokens = usage.get("total_tokens")
+    tool_calls = usage.get("tool_calls")
+    if (
+        isinstance(tokens, bool)
+        or isinstance(tool_calls, bool)
+        or not isinstance(tokens, int)
+        or not isinstance(tool_calls, int)
+    ):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_usage_invalid")
+    status = data.get("status")
+    if status != "succeeded":
+        return JudgeRuntimeResult(
+            "failed",
+            None,
+            tokens=tokens,
+            tool_calls=tool_calls,
+            active_seconds=elapsed,
+            wall_seconds=elapsed,
+            failure_code="judge_native_terminal_failure",
+        )
+    response = data.get("structured_output", data.get("result"))
+    if not isinstance(response, Mapping):
+        return JudgeRuntimeResult(
+            "failed",
+            None,
+            tokens=tokens,
+            tool_calls=tool_calls,
+            active_seconds=elapsed,
+            wall_seconds=elapsed,
+            failure_code="judge_native_response_missing",
+        )
+    return JudgeRuntimeResult(
+        "completed",
+        dict(response),
+        tokens=tokens,
+        tool_calls=tool_calls,
         active_seconds=elapsed,
         wall_seconds=elapsed,
     )
