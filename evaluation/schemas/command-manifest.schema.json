@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/command-manifest.schema.json",
+  "title": "Immutable noninteractive command manifest",
+  "description": "The uniform, digest-bound terminal record emitted by every noninteractive evaluator command. It binds input and output hashes, the runtime lock, the protocol identity, the terminal status, and the command identity.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command",
+    "stage",
+    "terminal_status",
+    "exit_code",
+    "input_hashes",
+    "output_hashes",
+    "runtime_lock_sha256",
+    "protocol_sha256",
+    "error_code",
+    "digest"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "command": {"type": "string", "minLength": 1},
+    "stage": {"type": "string", "minLength": 1},
+    "terminal_status": {
+      "type": "string",
+      "enum": ["succeeded", "failed", "refused", "denied", "interrupted"]
+    },
+    "exit_code": {"type": "integer", "minimum": 0},
+    "input_hashes": {"$ref": "#/$defs/hash_map"},
+    "output_hashes": {"$ref": "#/$defs/hash_map"},
+    "runtime_lock_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "protocol_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
+    "error_code": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+    "digest": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "hash_map": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/$defs/sha256"}
+    }
+  }
+}

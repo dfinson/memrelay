@@ -17,6 +17,42 @@ class RunState(StrEnum):
     EXCLUDED = "excluded"
 
 
+class StageKind(StrEnum):
+    """The fixed, treatment-neutral study-stage progression.
+
+    ``bootstrap`` and ``conformance`` precede enrollment; the four enrollable
+    stages plus the deny-by-default cross-repository stage are the identities the
+    non-interactive ``run`` command recognizes. Values match the stage strings
+    already used by the reconciliation authority.
+    """
+
+    BOOTSTRAP = "bootstrap"
+    CONFORMANCE = "conformance"
+    INTEGRATION = "integration"
+    PILOT = "pilot"
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    CROSS_REPOSITORY = "cross-repo"
+
+
+class StageState(StrEnum):
+    """Append-only stage lifecycle; authority is split from process completion.
+
+    ``authorized`` is reachable only through an independent authorization
+    artifact, never through successful construction, reconciliation, or process
+    completion. ``accepted`` and ``rejected`` are terminal; a rejected stage is
+    never re-entered.
+    """
+
+    PLANNED = "planned"
+    AUTHORIZED = "authorized"
+    RUNNING = "running"
+    PAUSED = "paused"
+    CLOSING = "closing"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 class HistoryMode(StrEnum):
     """The protocol-level history regime; these modes are never poolable."""
 

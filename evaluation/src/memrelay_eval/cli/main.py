@@ -53,7 +53,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     effective_config.set_defaults(handler=show_effective_configuration)
     run = subcommands.add_parser("run", help="request a recognized evaluator stage")
-    run.add_argument("--stage", choices=("cross-repo",), required=True)
+    run.add_argument(
+        "--stage",
+        choices=("integration", "pilot", "primary", "secondary", "cross-repo"),
+        required=True,
+    )
+    run.add_argument(
+        "--entry-bundle",
+        dest="entry_bundle",
+        help="path to the sealed stage entry bundle for this stage",
+    )
+    run.add_argument(
+        "--predecessor-exit",
+        dest="predecessor_exit",
+        help="path to the sealed accepted predecessor exit bundle",
+    )
+    run.add_argument(
+        "--authorization",
+        dest="authorization",
+        help="path to the independent sealed stage authorization",
+    )
+    run.add_argument(
+        "--output-root",
+        dest="output_root",
+        default="artifacts",
+        help="root under which the append-only command manifest is written",
+    )
     run.set_defaults(handler=run_stage)
     bootstrap_parser = subcommands.add_parser(
         "bootstrap", help="explicitly verify and lock the official Copilot runtime"

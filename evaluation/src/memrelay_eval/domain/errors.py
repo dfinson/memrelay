@@ -508,3 +508,20 @@ class NetworkSandboxUnavailableError(GraderExecutionError):
 
     def __init__(self) -> None:
         super().__init__("grader_network_sandbox_unavailable")
+
+
+class StageControlError(DomainError):
+    """A stage entry, exit, seal, or resume request violated the frozen policy.
+
+    Carries a stable machine code so the non-interactive CLI can emit a typed
+    terminal status without exposing any repository, credential, or prompt data.
+    """
+
+    def __init__(self, code: str, evidence: tuple[object, ...] = ()) -> None:
+        self.code = code
+        self.evidence = evidence
+        super().__init__(code.replace("_", " "))
+
+
+class StageAuthorizationError(StageControlError):
+    """An independent stage authorization is absent, stale, mis-scoped, or self-minted."""

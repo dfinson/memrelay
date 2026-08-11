@@ -103,7 +103,7 @@ development_status:
   epic-5-retrospective: optional
 
   epic-6: in-progress
-  6-1-seal-stage-bundles-and-enforce-the-stage-cli: ready-for-dev
+  6-1-seal-stage-bundles-and-enforce-the-stage-cli: review
   6-2-gate-bootstrap-and-conformance: ready-for-dev
   6-3-run-and-exit-the-32-run-integration-stage: ready-for-dev
   6-4-run-and-gate-the-128-unit-blinded-pilot: ready-for-dev

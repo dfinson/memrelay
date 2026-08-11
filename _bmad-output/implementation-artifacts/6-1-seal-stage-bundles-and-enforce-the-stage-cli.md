@@ -1,6 +1,6 @@
 # Story 6.1: Seal Stage Bundles and Enforce the Stage CLI
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -106,12 +106,42 @@ Preserve the sole-writer ledger, immutable CAS/manifests, opaque IDs, terminal a
 
 ### Agent Model Used
 
-To be recorded by the implementing dev agent.
+Claude (Anthropic), operating as the `bmad-orchestrator` dev-story agent in Copilot CLI.
 
 ### Debug Log References
 
+- 2026-08-11T13:10:35-04:00 - Targeted Story 6.1 suites (`tests/unit/domain/test_stage_policy.py`, `tests/contract/test_stage_cli.py`, `tests/fault/test_stage_pause_resume.py`): 84 passed under CPython 3.12.10 on native Windows with `evaluation\src` and product `src` on `PYTHONPATH`.
+- 2026-08-11T13:08:00-04:00 - Affected `tests/contract` + `tests/unit/domain` regression run: 519 passed, 3 skipped.
+- 2026-08-11T13:17:00-04:00 - Full evaluator suite (`tests`): 1394 passed, 46 skipped, 1 failed. The sole failure `tests/unit/judge/test_sdk_runtime.py::test_judge_runtime_uses_sdk_tool_objects_and_denies_unapproved_artifacts` is a pre-existing SDK-session-shape incompatibility (`ConformancePauseError: sdk_judge_session_shape_unsupported`) present on the pre-change baseline and unrelated to Story 6.1 (baseline: 1310 passed / 1 failed; +84 new Story 6.1 tests).
+- 2026-08-11T13:10:40-04:00 - Root `ruff check` and `ruff format --check` on all changed files, plus `git diff --check`: passed.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added the frozen study-stage domain layer: `StageKind`/`StageState` enums, `StageId`/`StageAuthorizationId`, typed `StageControlError`/`StageAuthorizationError`, the `planned|authorized|running|paused|closing|accepted|rejected` transition graph, the fixed predecessor map, the twelve-field entry-lock policy, and the independent-authorizer-role predicate that rejects self-authorization.
+- Implemented immutable `StageEntryBundle`, `StageExitBundle`, and `StageAuthorization` seals over the shared RFC 8785/SHA-256 canonical service; each binds every frozen input hash (catalog, protocol, SDK, runtime lock, model lock, environment, grader, judge, telemetry, price table, limits) plus the accepted preceding-exit digest, and the price/limit envelope digest that scopes authorization. Any post-seal change yields a different digest, so a legitimate change requires a new protocol or stage identity.
+- Enforced fail-closed stage entry (`authorize_stage_entry`) that refuses before enrollment with a typed status when the predecessor exit is missing, corrupt, rejected, incomplete, mis-linked, or skipped, when the authorization is mis-scoped, envelope-mismatched, self-minted, or stale, with no automatic topology fallback and no self-promotion.
+- Separated independent authorization from process completion: the `run` command only loads an operator/scheduler authorization sealed against the pre-execution entry digest and envelope, and never constructs or mints one.
+- Added content-addressed write-once persistence (`StageBundleStore`) with idempotent reuse on identical bytes and fail-closed `stage_bundle_mutation` on conflict, and idempotent `plan_stage_resume` that resumes only unfinished planned units after verifying authorization currency, locks, receipts, ledger/CAS consistency, and circuit-breaker state.
+- Wired the non-interactive stage CLI: `run --stage integration|pilot|primary|secondary|cross-repo`. `cross-repo` preserves the Story 7.3 deny-before-discovery refusal byte-for-byte (no repository/credential leakage, no manifest). The four paid stages reject ambient stage configuration and CI-driven paid execution, then emit exactly one append-only command manifest binding command identity, stage, terminal status, exit code, input/output hashes, runtime lock, and protocol id on both success and typed-refusal paths; idempotent replays reuse the same manifest.
+- Added the shared `stage_command_manifest` composer, `stage-bundle.schema.json`, `command-manifest.schema.json`, the `docs/runbooks/stage-control.md` monitor/alert runbook, and treatment-neutral outcome-blind `stage_status_projection`/`stage_alert_actions`.
+- Added unit domain-policy tests, contract CLI tests, and fault pause/resume tests (84 total). Preserved all Story 1.x-5.x and 7.3 behavior: full suite shows no new failures.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/domain/states.py`
+- `evaluation/src/memrelay_eval/domain/ids.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/domain/policies.py`
+- `evaluation/src/memrelay_eval/orchestration/limits.py`
+- `evaluation/src/memrelay_eval/orchestration/stages.py`
+- `evaluation/src/memrelay_eval/evidence/manifest.py`
+- `evaluation/src/memrelay_eval/cli/commands.py`
+- `evaluation/src/memrelay_eval/cli/main.py`
+- `evaluation/schemas/stage-bundle.schema.json`
+- `evaluation/schemas/command-manifest.schema.json`
+- `evaluation/docs/runbooks/stage-control.md`
+- `evaluation/tests/unit/domain/test_stage_policy.py`
+- `evaluation/tests/contract/test_stage_cli.py`
+- `evaluation/tests/fault/test_stage_pause_resume.py`
+- `_bmad-output/implementation-artifacts/6-1-seal-stage-bundles-and-enforce-the-stage-cli.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`

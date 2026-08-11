@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
@@ -10,8 +11,17 @@ from .errors import (
     IneligibleEnrollmentError,
     InvalidLifecycleTransitionError,
     SecretConfigurationError,
+    StageAuthorizationError,
+    StageControlError,
 )
-from .states import AttemptTerminalKind, EvaluationStratum, ProbeWriteDisposition, RunState
+from .states import (
+    AttemptTerminalKind,
+    EvaluationStratum,
+    ProbeWriteDisposition,
+    RunState,
+    StageKind,
+    StageState,
+)
 
 if TYPE_CHECKING:
     from .entities import (
@@ -43,6 +53,115 @@ def validate_run_transition(previous: RunState, next_state: RunState) -> None:
         raise InvalidLifecycleTransitionError(
             f"invalid run transition: {previous.value} -> {next_state.value}"
         )
+
+
+_SHA256 = re.compile(r"^[a-f0-9]{64}$")
+
+# The frozen study-stage lifecycle. Independent authorization is the only edge
+# that leaves ``planned``; process completion never advances a stage. Terminal
+# states have no outgoing edge, so a rejected stage can never be re-entered.
+_ALLOWED_STAGE_TRANSITIONS: dict[StageState, frozenset[StageState]] = {
+    StageState.PLANNED: frozenset({StageState.AUTHORIZED, StageState.REJECTED}),
+    StageState.AUTHORIZED: frozenset({StageState.RUNNING, StageState.REJECTED}),
+    StageState.RUNNING: frozenset({StageState.PAUSED, StageState.CLOSING, StageState.REJECTED}),
+    StageState.PAUSED: frozenset({StageState.RUNNING, StageState.CLOSING, StageState.REJECTED}),
+    StageState.CLOSING: frozenset({StageState.ACCEPTED, StageState.REJECTED}),
+    StageState.ACCEPTED: frozenset(),
+    StageState.REJECTED: frozenset(),
+}
+
+# The fixed forward progression. Each enrollable stage requires exactly one
+# immutable predecessor exit; there is no skip, self-promotion, or alternate
+# topology. Cross-repository additionally requires a current DG-R qualification,
+# enforced separately at the orchestration entry guard.
+_REQUIRED_PREDECESSOR: dict[StageKind, StageKind] = {
+    StageKind.INTEGRATION: StageKind.CONFORMANCE,
+    StageKind.PILOT: StageKind.INTEGRATION,
+    StageKind.PRIMARY: StageKind.PILOT,
+    StageKind.SECONDARY: StageKind.PRIMARY,
+    StageKind.CROSS_REPOSITORY: StageKind.PRIMARY,
+}
+
+# Exactly the twelve frozen inputs bound by a sealed stage entry bundle.
+STAGE_ENTRY_LOCK_FIELDS: frozenset[str] = frozenset(
+    {
+        "catalog_sha256",
+        "protocol_sha256",
+        "sdk_sha256",
+        "runtime_lock_sha256",
+        "model_lock_sha256",
+        "environment_sha256",
+        "grader_sha256",
+        "judge_sha256",
+        "telemetry_sha256",
+        "price_table_sha256",
+        "limits_sha256",
+        "preceding_exit_sha256",
+    }
+)
+
+_INDEPENDENT_AUTHORIZER_ROLES: frozenset[str] = frozenset({"operator", "scheduler"})
+
+# The enrollable stages the non-interactive ``run`` command drives through the
+# entry guard. Cross-repository is recognized but is denied before discovery by
+# the Story 7.3 deny-by-default authorization, so it is not enrolled here.
+ENROLLABLE_STAGES: frozenset[StageKind] = frozenset(
+    {
+        StageKind.INTEGRATION,
+        StageKind.PILOT,
+        StageKind.PRIMARY,
+        StageKind.SECONDARY,
+    }
+)
+
+
+def validate_stage_transition(previous: StageState, next_state: StageState) -> None:
+    """Raise a typed refusal unless the stage edge is part of the frozen graph."""
+
+    if next_state not in _ALLOWED_STAGE_TRANSITIONS[previous]:
+        raise StageControlError("invalid_stage_transition", (previous.value, next_state.value))
+
+
+def required_predecessor_stage(stage: StageKind) -> StageKind:
+    """Return the sole immutable predecessor an entry stage must accept first."""
+
+    predecessor = _REQUIRED_PREDECESSOR.get(stage)
+    if predecessor is None:
+        raise StageControlError("stage_has_no_enrollable_predecessor", (stage.value,))
+    return predecessor
+
+
+def require_stage_predecessor(stage: StageKind, predecessor: StageKind) -> StageKind:
+    """Reject a skipped or mis-ordered predecessor with no topology fallback."""
+
+    expected = required_predecessor_stage(stage)
+    if predecessor is not expected:
+        raise StageControlError("stage_skipped", (stage.value, predecessor.value))
+    return expected
+
+
+def require_stage_entry_locks(locks: Mapping[str, object]) -> None:
+    """Require exactly the twelve frozen entry hashes as lowercase SHA-256 values."""
+
+    if set(locks) != STAGE_ENTRY_LOCK_FIELDS:
+        missing = sorted(STAGE_ENTRY_LOCK_FIELDS - set(locks))
+        extra = sorted(set(locks) - STAGE_ENTRY_LOCK_FIELDS)
+        raise StageControlError("stage_bundle_incomplete", (*missing, *extra))
+    for field, value in locks.items():
+        if not isinstance(value, str) or not _SHA256.fullmatch(value):
+            raise StageControlError("stage_bundle_hash_invalid", (field,))
+
+
+def require_independent_authorizer_role(role: object) -> str:
+    """Reject any authorizer that is not an independent operator or scheduler.
+
+    Successful construction, reconciliation, or process completion is never an
+    authorizer; only these two out-of-band roles may authorize the next stage.
+    """
+
+    if not isinstance(role, str) or role not in _INDEPENDENT_AUTHORIZER_ROLES:
+        raise StageAuthorizationError("self_authorization_denied", (str(role),))
+    return role
 
 
 def retry_eligibility_denial_code(
