@@ -23,6 +23,20 @@ from memrelay_eval.orchestration.stages import StageAuthorization, StageEntryBun
 HASH_A = "a" * 64
 
 
+def _clear_ci_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for marker in (
+        "CI",
+        "GITHUB_ACTIONS",
+        "GITLAB_CI",
+        "BUILDKITE",
+        "JENKINS_URL",
+        "TF_BUILD",
+        "TEAMCITY_VERSION",
+        "CIRCLECI",
+    ):
+        monkeypatch.delenv(marker, raising=False)
+
+
 def _authority(tmp_path: Path, *, paid: bool = True) -> tuple[Namespace, Path, Path]:
     tmp_path.mkdir(parents=True, exist_ok=True)
     locks = dict.fromkeys(STAGE_ENTRY_LOCK_FIELDS, HASH_A)
@@ -85,6 +99,7 @@ def _authority(tmp_path: Path, *, paid: bool = True) -> tuple[Namespace, Path, P
 def test_provider_qualification_requires_paid_sealed_authority_before_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _clear_ci_environment(monkeypatch)
     args, _, _ = _authority(tmp_path, paid=False)
     called: list[str] = []
 
@@ -110,6 +125,7 @@ def test_provider_qualification_requires_paid_sealed_authority_before_adapter(
 def test_provider_registry_uses_controlled_adapter_only_for_provider_proofs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    _clear_ci_environment(monkeypatch)
     args, _, _ = _authority(tmp_path)
     adapter_calls: list[str] = []
 
