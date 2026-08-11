@@ -27,7 +27,7 @@ from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import ArtifactScope
 from memrelay_eval.evidence.manifest import observation_qualification_manifest
 
-OBSERVATION_RECONCILIATION_POLICY_VERSION = "1.0.0"
+OBSERVATION_RECONCILIATION_POLICY_VERSION = "1.1.0"
 
 
 def hash_observation_sources(source_files: Sequence[Path]) -> str:

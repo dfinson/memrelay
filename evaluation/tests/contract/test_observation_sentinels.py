@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import jsonschema
 import pytest
@@ -13,10 +14,12 @@ from memrelay_eval.adapters.memrelay.observation import (
     build_observation_identity,
 )
 from memrelay_eval.adapters.memrelay.observation_runner import (
+    ObservationTelemetryCollector,
     current_observation_identity,
     current_observation_semantic_map,
     current_observation_source_files,
     load_observation_product_configuration,
+    run_actual_observation_composition,
 )
 from memrelay_eval.adapters.telemetry.observation import observation_telemetry_evidence
 from memrelay_eval.adapters.telemetry.semantics import (
@@ -28,6 +31,7 @@ from memrelay_eval.adapters.telemetry.semantics import (
 )
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.cli.main import main
+from memrelay_eval.application.observation_services import verified_product_observation_evidence
 from memrelay_eval.domain.errors import ObservationQualificationError
 from memrelay_eval.domain.identity import identity_for_span_class
 from memrelay_eval.domain.observation import (
@@ -40,6 +44,7 @@ from memrelay_eval.domain.observation import (
     SentinelBoundaryRecord,
     assess_observation,
     generate_sentinels,
+    observation_evidence_from_document,
     require_new_protocol,
 )
 
@@ -152,6 +157,73 @@ def _cli_contract(tmp_path: Path, path: ObservationPath) -> tuple[ObservationCon
     return contract, product_config, runtime_lock
 
 
+def _actual_run_contract(
+    tmp_path: Path, path: ObservationPath
+) -> tuple[ObservationContract, Any, Path]:
+    contract, product_config, runtime_lock = _cli_contract(tmp_path, path)
+    identity, config = current_observation_identity(
+        path=path,
+        product_config_path=product_config,
+        runtime_lock_path=runtime_lock,
+        workspace=tmp_path / "actual-run-identity",
+    )
+    started_at = datetime.now(UTC)
+    return (
+        replace(
+            contract,
+            identity=identity,
+            window_started_at=started_at,
+            deadline_at=started_at + timedelta(minutes=1),
+        ),
+        config,
+        tmp_path / "actual-run-workspace",
+    )
+
+
+class _FailingTailSource:
+    async def __aenter__(self) -> _FailingTailSource:
+        raise RuntimeError("tail source failed")
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class _EmptyTailSource:
+    async def __aenter__(self) -> _EmptyTailSource:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    def __aiter__(self) -> Any:
+        return self._records()
+
+    async def _records(self) -> Any:
+        if False:
+            yield None
+
+
+class _CollectorMutation(ObservationTelemetryCollector):
+    def __init__(self, mode: str) -> None:
+        super().__init__()
+        self._mode = mode
+
+    def emit_span(self, span: TelemetrySpan) -> None:
+        if self._mode == "drop":
+            return
+        if self._mode == "malformed":
+            span = replace(span, attributes={"observation_path": ObservationPath.REPLAY.value})
+        elif self._mode == "mixed_path":
+            span = replace(
+                span,
+                attributes={
+                    **span.attributes,
+                    "observation_path": ObservationPath.FILE_WATCH.value,
+                },
+            )
+        super().emit_span(span)
+
+
 @pytest.mark.parametrize("path", [ObservationPath.REPLAY, ObservationPath.FILE_WATCH])
 def test_path_scoped_sentinels_bind_real_source_identity_and_all_boundaries(
     path: ObservationPath,
@@ -191,6 +263,14 @@ def test_sentinel_generator_is_opaque_unique_and_nonsecret() -> None:
     assert [item.sequence for item in sentinels] == [1, 2, 3]
     assert len({item.identifier for item in sentinels}) == 3
     assert all(item.identifier.startswith("sentinel_") for item in sentinels)
+
+
+def test_prior_evidence_documents_remain_parseable_without_new_failure_inventory() -> None:
+    evidence = _evidence(_contract())
+    prior_document = evidence.to_document()
+    prior_document.pop("evidence_failure_reasons")
+
+    assert observation_evidence_from_document(prior_document) == evidence
 
 
 def test_semantic_and_source_identity_drift_require_a_new_protocol_version(tmp_path: Path) -> None:
@@ -274,7 +354,10 @@ def test_telemetry_records_expose_only_opaque_sentinel_attributes() -> None:
     )
 
     telemetry = observation_telemetry_evidence(
-        (span,), path=contract.path, collector_shutdown_verified=True
+        (span,),
+        path=contract.path,
+        expected_sentinels=(sentinel,),
+        collector_shutdown_verified=True,
     )
     assert telemetry.complete
     assert telemetry.records[0].sentinel_id == sentinel.identifier
@@ -322,6 +405,7 @@ def test_telemetry_reconciliation_scopes_order_to_the_target_path_and_rejects_ba
     mixed = observation_telemetry_evidence(
         (other_path, target),
         path=ObservationPath.REPLAY,
+        expected_sentinels=(sentinel,),
         collector_shutdown_verified=True,
     )
     malformed = observation_telemetry_evidence(
@@ -333,6 +417,7 @@ def test_telemetry_reconciliation_scopes_order_to_the_target_path_and_rejects_ba
             ),
         ),
         path=ObservationPath.REPLAY,
+        expected_sentinels=(sentinel,),
         collector_shutdown_verified=True,
     )
 
@@ -391,7 +476,12 @@ def test_observation_conformance_cli_executes_and_binds_actual_compositions(
     decision = json.loads(decision_path.read_text(encoding="utf-8"))
     assert decision["qualified"] is True
     assert decision["contract"]["identity"] == contract.identity.to_document()
-    assert {boundary.value for boundary in ObservationBoundary} == {
+    expected_boundaries = {
+        boundary.value
+        for boundary in ObservationBoundary
+        if path is ObservationPath.FILE_WATCH or boundary is not ObservationBoundary.LIVE_TAIL
+    }
+    assert expected_boundaries == {
         record["boundary"] for record in decision["evidence"]["records"]
     }
     assert all(
@@ -408,8 +498,14 @@ def test_observation_conformance_cli_executes_and_binds_actual_compositions(
         output_root.glob(f"observation-qualification/{path.value}/*/native-receipt-*.json")
     )
     native_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    rendered_receipt = json.dumps(native_receipt)
+    assert '"content"' not in rendered_receipt
+    assert str(tmp_path) not in rendered_receipt
     expected_capture = "RunObserveCapture" if path is ObservationPath.REPLAY else "LiveTailCapture"
     assert native_receipt["capture_types"] == [expected_capture] * 6
+    if path is ObservationPath.FILE_WATCH:
+        assert set(native_receipt["live_tail_ids"]) == set(native_receipt["mcp_ids"])
+        assert native_receipt["live_tail_failed"] is False
     assert native_receipt["sessions_observed"] == 6
     assert native_receipt["spool_ids"] == native_receipt["mcp_ids"]
     assert native_receipt["path"] == path.value
@@ -422,6 +518,139 @@ def test_observation_conformance_cli_executes_and_binds_actual_compositions(
             "conformance_sha256": contract.identity.conformance_sha256,
         }
     )
+
+
+@pytest.mark.parametrize(
+    ("tail_source", "reason"),
+    [
+        (_FailingTailSource, ObservationFailureReason.LIVE_TAIL_DELIVERY_FAILED),
+        (_EmptyTailSource, ObservationFailureReason.LIVE_TAIL_DELIVERY_MISSING),
+    ],
+)
+def test_file_watch_requires_retained_live_tail_delivery_even_when_replay_succeeds(
+    tmp_path: Path,
+    tail_source: type[object],
+    reason: ObservationFailureReason,
+) -> None:
+    contract, config, workspace = _actual_run_contract(tmp_path, ObservationPath.FILE_WATCH)
+
+    run = run_actual_observation_composition(
+        contract=contract,
+        config=config,
+        workspace=workspace,
+        tail_source_factory=lambda _ref: tail_source(),
+    )
+    evidence = verified_product_observation_evidence(
+        contract,
+        run,
+        native_receipt_persisted=True,
+    )
+    decision = ObservationQualificationService().qualify(
+        contract,
+        evidence,
+        decided_at=datetime.now(UTC),
+    )
+
+    assert run.receipt
+    assert {record.sentinel_id for record in run.native_records if record.boundary is ObservationBoundary.SPOOL} == set(
+        contract.expected_identifiers
+    )
+    assert not decision.qualified
+    assert reason in decision.assessment.failure_reasons
+    assert reason in evidence.evidence_failure_reasons
+    assert decision.assessment.reason_code == reason.value
+    assert not [
+        record
+        for record in evidence.records
+        if record.boundary is ObservationBoundary.LIVE_TAIL
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        ("drop", ObservationFailureReason.TELEMETRY_DELIVERY_LOSS),
+        ("malformed", ObservationFailureReason.TELEMETRY_MALFORMED),
+        ("mixed_path", ObservationFailureReason.TELEMETRY_PATH_MISMATCH),
+    ],
+)
+def test_actual_collector_delivery_faults_fail_observation_qualification(
+    tmp_path: Path,
+    mode: str,
+    reason: ObservationFailureReason,
+) -> None:
+    contract, config, workspace = _actual_run_contract(tmp_path, ObservationPath.REPLAY)
+    collector = _CollectorMutation(mode)
+
+    run = run_actual_observation_composition(
+        contract=contract,
+        config=config,
+        workspace=workspace,
+        telemetry_collector_factory=lambda: collector,
+    )
+    evidence = verified_product_observation_evidence(
+        contract,
+        run,
+        native_receipt_persisted=True,
+    )
+    decision = ObservationQualificationService().qualify(
+        contract,
+        evidence,
+        decided_at=datetime.now(UTC),
+    )
+
+    assert run.collector_shutdown_verified
+    assert not decision.qualified
+    assert reason in evidence.evidence_failure_reasons
+    assert reason in decision.assessment.failure_reasons
+    assert decision.assessment.reason_code == reason.value
+
+
+def test_actual_composition_preserves_real_source_times_and_rejects_pre_window_evidence(
+    tmp_path: Path,
+) -> None:
+    contract, config, workspace = _actual_run_contract(tmp_path, ObservationPath.REPLAY)
+    run = run_actual_observation_composition(contract=contract, config=config, workspace=workspace)
+    evidence = verified_product_observation_evidence(
+        contract,
+        run,
+        native_receipt_persisted=True,
+    )
+    qualified = ObservationQualificationService().qualify(
+        contract,
+        evidence,
+        decided_at=datetime.now(UTC),
+    )
+
+    assert qualified.qualified
+    assert {
+        span.attributes["sentinel_id"] for span in run.telemetry_spans
+    } == set(contract.expected_identifiers)
+    assert all(
+        span.attributes["observation_path"] == contract.path.value
+        and contract.window_started_at <= span.ended_at <= contract.deadline_at
+        for span in run.telemetry_spans
+    )
+    assert all(
+        contract.window_started_at <= record.observed_at <= contract.deadline_at
+        for record in evidence.records
+    )
+    retained = next(
+        record for record in evidence.records if record.boundary is ObservationBoundary.SPOOL
+    )
+    pre_window = replace(
+        evidence,
+        records=tuple(
+            replace(record, observed_at=contract.window_started_at - timedelta(microseconds=1))
+            if record is retained
+            else record
+            for record in evidence.records
+        ),
+    )
+    rejected = assess_observation(contract, pre_window)
+
+    assert ObservationFailureReason.OUTSIDE_FROZEN_WINDOW in rejected.failure_reasons
+    assert ObservationFailureReason.MISSING in rejected.failure_reasons
 
 
 @pytest.mark.parametrize(

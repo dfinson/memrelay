@@ -73,7 +73,9 @@ map, configuration, runtime lock, sentinel contract, and reconciliation policy
 before injecting opaque synthetic sentinels. Evidence retains only sentinel IDs,
 sequence numbers, timestamps, restart epochs, and boundary names across
 discovery, capture, pre-idempotency input, spool, daemon, MCP-visible graph,
-telemetry, manifests, terminal flush, and reconciliation.
+telemetry, manifests, terminal flush, and reconciliation. `file_watch` retains
+its own live-tail deliveries; replay-backstop delivery cannot qualify a tail
+that failed or emitted no sentinel.
 
 A post-idempotency duplicate, missing/gapped/reordered/delayed sentinel,
 restart-recovery failure, terminal-flush failure, authority conflict, or
@@ -93,7 +95,8 @@ rejected. At execution the evaluator rehashes the imported configured
 composition, semantic map, product configuration, and runtime-lock bytes,
 rejecting an identity mismatch with a typed drift failure. It then creates the
 frozen window and fresh sentinels, drives the real poller/capture composition,
-and retains a hash-bound native receipt with the decision and manifests.
+emits and collects value-safe telemetry from actually observed sentinels, and
+retains source/product-record timestamps without post-run relabeling.
 
 ## Terminal evidence backup and restore
 

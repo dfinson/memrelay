@@ -110,7 +110,11 @@
         "collector_shutdown_verified": {"type": "boolean"},
         "reconciliation_completed": {"type": "boolean"},
         "authority_conflict": {"type": "boolean"},
-        "partial_success": {"type": "boolean"}
+        "partial_success": {"type": "boolean"},
+        "evidence_failure_reasons": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^observation_[a-z_]+$"}
+        }
       }
     },
     "qualified": {"type": "boolean"},
@@ -161,6 +165,7 @@
       "enum": [
         "discovery",
         "capture",
+        "live_tail",
         "pre_idempotency",
         "spool",
         "daemon",

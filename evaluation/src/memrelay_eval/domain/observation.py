@@ -43,6 +43,7 @@ class ObservationBoundary(StrEnum):
 
     DISCOVERY = "discovery"
     CAPTURE = "capture"
+    LIVE_TAIL = "live_tail"
     PRE_IDEMPOTENCY = "pre_idempotency"
     SPOOL = "spool"
     DAEMON = "daemon"
@@ -67,6 +68,11 @@ class ObservationFailureReason(StrEnum):
     RESTART_GAP = "observation_restart_gap"
     TERMINAL_FLUSH_MISSING = "observation_terminal_flush_missing"
     UNRECONCILED = "observation_sentinel_unreconciled"
+    LIVE_TAIL_DELIVERY_MISSING = "observation_live_tail_delivery_missing"
+    LIVE_TAIL_DELIVERY_FAILED = "observation_live_tail_delivery_failed"
+    TELEMETRY_DELIVERY_LOSS = "observation_telemetry_delivery_loss"
+    TELEMETRY_MALFORMED = "observation_telemetry_malformed"
+    TELEMETRY_PATH_MISMATCH = "observation_telemetry_path_mismatch"
 
 
 _REQUIRED_BOUNDARIES = frozenset(ObservationBoundary)
@@ -146,20 +152,23 @@ def observation_contract_from_document(value: Mapping[str, object]) -> Observati
 def observation_evidence_from_document(value: Mapping[str, object]) -> ObservationEvidence:
     """Parse exact retained boundary records without admitting source payloads."""
 
-    _require_document_keys(
-        value,
-        {
-            "path",
-            "conformance_sha256",
-            "records",
-            "final_drain_completed",
-            "collector_shutdown_verified",
-            "reconciliation_completed",
-            "authority_conflict",
-            "partial_success",
-        },
-        "evidence",
-    )
+    evidence_keys = {
+        "path",
+        "conformance_sha256",
+        "records",
+        "final_drain_completed",
+        "collector_shutdown_verified",
+        "reconciliation_completed",
+        "authority_conflict",
+        "partial_success",
+        "evidence_failure_reasons",
+    }
+    document_keys = set(value)
+    if (
+        document_keys != evidence_keys
+        and document_keys != evidence_keys - {"evidence_failure_reasons"}
+    ):
+        raise ValueError("observation_evidence_document_keys_invalid")
     records: list[SentinelBoundaryRecord] = []
     for item in _document_list(value["records"], "records"):
         record = _document_mapping(item, "record")
@@ -197,6 +206,14 @@ def observation_evidence_from_document(value: Mapping[str, object]) -> Observati
         ),
         authority_conflict=_document_boolean(value["authority_conflict"], "authority_conflict"),
         partial_success=_document_boolean(value["partial_success"], "partial_success"),
+        evidence_failure_reasons=tuple(
+            ObservationFailureReason(
+                _document_string(item, "evidence_failure_reason")
+            )
+            for item in _document_list(
+                value.get("evidence_failure_reasons", []), "evidence_failure_reasons"
+            )
+        ),
     )
 
 
@@ -390,6 +407,7 @@ class ObservationEvidence:
     reconciliation_completed: bool
     authority_conflict: bool = False
     partial_success: bool = False
+    evidence_failure_reasons: tuple[ObservationFailureReason, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.path, ObservationPath) or not _SHA256.fullmatch(
@@ -401,7 +419,18 @@ class ObservationEvidence:
             raise ValueError("observation_evidence_records_empty")
         if any(not isinstance(record, SentinelBoundaryRecord) for record in records):
             raise ValueError("observation_evidence_record_invalid")
+        evidence_failure_reasons = tuple(self.evidence_failure_reasons)
+        if any(
+            not isinstance(reason, ObservationFailureReason)
+            for reason in evidence_failure_reasons
+        ):
+            raise ValueError("observation_evidence_failure_reason_invalid")
         object.__setattr__(self, "records", records)
+        object.__setattr__(
+            self,
+            "evidence_failure_reasons",
+            tuple(sorted(set(evidence_failure_reasons), key=lambda item: item.value)),
+        )
 
     def to_document(self) -> dict[str, object]:
         return {
@@ -413,6 +442,9 @@ class ObservationEvidence:
             "reconciliation_completed": self.reconciliation_completed,
             "authority_conflict": self.authority_conflict,
             "partial_success": self.partial_success,
+            "evidence_failure_reasons": [
+                item.value for item in self.evidence_failure_reasons
+            ],
         }
 
 
@@ -478,7 +510,20 @@ class ObservationAssessment:
 
     @property
     def reason_code(self) -> str:
-        return "observation_qualified" if self.qualified else self.failure_reasons[0].value
+        if self.qualified:
+            return "observation_qualified"
+        if self.evidence.evidence_failure_reasons:
+            for reason in (
+                ObservationFailureReason.LIVE_TAIL_DELIVERY_FAILED,
+                ObservationFailureReason.LIVE_TAIL_DELIVERY_MISSING,
+                ObservationFailureReason.TELEMETRY_PATH_MISMATCH,
+                ObservationFailureReason.TELEMETRY_MALFORMED,
+                ObservationFailureReason.TELEMETRY_DELIVERY_LOSS,
+            ):
+                if reason in self.evidence.evidence_failure_reasons:
+                    return reason.value
+            return self.evidence.evidence_failure_reasons[0].value
+        return self.failure_reasons[0].value
 
     def completeness_claim(self) -> str:
         """Return the only supported bounded statement after a fully qualified decision."""
@@ -560,7 +605,10 @@ def assess_observation(
     reordered_boundaries: set[ObservationBoundary] = set()
     expected_order = contract.expected_identifiers
 
-    for boundary in _REQUIRED_BOUNDARIES:
+    reasons.update(evidence.evidence_failure_reasons)
+
+    required_boundaries = _required_boundaries(contract.path)
+    for boundary in required_boundaries:
         records = records_by_boundary[boundary]
         counts = Counter(record.sentinel_id for record in records)
         missing = tuple(identifier for identifier in expected_order if counts[identifier] == 0)
@@ -646,6 +694,14 @@ def _first_occurrence_order(records: Sequence[SentinelBoundaryRecord]) -> tuple[
             seen.add(record.sentinel_id)
             ordered.append(record.sentinel_id)
     return tuple(ordered)
+
+
+def _required_boundaries(path: ObservationPath) -> frozenset[ObservationBoundary]:
+    """Require retained live-tail delivery only for the configured file-watch path."""
+
+    if path is ObservationPath.FILE_WATCH:
+        return _REQUIRED_BOUNDARIES
+    return _REQUIRED_BOUNDARIES - {ObservationBoundary.LIVE_TAIL}
 
 
 def _require_document_keys(value: Mapping[str, object], expected: set[str], name: str) -> None:

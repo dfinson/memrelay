@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -16,12 +16,18 @@ from memrelay_eval.adapters.memrelay.observation import build_observation_identi
 from memrelay_eval.adapters.telemetry.semantics import (
     GENAI_DEVELOPMENT_FIELD_MAP,
     OBSERVATION_SENTINEL_ATTRIBUTE_MAP,
+    SpanClass,
+    TelemetryAttemptEmitter,
+    TelemetryContext,
+    TelemetrySpan,
 )
 from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.errors import ObservationQualificationError
+from memrelay_eval.domain.identity import identity_for_span_class
 from memrelay_eval.domain.observation import (
     ObservationBoundary,
     ObservationContract,
+    ObservationFailureReason,
     ObservationIdentity,
     ObservationPath,
     SentinelBoundaryRecord,
@@ -158,6 +164,104 @@ class ProductObservationRun:
     authority_conflict: bool
     partial_success: bool
     receipt: bytes
+    telemetry_spans: tuple[TelemetrySpan, ...]
+    evidence_failure_reasons: tuple[ObservationFailureReason, ...]
+
+
+class ObservationTelemetryCollector:
+    """Retain spans emitted during one observation composition before shutdown."""
+
+    def __init__(self) -> None:
+        self._spans: list[TelemetrySpan] = []
+        self._shutdown_verified = False
+
+    def emit_span(self, span: TelemetrySpan) -> None:
+        if self._shutdown_verified:
+            raise ObservationQualificationError("observation_telemetry_emitted_after_shutdown")
+        self._spans.append(span)
+
+    @property
+    def spans(self) -> tuple[TelemetrySpan, ...]:
+        return tuple(self._spans)
+
+    def shutdown(self) -> bool:
+        self._shutdown_verified = True
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class _LiveTailDelivery:
+    """Value-safe delivery facts read by the real live-tail source."""
+
+    identifiers: tuple[str, ...]
+    observed_at: Mapping[str, datetime]
+    failed: bool
+
+
+class _RecordingTailSource:
+    """Proxy a live source while retaining only sentinel IDs and source timestamps."""
+
+    def __init__(self, source: Any, expected_ids: Sequence[str]) -> None:
+        self._source = source
+        self._expected_ids = tuple(expected_ids)
+        self._entered: Any | None = None
+        self._identifiers: set[str] = set()
+        self._observed_at: dict[str, datetime] = {}
+        self.failed = False
+        self.exhausted = False
+
+    async def __aenter__(self) -> _RecordingTailSource:
+        try:
+            self._entered = await self._source.__aenter__()
+        except Exception:
+            self.failed = True
+            raise
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return bool(await self._source.__aexit__(*exc))
+
+    def __aiter__(self) -> Any:
+        return self._records()
+
+    async def _records(self) -> Any:
+        assert self._entered is not None
+        try:
+            async for record in self._entered:
+                payload = getattr(record, "payload", None)
+                if isinstance(payload, str):
+                    self._retain(payload)
+                yield record
+            self.exhausted = True
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.failed = True
+            raise
+
+    def _retain(self, payload: str) -> None:
+        try:
+            source = json.loads(payload)
+        except (TypeError, ValueError):
+            return
+        if not isinstance(source, dict):
+            return
+        data = source.get("data")
+        content = data.get("content") if isinstance(data, dict) else None
+        timestamp = _parse_observed_at(source.get("timestamp"))
+        if not isinstance(content, str) or timestamp is None:
+            return
+        for identifier in self._expected_ids:
+            if identifier in content:
+                self._identifiers.add(identifier)
+                self._observed_at.setdefault(identifier, timestamp)
+
+    def delivery(self) -> _LiveTailDelivery:
+        return _LiveTailDelivery(
+            identifiers=tuple(sorted(self._identifiers)),
+            observed_at=dict(self._observed_at),
+            failed=self.failed,
+        )
 
 
 class _RecordingSpool:
@@ -238,15 +342,22 @@ async def _wait_until(predicate: object, *, timeout_seconds: float = 10.0) -> No
     raise ObservationQualificationError("observation_product_lifecycle_timeout")
 
 
-def _synthetic_event_lines(*, session_id: str, sentinel_id: str, cwd: Path) -> str:
+def _synthetic_event_lines(
+    *,
+    session_id: str,
+    sentinel_id: str,
+    cwd: Path,
+    observed_at: datetime,
+) -> str:
     """Create a minimal synthetic, non-secret Copilot trace with one open work-unit."""
 
+    timestamp = observed_at.isoformat(timespec="microseconds").replace("+00:00", "Z")
     events = (
         {
             "type": "session.start",
             "data": {"sessionId": session_id, "context": {"cwd": str(cwd)}},
             "id": f"{session_id}-start",
-            "timestamp": "2026-08-11T17:00:00.000Z",
+            "timestamp": timestamp,
         },
         {
             "type": "user.message",
@@ -255,7 +366,7 @@ def _synthetic_event_lines(*, session_id: str, sentinel_id: str, cwd: Path) -> s
                 "attachments": [],
             },
             "id": f"{session_id}-message",
-            "timestamp": "2026-08-11T17:00:01.000Z",
+            "timestamp": timestamp,
         },
     )
     return "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events)
@@ -278,7 +389,7 @@ def _records(
     boundary: ObservationBoundary,
     identifiers: Sequence[str],
     expected_sequences: Mapping[str, int],
-    observed_at: datetime,
+    observed_at: Mapping[str, datetime],
     restart_epoch: int = 1,
 ) -> tuple[SentinelBoundaryRecord, ...]:
     return tuple(
@@ -287,10 +398,11 @@ def _records(
             boundary=boundary,
             sentinel_id=identifier,
             sequence=expected_sequences[identifier],
-            observed_at=observed_at,
+            observed_at=observed_at[identifier],
             restart_epoch=restart_epoch,
         )
         for identifier in identifiers
+        if identifier in observed_at
     )
 
 
@@ -302,11 +414,53 @@ def _ordered_identifiers(
     return tuple(sorted(identifiers, key=expected_sequences.__getitem__))
 
 
+def _source_event_times(contract: ObservationContract) -> dict[str, datetime]:
+    """Place each injected source sentinel strictly inside its frozen window."""
+
+    interval = (contract.deadline_at - contract.window_started_at) / (
+        len(contract.expected_sentinels) + 1
+    )
+    return {
+        sentinel.identifier: contract.window_started_at + interval * sentinel.sequence
+        for sentinel in contract.expected_sentinels
+    }
+
+
+def _parse_observed_at(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _retained_record_times(
+    records: Sequence[Mapping[str, object]], expected_ids: Sequence[str]
+) -> dict[str, datetime]:
+    """Extract value-safe source times retained by real product episode records."""
+
+    observed_at: dict[str, datetime] = {}
+    for record in records:
+        content = record.get("content")
+        timestamp = _parse_observed_at(record.get("ts"))
+        if not isinstance(content, str) or timestamp is None:
+            continue
+        for identifier in expected_ids:
+            if identifier in content:
+                observed_at.setdefault(identifier, timestamp)
+    return observed_at
+
+
 async def _exercise_capture_composition(
     *,
     contract: ObservationContract,
     config: Any,
     workspace: Path,
+    tail_source_factory: Callable[[Any], Any] | None,
 ) -> tuple[
     tuple[dict[str, Any], ...],
     tuple[dict[str, Any], ...],
@@ -314,6 +468,7 @@ async def _exercise_capture_composition(
     bool,
     tuple[str, ...],
     tuple[str, str | None],
+    _LiveTailDelivery,
 ]:
     """Drive the real poller plus selected capture twice, including restart recovery."""
 
@@ -327,6 +482,7 @@ async def _exercise_capture_composition(
     from memrelay.providers.copilot import CopilotProvider
 
     events_root = workspace / "copilot" / "session-state"
+    source_times = _source_event_times(contract)
     refs: list[SessionRef] = []
     for sentinel in contract.expected_sentinels:
         session_id = f"observation-{sentinel.sequence:04d}"
@@ -337,6 +493,7 @@ async def _exercise_capture_composition(
                 session_id=session_id,
                 sentinel_id=sentinel.identifier,
                 cwd=workspace,
+                observed_at=source_times[sentinel.identifier],
             ),
             encoding="utf-8",
         )
@@ -348,6 +505,9 @@ async def _exercise_capture_composition(
     capture_types: list[str] = []
     active = list(refs)
     captures: dict[str, object] = {}
+    tail_probes: list[_RecordingTailSource] = []
+    tail_captures: list[tuple[_RecordingTailSource, object]] = []
+    tail_task_failed = False
 
     async def replay_wait(_: float, stop: asyncio.Event) -> None:
         nonlocal replay_waits
@@ -359,6 +519,17 @@ async def _exercise_capture_composition(
 
         def capture_factory(ref: SessionRef) -> object:
             if config.ingest.intake_source == ObservationPath.FILE_WATCH.value:
+                source = (
+                    tail_source_factory(ref)
+                    if tail_source_factory is not None
+                    else provider.make_filewatch_source(
+                        ref.session_id,
+                        path=str(ref.path),
+                        start_at="beginning",
+                    )
+                )
+                probe = _RecordingTailSource(source, contract.expected_identifiers)
+                tail_probes.append(probe)
                 capture = LiveTailCapture(
                     ref,
                     spool=spool,
@@ -367,9 +538,11 @@ async def _exercise_capture_composition(
                     namespace_map=config.namespaces.repo_map,
                     interval=config.ingest.session_poll_interval,
                     wait=replay_wait,
+                    tail_source_factory=lambda _ref, source=probe: source,
                 )
                 if not isinstance(capture._replay, RunObserveCapture):
                     raise ObservationQualificationError("observation_replay_backstop_missing")
+                tail_captures.append((probe, capture))
             else:
                 capture = RunObserveCapture(
                     ref,
@@ -384,6 +557,38 @@ async def _exercise_capture_composition(
             capture_types.append(type(capture).__name__)
             return capture
 
+        async def await_tail_delivery(
+            entries: Sequence[tuple[_RecordingTailSource, object]],
+        ) -> None:
+            nonlocal tail_task_failed
+            if not entries:
+                return
+            probes = tuple(probe for probe, _ in entries)
+            try:
+                await _wait_until(
+                    lambda: set(contract.expected_identifiers).issubset(
+                        {
+                            identifier
+                            for probe in probes
+                            for identifier in probe.delivery().identifiers
+                        }
+                    )
+                    or all(probe.failed or probe.exhausted for probe in probes),
+                    timeout_seconds=2.0,
+                )
+            except ObservationQualificationError:
+                # A healthy-but-silent tail is retained as failed path evidence, not raised
+                # away before a typed unqualified decision can be persisted.
+                pass
+            tail_task_failed = tail_task_failed or any(
+                probe.failed
+                or (
+                    (task := getattr(capture, "_tail_task", None)) is None
+                    or (task.done() and not probe.exhausted)
+                )
+                for probe, capture in entries
+            )
+
         poller = SessionDiscoveryPoller(
             discover=lambda: list(active),
             capture_factory=capture_factory,
@@ -394,12 +599,7 @@ async def _exercise_capture_composition(
             await poller.poll_once()
             await _wait_until(lambda: replay_waits == len(refs))
             if contract.path is ObservationPath.FILE_WATCH:
-                await _wait_until(
-                    lambda: all(
-                        getattr(capture, "_tail_task", None) is not None
-                        for capture in captures.values()
-                    )
-                )
+                await await_tail_delivery(tuple(tail_captures))
 
             active.clear()
             await poller.poll_once()
@@ -407,6 +607,8 @@ async def _exercise_capture_composition(
             active.extend(refs)
             await poller.poll_once()
             await _wait_until(lambda: replay_waits == 2 * len(refs))
+            if contract.path is ObservationPath.FILE_WATCH:
+                await await_tail_delivery(tuple(tail_captures[len(refs) :]))
             active.clear()
             await poller.poll_once()
             final_stats = poller.stats()
@@ -427,6 +629,15 @@ async def _exercise_capture_composition(
                 and isinstance(getattr(capture, "_replay", None), RunObserveCapture)
                 for capture in captures.values()
             )
+        tail_identifiers: set[str] = set()
+        tail_observed_at: dict[str, datetime] = {}
+        tail_failed = tail_task_failed
+        for probe in tail_probes:
+            delivery = probe.delivery()
+            tail_identifiers.update(delivery.identifiers)
+            for identifier, observed_at in delivery.observed_at.items():
+                tail_observed_at.setdefault(identifier, observed_at)
+            tail_failed = tail_failed or delivery.failed
     return (
         stored_records,
         pre_idempotency,
@@ -436,6 +647,14 @@ async def _exercise_capture_composition(
         (
             str(stored_records[0]["namespace"]) if stored_records else "",
             stored_records[0].get("repo") if stored_records else None,
+        ),
+        _LiveTailDelivery(
+            identifiers=_ordered_identifiers(
+                tail_identifiers,
+                {sentinel.identifier: sentinel.sequence for sentinel in contract.expected_sentinels},
+            ),
+            observed_at=tail_observed_at,
+            failed=tail_failed,
         ),
     )
 
@@ -447,6 +666,9 @@ async def _exercise_daemon_and_mcp(
     expected_ids: Sequence[str],
     namespace: str,
     repo: str | None,
+    path: ObservationPath,
+    observed_at: Mapping[str, datetime],
+    telemetry: TelemetryAttemptEmitter,
 ) -> tuple[set[str], set[str], bool]:
     """Drain through the actual daemon and query it through the actual MCP tool surface."""
 
@@ -479,6 +701,19 @@ async def _exercise_daemon_and_mcp(
             text = blocks[0].text if blocks else ""
             if identifier in text:
                 mcp_ids.add(identifier)
+                timestamp = observed_at.get(identifier)
+                if timestamp is not None:
+                    telemetry.record(
+                        SpanClass.DAEMON_DISPATCH,
+                        started_at=timestamp,
+                        ended_at=timestamp,
+                        attributes={
+                            "sentinel_id": identifier,
+                            "sentinel_sequence": expected_ids.index(identifier) + 1,
+                            "observation_path": path.value,
+                            "restart_epoch": 1,
+                        },
+                    )
         health = await client.health()
         return daemon_ids, mcp_ids, health.get("spool_pending") == 0
     finally:
@@ -491,8 +726,10 @@ def run_actual_observation_composition(
     contract: ObservationContract,
     config: Any,
     workspace: Path,
+    tail_source_factory: Callable[[Any], Any] | None = None,
+    telemetry_collector_factory: Callable[[], ObservationTelemetryCollector] | None = None,
 ) -> ProductObservationRun:
-    """Inject sentinels and collect verified product facts without opening a daemon graph."""
+    """Inject sentinels and collect product records plus composition-emitted telemetry."""
 
     workspace.mkdir(parents=True, exist_ok=False)
     (
@@ -502,36 +739,66 @@ def run_actual_observation_composition(
         final_drain_completed,
         capture_types,
         (namespace, repo),
+        live_tail,
     ) = asyncio.run(
-        _exercise_capture_composition(contract=contract, config=config, workspace=workspace)
+        _exercise_capture_composition(
+            contract=contract,
+            config=config,
+            workspace=workspace,
+            tail_source_factory=tail_source_factory,
+        )
     )
     expected_ids = contract.expected_identifiers
     sentinels = contract.expected_sentinels
     expected_sequences = {sentinel.identifier: sentinel.sequence for sentinel in sentinels}
     spool_ids = _sentinel_ids_in(stored_records, expected_ids)
     pre_ids = _sentinel_ids_in(pre_records, expected_ids)
-    daemon_ids, mcp_ids, daemon_drained = asyncio.run(
-        _exercise_daemon_and_mcp(
-            config=config,
-            workspace=workspace,
-            expected_ids=expected_ids,
-            namespace=namespace,
-            repo=repo,
-        )
+    observed_at = _retained_record_times(stored_records, expected_ids)
+    for identifier, timestamp in _retained_record_times(pre_records, expected_ids).items():
+        observed_at.setdefault(identifier, timestamp)
+    collector = (
+        telemetry_collector_factory()
+        if telemetry_collector_factory is not None
+        else ObservationTelemetryCollector()
     )
-    observed_at = datetime.now(UTC)
+    telemetry = TelemetryAttemptEmitter(
+        _observation_telemetry_context(contract),
+        collector,
+    )
+    try:
+        daemon_ids, mcp_ids, daemon_drained = asyncio.run(
+            _exercise_daemon_and_mcp(
+                config=config,
+                workspace=workspace,
+                expected_ids=expected_ids,
+                namespace=namespace,
+                repo=repo,
+                path=contract.path,
+                observed_at=observed_at,
+                telemetry=telemetry,
+            )
+        )
+    finally:
+        collector_shutdown_verified = collector.shutdown()
     discovery_ids = set(expected_ids) if sessions_observed == 2 * len(expected_ids) else set()
+    capture_composition_verified = len(capture_types) == 2 * len(expected_ids) and all(
+        item
+        == (
+            "RunObserveCapture"
+            if contract.path is ObservationPath.REPLAY
+            else "LiveTailCapture"
+        )
+        for item in capture_types
+    )
+    live_tail_delivery_verified = (
+        set(live_tail.identifiers) == set(expected_ids) and not live_tail.failed
+    )
     capture_ids = (
         set(expected_ids)
-        if len(capture_types) == 2 * len(expected_ids)
-        and all(
-            item
-            == (
-                "RunObserveCapture"
-                if contract.path is ObservationPath.REPLAY
-                else "LiveTailCapture"
-            )
-            for item in capture_types
+        if capture_composition_verified
+        and (
+            contract.path is ObservationPath.REPLAY
+            or live_tail_delivery_verified
         )
         else set()
     )
@@ -542,6 +809,13 @@ def run_actual_observation_composition(
             identifiers=_ordered_identifiers(discovery_ids, expected_sequences),
             expected_sequences=expected_sequences,
             observed_at=observed_at,
+        )
+        + _records(
+            path=contract.path,
+            boundary=ObservationBoundary.LIVE_TAIL,
+            identifiers=live_tail.identifiers,
+            expected_sequences=expected_sequences,
+            observed_at=live_tail.observed_at,
         )
         + _records(
             path=contract.path,
@@ -603,7 +877,17 @@ def run_actual_observation_composition(
         == mcp_ids
         and final_drain_completed
         and daemon_drained
+        and (
+            contract.path is ObservationPath.REPLAY
+            or live_tail_delivery_verified
+        )
     )
+    evidence_failure_reasons: list[ObservationFailureReason] = []
+    if contract.path is ObservationPath.FILE_WATCH:
+        if live_tail.failed:
+            evidence_failure_reasons.append(ObservationFailureReason.LIVE_TAIL_DELIVERY_FAILED)
+        if set(live_tail.identifiers) != set(expected_ids):
+            evidence_failure_reasons.append(ObservationFailureReason.LIVE_TAIL_DELIVERY_MISSING)
     receipt = canonical_bytes(
         {
             "schema_version": "1.0.0",
@@ -622,6 +906,8 @@ def run_actual_observation_composition(
             "spool_ids": sorted(spool_ids),
             "daemon_ids": sorted(daemon_ids),
             "mcp_ids": sorted(mcp_ids),
+            "live_tail_ids": list(live_tail.identifiers),
+            "live_tail_failed": live_tail.failed,
             "sessions_observed": sessions_observed,
             "final_drain_completed": final_drain_completed,
             "daemon_drained": daemon_drained,
@@ -631,11 +917,34 @@ def run_actual_observation_composition(
     return ProductObservationRun(
         native_records=records,
         final_drain_completed=final_drain_completed,
-        collector_shutdown_verified=True,
+        collector_shutdown_verified=collector_shutdown_verified,
         reconciliation_completed=independently_verified,
         authority_conflict=False,
         partial_success=not independently_verified,
         receipt=receipt,
+        telemetry_spans=collector.spans,
+        evidence_failure_reasons=tuple(evidence_failure_reasons),
+    )
+
+
+def _observation_telemetry_context(contract: ObservationContract) -> TelemetryContext:
+    """Bind composition-emitted sentinel spans to opaque path and run identities."""
+
+    digest = sha256(
+        f"{contract.identity.conformance_sha256}:{contract.path.value}".encode("ascii")
+    ).hexdigest()
+    return TelemetryContext(
+        experiment_id=f"exp_{digest[:32]}",
+        protocol_id=f"protocol_{digest[:32]}",
+        run_id=f"run_{digest[:32]}",
+        attempt_id=f"attempt_{digest[:32]}",
+        scenario_id=f"scenario_{digest[:32]}",
+        stratum_id="product",
+        history_mode="controlled",
+        identity=identity_for_span_class(SpanClass.DAEMON_DISPATCH.value),
+        evidence_class="observation_sentinel",
+        exposure_state="unexposed",
+        environment_fingerprint_sha256=digest,
     )
 
 

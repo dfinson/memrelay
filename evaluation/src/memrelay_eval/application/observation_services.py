@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from hashlib import sha256
+from datetime import datetime
 
 from memrelay_eval.adapters.memrelay.observation import (
     ObservationQualificationDecision,
@@ -11,16 +10,11 @@ from memrelay_eval.adapters.memrelay.observation import (
 )
 from memrelay_eval.adapters.memrelay.observation_runner import ProductObservationRun
 from memrelay_eval.adapters.telemetry.observation import observation_telemetry_evidence
-from memrelay_eval.adapters.telemetry.semantics import (
-    SpanClass,
-    TelemetryContext,
-    TelemetrySpan,
-)
-from memrelay_eval.domain.identity import identity_for_span_class
 from memrelay_eval.domain.observation import (
     ObservationBoundary,
     ObservationContract,
     ObservationEvidence,
+    ObservationFailureReason,
     SentinelBoundaryRecord,
 )
 
@@ -46,18 +40,15 @@ def verified_product_observation_evidence(
     *,
     native_receipt_persisted: bool,
 ) -> ObservationEvidence:
-    """Build evaluator evidence only from the just-executed native composition result."""
+    """Reconcile telemetry emitted by the just-executed product composition."""
 
-    spans = tuple(
-        _observation_span(contract, sentinel.identifier, sentinel.sequence)
-        for sentinel in contract.expected_sentinels
-    )
     telemetry = observation_telemetry_evidence(
-        spans,
+        run.telemetry_spans,
         path=contract.path,
+        expected_sentinels=contract.expected_sentinels,
         collector_shutdown_verified=run.collector_shutdown_verified,
     )
-    observed_at = datetime.now(UTC)
+    observed_at = _retained_observation_times(contract, run)
     manifest_records = (
         tuple(
             SentinelBoundaryRecord(
@@ -65,10 +56,11 @@ def verified_product_observation_evidence(
                 boundary=ObservationBoundary.MANIFEST,
                 sentinel_id=sentinel.identifier,
                 sequence=sentinel.sequence,
-                observed_at=observed_at,
+                observed_at=observed_at[sentinel.identifier],
                 restart_epoch=1,
             )
             for sentinel in contract.expected_sentinels
+            if sentinel.identifier in observed_at
         )
         if native_receipt_persisted
         else ()
@@ -86,10 +78,11 @@ def verified_product_observation_evidence(
                 boundary=ObservationBoundary.RECONCILIATION,
                 sentinel_id=sentinel.identifier,
                 sequence=sentinel.sequence,
-                observed_at=observed_at,
+                observed_at=observed_at[sentinel.identifier],
                 restart_epoch=1,
             )
             for sentinel in contract.expected_sentinels
+            if sentinel.identifier in observed_at
         )
         if reconciled
         else ()
@@ -105,41 +98,39 @@ def verified_product_observation_evidence(
         reconciliation_completed=reconciled,
         authority_conflict=run.authority_conflict or bool(telemetry.failure_codes),
         partial_success=run.partial_success or not reconciled,
+        evidence_failure_reasons=(
+            run.evidence_failure_reasons + _telemetry_failure_reasons(telemetry.failure_codes)
+        ),
     )
 
 
-def _observation_span(
-    contract: ObservationContract, identifier: str, sequence: int
-) -> TelemetrySpan:
-    """Emit a value-safe telemetry receipt only after native daemon/MCP verification."""
+def _retained_observation_times(
+    contract: ObservationContract, run: ProductObservationRun
+) -> dict[str, datetime]:
+    """Use retained native product times rather than relabeling post-run evidence."""
 
-    digest = sha256(
-        f"{contract.identity.conformance_sha256}:{contract.path.value}:{identifier}".encode("ascii")
-    ).hexdigest()
-    context = TelemetryContext(
-        experiment_id=f"exp_{digest[:32]}",
-        protocol_id=f"protocol_{digest[:32]}",
-        run_id=f"run_{digest[:32]}",
-        attempt_id=f"attempt_{digest[:32]}",
-        scenario_id=f"scenario_{digest[:32]}",
-        stratum_id="product",
-        history_mode="controlled",
-        identity=identity_for_span_class(SpanClass.DAEMON_DISPATCH.value),
-        evidence_class="observation_sentinel",
-        exposure_state="unexposed",
-        environment_fingerprint_sha256=digest,
-    )
-    observed_at = datetime.now(UTC)
-    return TelemetrySpan(
-        span_id=f"span-{digest[:32]}",
-        span_class=SpanClass.DAEMON_DISPATCH,
-        context=context,
-        started_at=observed_at,
-        ended_at=observed_at,
-        attributes={
-            "sentinel_id": identifier,
-            "sentinel_sequence": sequence,
-            "observation_path": contract.path.value,
-            "restart_epoch": 1,
-        },
-    )
+    times: dict[str, datetime] = {}
+    expected = set(contract.expected_identifiers)
+    for record in run.native_records:
+        if record.sentinel_id in expected:
+            prior = times.get(record.sentinel_id)
+            if prior is None or record.observed_at > prior:
+                times[record.sentinel_id] = record.observed_at
+    return times
+
+
+def _telemetry_failure_reasons(
+    failure_codes: tuple[str, ...],
+) -> tuple[ObservationFailureReason, ...]:
+    """Map collector reconciliation facts to stable path-qualification reasons."""
+
+    reasons: set[ObservationFailureReason] = set()
+    if "TEL-OBSERVATION-DROP" in failure_codes or "TEL-DROP" in failure_codes:
+        reasons.add(ObservationFailureReason.TELEMETRY_DELIVERY_LOSS)
+    if "TEL-OBSERVATION-MALFORMED" in failure_codes:
+        reasons.add(ObservationFailureReason.TELEMETRY_MALFORMED)
+    if "TEL-OBSERVATION-PATH-MISMATCH" in failure_codes:
+        reasons.add(ObservationFailureReason.TELEMETRY_PATH_MISMATCH)
+    if failure_codes and not reasons:
+        reasons.add(ObservationFailureReason.UNRECONCILED)
+    return tuple(sorted(reasons, key=lambda item: item.value))
