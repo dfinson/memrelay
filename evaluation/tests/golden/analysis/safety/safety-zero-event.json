@@ -1,0 +1,36 @@
+{
+  "derivation_sha256": "c71ebcb6d40d51e54a141557d180059f634b5577cf41a66ca4d4c0e4203dc6f9",
+  "digest": "4e803031cd92e0107e2bca864d70c1e7383138ae30b122341ca6a318e6a960b3",
+  "policy_sha256": "ec6526efb6cca22792433522513621f462c81b7496e8039d9e2cef542f42250c",
+  "results": [
+    {
+      "adjusted_harm_upper_bound": 1.0,
+      "assigned_denominator": 2,
+      "attribution_counts": {},
+      "coverage_lower_bound": 0.22360679774997907,
+      "detected_events": 0,
+      "detector_gate_status": "bounded",
+      "evidence_status": "complete",
+      "exact_detected_event_upper_bound": 0.776393202250021,
+      "gate_id": "SG-001",
+      "history_mode": "controlled",
+      "included_denominator": 1,
+      "inspected_denominator": 2,
+      "rule_of_three_approximation": 1.0,
+      "sensitivity_lower_bound": 0.050000000000000044,
+      "severity_counts": {},
+      "stratum": "product"
+    }
+  ],
+  "schema_version": "1.0.0",
+  "sensitivity_scenarios": [],
+  "source_evidence_sha256": [
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  ],
+  "source_manifest_sha256": [
+    "9999999999999999999999999999999999999999999999999999999999999999"
+  ]
+}

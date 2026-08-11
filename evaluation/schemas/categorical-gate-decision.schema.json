@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/schemas/categorical-gate-decision.schema.json",
+  "type": "object",
+  "required": ["schema_version", "scope_id", "status", "blocking_event_ids", "affected_claim_ids", "policy_sha256", "evidence_sha256", "bounded_language_required", "digest"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "scope_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["pass", "blocked"]},
+    "blocking_event_ids": {"type": "array", "items": {"type": "string"}},
+    "affected_claim_ids": {"type": "array", "items": {"type": "string"}},
+    "policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evidence_sha256": {"type": "array", "items": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+    "bounded_language_required": {"type": "boolean"},
+    "digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "additionalProperties": false
+}
