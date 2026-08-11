@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import math
 import os
@@ -530,8 +531,10 @@ class ParquetMaterializer:
             _fsync_directory(staging)
             try:
                 os.replace(staging, destination)
-            except FileExistsError:
-                return self._load_existing(destination, dataset_version, materialization_sha256)
+            except OSError as error:
+                if _destination_exists_collision(error, destination):
+                    return self._load_existing(destination, dataset_version, materialization_sha256)
+                raise
             _fsync_directory(self._output_root)
             return MaterializationResult(
                 dataset_version,
@@ -995,6 +998,15 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _destination_exists_collision(error: OSError, destination: Path) -> bool:
+    """Recognize only platform-specific immutable-directory publication races."""
+    return destination.is_dir() and (
+        isinstance(error, FileExistsError)
+        or error.errno in {errno.EACCES, errno.ENOTEMPTY}
+        or getattr(error, "winerror", None) == 5
+    )
 
 
 def _decimal_quantity(value: Decimal | int) -> Decimal:

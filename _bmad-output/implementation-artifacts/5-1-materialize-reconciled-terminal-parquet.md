@@ -109,8 +109,9 @@ GPT-5.6 Terra
 
 ### Debug Log References
 
-- `py -3.13 -m pytest evaluation\tests -q` — 1217 passed, 46 skipped.
-- Focused reconciliation and Parquet boundary coverage — 52 passed.
+- `py -3.13 -m pytest evaluation\tests -q` — 1218 passed, 46 skipped; one
+  catalog attestation retry passed after its initial transient command failure.
+- Focused reconciliation and Parquet boundary coverage — 13 passed.
 - `uv lock --locked` and targeted Ruff checks/format checks — passed.
 
 ### Completion Notes List
@@ -123,6 +124,9 @@ GPT-5.6 Terra
 - Added contract, integration, fault, golden, and architecture coverage for deterministic
   ordering, changed-input versioning, lineage corruption, schema drift, partial publication,
   and the read-only evaluator boundary.
+- Hardened concurrent immutable publication for Windows destination-exists collisions:
+  byte-identical callers reuse only a fully verified published version; corrupt collision
+  destinations fail closed.
 
 ### File List
 

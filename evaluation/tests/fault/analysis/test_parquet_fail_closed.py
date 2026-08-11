@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import errno
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
+import memrelay_eval.evidence.parquet as parquet_module
 import pyarrow.parquet as pq
 import pytest
 from memrelay_eval.domain.entities import ArtifactRef
@@ -66,3 +70,42 @@ def test_partial_or_schema_drifted_publication_is_rejected(tmp_path) -> None:
     with pytest.raises(MaterializationError) as drift:
         materializer._verify_published(result)
     assert drift.value.code == "parquet_schema_drift"
+
+
+def test_concurrent_publishers_reuse_one_verified_immutable_version(tmp_path) -> None:
+    store, record = _record(tmp_path)
+    root = tmp_path / "parquet"
+
+    def materialize_once(_: int):
+        return ParquetMaterializer(store, root).materialize((record,))
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        results = list(executor.map(materialize_once, range(12)))
+
+    assert {result.dataset_version for result in results} == {results[0].dataset_version}
+    assert {result.assigned_units_ref for result in results} == {results[0].assigned_units_ref}
+    assert {result.eligible_outcomes_ref for result in results} == {
+        results[0].eligible_outcomes_ref
+    }
+    assert list(root.glob("parquet-v*")) == [results[0].directory]
+
+
+def test_corrupt_destination_collision_fails_closed(tmp_path, monkeypatch) -> None:
+    store, record = _record(tmp_path)
+    root = tmp_path / "parquet"
+    real_replace = parquet_module.os.replace
+
+    def destination_collision(source: Path | str, destination: Path | str) -> None:
+        source_path = Path(source)
+        destination_path = Path(destination)
+        if source_path.name.endswith(".staging") and destination_path.name.startswith("parquet-v"):
+            destination_path.mkdir()
+            raise PermissionError(errno.EACCES, "destination access denied", str(destination_path))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(parquet_module.os, "replace", destination_collision)
+
+    with pytest.raises(MaterializationError) as error:
+        ParquetMaterializer(store, root).materialize((record,))
+
+    assert error.value.code == "published_manifest_missing_or_invalid"
