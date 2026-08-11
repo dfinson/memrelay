@@ -164,10 +164,9 @@ def observation_evidence_from_document(value: Mapping[str, object]) -> Observati
         "evidence_failure_reasons",
     }
     document_keys = set(value)
-    if (
-        document_keys != evidence_keys
-        and document_keys != evidence_keys - {"evidence_failure_reasons"}
-    ):
+    if document_keys != evidence_keys and document_keys != evidence_keys - {
+        "evidence_failure_reasons"
+    }:
         raise ValueError("observation_evidence_document_keys_invalid")
     records: list[SentinelBoundaryRecord] = []
     for item in _document_list(value["records"], "records"):
@@ -207,9 +206,7 @@ def observation_evidence_from_document(value: Mapping[str, object]) -> Observati
         authority_conflict=_document_boolean(value["authority_conflict"], "authority_conflict"),
         partial_success=_document_boolean(value["partial_success"], "partial_success"),
         evidence_failure_reasons=tuple(
-            ObservationFailureReason(
-                _document_string(item, "evidence_failure_reason")
-            )
+            ObservationFailureReason(_document_string(item, "evidence_failure_reason"))
             for item in _document_list(
                 value.get("evidence_failure_reasons", []), "evidence_failure_reasons"
             )
@@ -421,8 +418,7 @@ class ObservationEvidence:
             raise ValueError("observation_evidence_record_invalid")
         evidence_failure_reasons = tuple(self.evidence_failure_reasons)
         if any(
-            not isinstance(reason, ObservationFailureReason)
-            for reason in evidence_failure_reasons
+            not isinstance(reason, ObservationFailureReason) for reason in evidence_failure_reasons
         ):
             raise ValueError("observation_evidence_failure_reason_invalid")
         object.__setattr__(self, "records", records)
@@ -442,9 +438,7 @@ class ObservationEvidence:
             "reconciliation_completed": self.reconciliation_completed,
             "authority_conflict": self.authority_conflict,
             "partial_success": self.partial_success,
-            "evidence_failure_reasons": [
-                item.value for item in self.evidence_failure_reasons
-            ],
+            "evidence_failure_reasons": [item.value for item in self.evidence_failure_reasons],
         }
 
 

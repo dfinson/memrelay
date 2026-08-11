@@ -5,11 +5,15 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-from collections.abc import Callable, Mapping, Sequence
+import os
+import sys
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from memrelay_eval.adapters.memrelay.observation import build_observation_identity
@@ -369,7 +373,7 @@ def _synthetic_event_lines(
             "timestamp": timestamp,
         },
     )
-    return "".join(json.dumps(event, separators=(",", ":")) + "\n" for event in events)
+    return b"".join(canonical_bytes(event) + b"\n" for event in events).decode("utf-8")
 
 
 def _sentinel_ids_in(
@@ -566,14 +570,16 @@ async def _exercise_capture_composition(
             probes = tuple(probe for probe, _ in entries)
             try:
                 await _wait_until(
-                    lambda: set(contract.expected_identifiers).issubset(
-                        {
-                            identifier
-                            for probe in probes
-                            for identifier in probe.delivery().identifiers
-                        }
-                    )
-                    or all(probe.failed or probe.exhausted for probe in probes),
+                    lambda: (
+                        set(contract.expected_identifiers).issubset(
+                            {
+                                identifier
+                                for probe in probes
+                                for identifier in probe.delivery().identifiers
+                            }
+                        )
+                        or all(probe.failed or probe.exhausted for probe in probes)
+                    ),
                     timeout_seconds=2.0,
                 )
             except ObservationQualificationError:
@@ -651,7 +657,10 @@ async def _exercise_capture_composition(
         _LiveTailDelivery(
             identifiers=_ordered_identifiers(
                 tail_identifiers,
-                {sentinel.identifier: sentinel.sequence for sentinel in contract.expected_sentinels},
+                {
+                    sentinel.identifier: sentinel.sequence
+                    for sentinel in contract.expected_sentinels
+                },
             ),
             observed_at=tail_observed_at,
             failed=tail_failed,
@@ -677,48 +686,63 @@ async def _exercise_daemon_and_mcp(
     from memrelay.mcp.client import DaemonClient
     from memrelay.mcp.server import build_mcp_server
 
-    endpoint = resolve_endpoint(workspace / "daemon")
-    backend = _ObservationBackend()
-    runtime = DaemonRuntime(config, endpoint, backend=backend)
-    await runtime.start()
-    serve_task = asyncio.create_task(runtime.serve())
-    client = DaemonClient(endpoint, timeout=5.0)
-    try:
-        await _wait_until(
-            lambda: len(backend.notes) >= len(expected_ids),
-        )
-        daemon_ids = {
-            identifier
-            for content, _, _ in backend.notes
-            for identifier in expected_ids
-            if identifier in content
-        }
-        mcp_ids: set[str] = set()
-        for identifier in expected_ids:
-            mcp = build_mcp_server(client, context_resolver=lambda: (namespace, repo))
-            result = await mcp.call_tool("memory_recall", {"query": identifier})
-            blocks = result[0] if isinstance(result, tuple) else result
-            text = blocks[0].text if blocks else ""
-            if identifier in text:
-                mcp_ids.add(identifier)
-                timestamp = observed_at.get(identifier)
-                if timestamp is not None:
-                    telemetry.record(
-                        SpanClass.DAEMON_DISPATCH,
-                        started_at=timestamp,
-                        ended_at=timestamp,
-                        attributes={
-                            "sentinel_id": identifier,
-                            "sentinel_sequence": expected_ids.index(identifier) + 1,
-                            "observation_path": path.value,
-                            "restart_epoch": 1,
-                        },
-                    )
-        health = await client.health()
-        return daemon_ids, mcp_ids, health.get("spool_pending") == 0
-    finally:
-        runtime.request_shutdown()
-        await asyncio.wait_for(serve_task, timeout=5.0)
+    with _bounded_daemon_home(workspace) as daemon_home:
+        endpoint = resolve_endpoint(daemon_home)
+        backend = _ObservationBackend()
+        runtime = DaemonRuntime(config, endpoint, backend=backend)
+        await runtime.start()
+        serve_task = asyncio.create_task(runtime.serve())
+        client = DaemonClient(endpoint, timeout=5.0)
+        try:
+            await _wait_until(
+                lambda: len(backend.notes) >= len(expected_ids),
+            )
+            daemon_ids = {
+                identifier
+                for content, _, _ in backend.notes
+                for identifier in expected_ids
+                if identifier in content
+            }
+            mcp_ids: set[str] = set()
+            for identifier in expected_ids:
+                mcp = build_mcp_server(client, context_resolver=lambda: (namespace, repo))
+                result = await mcp.call_tool("memory_recall", {"query": identifier})
+                blocks = result[0] if isinstance(result, tuple) else result
+                text = blocks[0].text if blocks else ""
+                if identifier in text:
+                    mcp_ids.add(identifier)
+                    timestamp = observed_at.get(identifier)
+                    if timestamp is not None:
+                        telemetry.record(
+                            SpanClass.DAEMON_DISPATCH,
+                            started_at=timestamp,
+                            ended_at=timestamp,
+                            attributes={
+                                "sentinel_id": identifier,
+                                "sentinel_sequence": expected_ids.index(identifier) + 1,
+                                "observation_path": path.value,
+                                "restart_epoch": 1,
+                            },
+                        )
+            health = await client.health()
+            return daemon_ids, mcp_ids, health.get("spool_pending") == 0
+        finally:
+            runtime.request_shutdown()
+            await asyncio.wait_for(serve_task, timeout=5.0)
+
+
+@contextmanager
+def _bounded_daemon_home(workspace: Path) -> Iterator[Path]:
+    """Use an OS-shortened endpoint home for POSIX Unix-domain sockets."""
+
+    if sys.platform == "win32":
+        yield workspace / "daemon"
+        return
+    with TemporaryDirectory(prefix="memrelay-observation-") as temporary:
+        daemon_home = Path(temporary)
+        if len(os.fsencode(daemon_home / "daemon.sock")) >= 104:
+            raise ObservationQualificationError("observation_daemon_socket_path_too_long")
+        yield daemon_home
 
 
 def run_actual_observation_composition(
@@ -783,11 +807,7 @@ def run_actual_observation_composition(
     discovery_ids = set(expected_ids) if sessions_observed == 2 * len(expected_ids) else set()
     capture_composition_verified = len(capture_types) == 2 * len(expected_ids) and all(
         item
-        == (
-            "RunObserveCapture"
-            if contract.path is ObservationPath.REPLAY
-            else "LiveTailCapture"
-        )
+        == ("RunObserveCapture" if contract.path is ObservationPath.REPLAY else "LiveTailCapture")
         for item in capture_types
     )
     live_tail_delivery_verified = (
@@ -796,10 +816,7 @@ def run_actual_observation_composition(
     capture_ids = (
         set(expected_ids)
         if capture_composition_verified
-        and (
-            contract.path is ObservationPath.REPLAY
-            or live_tail_delivery_verified
-        )
+        and (contract.path is ObservationPath.REPLAY or live_tail_delivery_verified)
         else set()
     )
     records = (
@@ -877,10 +894,7 @@ def run_actual_observation_composition(
         == mcp_ids
         and final_drain_completed
         and daemon_drained
-        and (
-            contract.path is ObservationPath.REPLAY
-            or live_tail_delivery_verified
-        )
+        and (contract.path is ObservationPath.REPLAY or live_tail_delivery_verified)
     )
     evidence_failure_reasons: list[ObservationFailureReason] = []
     if contract.path is ObservationPath.FILE_WATCH:

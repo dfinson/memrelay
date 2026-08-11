@@ -3,20 +3,67 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
 from memrelay_eval.adapters.memrelay.observation import (
     ObservationQualificationDecision,
     ObservationQualificationService,
 )
-from memrelay_eval.adapters.memrelay.observation_runner import ProductObservationRun
+from memrelay_eval.adapters.memrelay.observation_runner import (
+    ProductObservationRun,
+    current_observation_identity,
+    receipt_sha256,
+    run_actual_observation_composition,
+)
 from memrelay_eval.adapters.telemetry.observation import observation_telemetry_evidence
 from memrelay_eval.domain.observation import (
     ObservationBoundary,
     ObservationContract,
     ObservationEvidence,
     ObservationFailureReason,
+    ObservationIdentity,
+    ObservationPath,
     SentinelBoundaryRecord,
 )
+
+
+def resolve_product_observation_identity(
+    *,
+    path: ObservationPath,
+    product_config_path: Path,
+    runtime_lock_path: Path,
+    workspace: Path,
+) -> tuple[ObservationIdentity, Any]:
+    """Resolve product identity through the application-owned composition boundary."""
+
+    return current_observation_identity(
+        path=path,
+        product_config_path=product_config_path,
+        runtime_lock_path=runtime_lock_path,
+        workspace=workspace,
+    )
+
+
+def execute_product_observation_composition(
+    *,
+    contract: ObservationContract,
+    config: Any,
+    workspace: Path,
+) -> ProductObservationRun:
+    """Execute the repository adapter behind the evaluator application boundary."""
+
+    return run_actual_observation_composition(
+        contract=contract,
+        config=config,
+        workspace=workspace,
+    )
+
+
+def product_observation_receipt_sha256(run: ProductObservationRun) -> str:
+    """Commit the native receipt through the composition boundary."""
+
+    return receipt_sha256(run)
 
 
 def qualify_observation(

@@ -102,9 +102,8 @@ def observation_telemetry_evidence(
             malformed = True
             continue
         observed_counts[record.sentinel_id] = observed_counts.get(record.sentinel_id, 0) + 1
-    if (
-        set(observed_counts) != set(expected_by_identifier)
-        or any(count != 1 for count in observed_counts.values())
+    if set(observed_counts) != set(expected_by_identifier) or any(
+        count != 1 for count in observed_counts.values()
     ):
         delivery_loss = True
 
@@ -127,11 +126,7 @@ def observation_telemetry_evidence(
         failure_codes=tuple(
             sorted(
                 failure_codes
-                | (
-                    {"TEL-OBSERVATION-RECONCILIATION"}
-                    if malformed or mixed_path
-                    else set()
-                )
+                | ({"TEL-OBSERVATION-RECONCILIATION"} if malformed or mixed_path else set())
             )
         ),
     )

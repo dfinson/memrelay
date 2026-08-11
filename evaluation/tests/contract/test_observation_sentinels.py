@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,9 +30,9 @@ from memrelay_eval.adapters.telemetry.semantics import (
     TelemetryContext,
     TelemetrySpan,
 )
+from memrelay_eval.application.observation_services import verified_product_observation_evidence
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.cli.main import main
-from memrelay_eval.application.observation_services import verified_product_observation_evidence
 from memrelay_eval.domain.errors import ObservationQualificationError
 from memrelay_eval.domain.identity import identity_for_span_class
 from memrelay_eval.domain.observation import (
@@ -481,9 +482,7 @@ def test_observation_conformance_cli_executes_and_binds_actual_compositions(
         for boundary in ObservationBoundary
         if path is ObservationPath.FILE_WATCH or boundary is not ObservationBoundary.LIVE_TAIL
     }
-    assert expected_boundaries == {
-        record["boundary"] for record in decision["evidence"]["records"]
-    }
+    assert expected_boundaries == {record["boundary"] for record in decision["evidence"]["records"]}
     assert all(
         record["sentinel_id"] not in contract.expected_identifiers
         for record in decision["evidence"]["records"]
@@ -552,17 +551,17 @@ def test_file_watch_requires_retained_live_tail_delivery_even_when_replay_succee
     )
 
     assert run.receipt
-    assert {record.sentinel_id for record in run.native_records if record.boundary is ObservationBoundary.SPOOL} == set(
-        contract.expected_identifiers
-    )
+    assert {
+        record.sentinel_id
+        for record in run.native_records
+        if record.boundary is ObservationBoundary.SPOOL
+    } == set(contract.expected_identifiers)
     assert not decision.qualified
     assert reason in decision.assessment.failure_reasons
     assert reason in evidence.evidence_failure_reasons
     assert decision.assessment.reason_code == reason.value
     assert not [
-        record
-        for record in evidence.records
-        if record.boundary is ObservationBoundary.LIVE_TAIL
+        record for record in evidence.records if record.boundary is ObservationBoundary.LIVE_TAIL
     ]
 
 
@@ -623,9 +622,9 @@ def test_actual_composition_preserves_real_source_times_and_rejects_pre_window_e
     )
 
     assert qualified.qualified
-    assert {
-        span.attributes["sentinel_id"] for span in run.telemetry_spans
-    } == set(contract.expected_identifiers)
+    assert {span.attributes["sentinel_id"] for span in run.telemetry_spans} == set(
+        contract.expected_identifiers
+    )
     assert all(
         span.attributes["observation_path"] == contract.path.value
         and contract.window_started_at <= span.ended_at <= contract.deadline_at
@@ -651,6 +650,22 @@ def test_actual_composition_preserves_real_source_times_and_rejects_pre_window_e
 
     assert ObservationFailureReason.OUTSIDE_FROZEN_WINDOW in rejected.failure_reasons
     assert ObservationFailureReason.MISSING in rejected.failure_reasons
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows uses loopback daemon transport")
+def test_actual_composition_uses_bounded_unix_socket_path_for_long_workspace(
+    tmp_path: Path,
+) -> None:
+    contract, config, _ = _actual_run_contract(tmp_path, ObservationPath.REPLAY)
+    workspace = tmp_path / f"observation-{'x' * 96}"
+
+    run = run_actual_observation_composition(
+        contract=contract,
+        config=config,
+        workspace=workspace,
+    )
+
+    assert run.reconciliation_completed
 
 
 @pytest.mark.parametrize(

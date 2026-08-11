@@ -42,7 +42,10 @@ from memrelay_eval.application.copilot_services import (
     qualify_native_catalog,
 )
 from memrelay_eval.application.observation_services import (
+    execute_product_observation_composition,
+    product_observation_receipt_sha256,
     qualify_observation,
+    resolve_product_observation_identity,
     verified_product_observation_evidence,
 )
 from memrelay_eval.application.telemetry_services import (
@@ -505,15 +508,9 @@ def observation_conformance(args: Namespace) -> int:
     except ValueError as error:
         raise ObservationQualificationError("observation_qualification_input_invalid") from error
 
-    from memrelay_eval.adapters.memrelay.observation_runner import (
-        current_observation_identity,
-        receipt_sha256,
-        run_actual_observation_composition,
-    )
-
     output_root = Path(args.output_root)
     workspace = output_root / "observation-runs" / requested_contract.path.value / uuid.uuid4().hex
-    identity, product_config = current_observation_identity(
+    identity, product_config = resolve_product_observation_identity(
         path=requested_contract.path,
         product_config_path=Path(args.product_config),
         runtime_lock_path=Path(args.runtime_lock),
@@ -539,12 +536,12 @@ def observation_conformance(args: Namespace) -> int:
     )
     require_new_protocol(requested_contract, contract)
 
-    run = run_actual_observation_composition(
+    run = execute_product_observation_composition(
         contract=contract,
         config=product_config,
         workspace=workspace,
     )
-    native_receipt_sha256 = receipt_sha256(run)
+    native_receipt_sha256 = product_observation_receipt_sha256(run)
     _persist_observation_native_receipt(
         output_root,
         path=contract.path.value,
