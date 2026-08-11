@@ -286,10 +286,11 @@ class SafetyAnalysisError(DomainError):
 
 
 class AnalysisError(DomainError):
-    """A frozen assignment-aligned analysis request cannot be safely completed."""
+    """A frozen analysis request or derivation cannot satisfy its contract."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, fields: tuple[str, ...] = ()) -> None:
         self.code = code
+        self.fields = fields
         super().__init__(code.replace("_", " "))
 
 

@@ -5,6 +5,7 @@ description = "Offline, treatment-neutral evaluation foundation for memrelay."
 readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
+    "duckdb==1.5.5",
     "github-copilot-sdk==1.0.8",
     "inspect-ai==0.3.252",
     "jsonschema==4.26.0",
@@ -21,7 +22,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
 future-adapters = [
-    "duckdb==1.5.5",
     "openinference-instrumentation-openai==0.1.53",
 ]
 
