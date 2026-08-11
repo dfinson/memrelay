@@ -14,6 +14,11 @@ from memrelay_eval.domain.errors import (
     UnqualifiedEvidencePortError,
 )
 from memrelay_eval.scoring.blinding import BlindingPolicy, generate_blinded_view
+from memrelay_eval.scoring.calibration import (
+    FrozenPanelPassRules,
+    FrozenPanelQualificationProtocol,
+    HumanGoldLabel,
+)
 from memrelay_eval.scoring.rubric import (
     JUDGE_CRITERIA,
     FrozenJudgeRubric,
@@ -93,6 +98,24 @@ def _schedule(*, stage_token_limit: int = 1200) -> FrozenPanelSchedule:
     )
 
 
+def _qualification(schedule: FrozenPanelSchedule) -> FrozenPanelQualificationProtocol:
+    scores = dict.fromkeys(JUDGE_CRITERIA, 0.75)
+    return FrozenPanelQualificationProtocol(
+        schedule_sha256=schedule.sha256,
+        gold_label_provenance_sha256="c" * 64,
+        human_gold_labels=(
+            HumanGoldLabel("calibration-a", scores),
+            HumanGoldLabel("sentinel-a", scores),
+        ),
+        duplicate_pairs=(("duplicate-a", "candidate-a"),),
+        criterion_metrics=tuple((name, "icc") for name in JUDGE_CRITERIA),
+        drift_window_size=1,
+        pass_rules=FrozenPanelPassRules(0.2, 0.2, 0.2, 0.2, 0.2, 0.2),
+        generator_model_family="generator",
+        sensitivity_rule_version="family-mean-difference-v1",
+    )
+
+
 def _view(store: InMemoryArtifactStore):
     source = store.put_bytes(
         json.dumps(
@@ -129,13 +152,15 @@ class FakeJudgeRuntime:
 
 
 def _runner(store: InMemoryArtifactStore, runtime: FakeJudgeRuntime) -> JudgePanelRunner:
+    schedule = _schedule()
     return JudgePanelRunner(
         store,
         runtime,
         _model_lock(),
         "b" * 64,
         FrozenJudgeRubric(),
-        _schedule(),
+        schedule,
+        _qualification(schedule),
         17,
     )
 
@@ -296,7 +321,8 @@ def test_stage_budget_reserves_each_remaining_session_before_another_provider_ca
         _model_lock(),
         "b" * 64,
         FrozenJudgeRubric(),
-        _schedule(stage_token_limit=250),
+        (schedule := _schedule(stage_token_limit=250)),
+        _qualification(schedule),
         17,
     )
 

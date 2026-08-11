@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from jsonschema import Draft202012Validator
+from memrelay_eval.domain.errors import JudgePanelConformanceError
 from memrelay_eval.scoring.rubric import JUDGE_CRITERIA, JudgeCriterionScore, JudgeRecord
 
 
@@ -33,3 +36,5 @@ def test_judge_record_matches_the_versioned_schema() -> None:
     Draft202012Validator(json.loads(schema_path.read_text(encoding="utf-8"))).validate(
         record.document()
     )
+    with pytest.raises(JudgePanelConformanceError, match="judge record invalid"):
+        replace(record, diversity_label="partial", requires_stronger_calibration=False)

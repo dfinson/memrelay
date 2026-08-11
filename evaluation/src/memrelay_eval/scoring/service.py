@@ -28,6 +28,7 @@ from memrelay_eval.domain.policies import require_treatment_neutral
 from memrelay_eval.domain.ports import ArtifactStorePort, GraderPort, JudgeProcessPort
 from memrelay_eval.domain.states import GraderTerminalKind
 from memrelay_eval.evidence.required import require_unpaid_conformance_ports
+from memrelay_eval.scoring.calibration import FrozenPanelQualificationProtocol
 from memrelay_eval.scoring.rubric import (
     FrozenJudgeRubric,
     FrozenPanelSchedule,
@@ -250,6 +251,7 @@ class JudgePanelRunner:
         runtime_lock_sha256: str,
         rubric: FrozenJudgeRubric,
         schedule: FrozenPanelSchedule,
+        qualification_protocol: FrozenPanelQualificationProtocol,
         sealed_seed: int,
     ) -> None:
         require_unpaid_conformance_ports(store)
@@ -264,12 +266,15 @@ class JudgePanelRunner:
         self._runtime_lock_sha256 = runtime_lock_sha256
         self._rubric = rubric
         self._schedule = schedule
+        qualification_protocol.bind_schedule(schedule)
+        self._qualification_protocol = qualification_protocol
         self._order = schedule.order_for_seed(sealed_seed)
         self._protocol_document = {
             "version": "1.0.0",
             "model_lock_sha256": self._model_lock_sha256,
             "runtime_lock_sha256": self._runtime_lock_sha256,
             "rubric_sha256": rubric.sha256,
+            "panel_qualification_protocol_sha256": qualification_protocol.sha256,
             "schedule": schedule.document(self._order),
             "judge_models": [
                 {"slot": slot.slot, "model_id": slot.model_id, "family": slot.family}

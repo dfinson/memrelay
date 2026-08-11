@@ -209,11 +209,8 @@ class FrozenPanelSchedule:
         random.Random(seed).shuffle(order)
         return tuple(order)
 
-    def document(self, order: Sequence[str]) -> dict[str, object]:
-        if tuple(order) != tuple(item for item in order if item in set(self.item_ids)) or set(
-            order
-        ) != set(self.item_ids):
-            raise JudgePanelConformanceError("judge_schedule_order_invalid")
+    def sealed_document(self) -> dict[str, object]:
+        """Return the pre-reveal schedule commitment, excluding a revealed ordering."""
         return {
             "version": self.version,
             "primary_candidate_ids": list(self.primary_candidate_ids),
@@ -221,9 +218,20 @@ class FrozenPanelSchedule:
             "duplicate_ids": list(self.duplicate_ids),
             "sentinel_ids": list(self.sentinel_ids),
             "sealed_seed_commitment": self.sealed_seed_commitment,
-            "presentation_order": list(order),
             "limits": self.limits.document(),
         }
+
+    @property
+    def sha256(self) -> str:
+        """Digest the complete pre-outcome schedule authority."""
+        return sha256(canonical_bytes(self.sealed_document())).hexdigest()
+
+    def document(self, order: Sequence[str]) -> dict[str, object]:
+        if tuple(order) != tuple(item for item in order if item in set(self.item_ids)) or set(
+            order
+        ) != set(self.item_ids):
+            raise JudgePanelConformanceError("judge_schedule_order_invalid")
+        return {**self.sealed_document(), "presentation_order": list(order)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -399,6 +407,7 @@ class JudgeRecord:
             or self.judge_slot not in {1, 2, 3}
             or self.schedule_position < 0
             or self.diversity_label not in {"diverse", "partial", "homogeneous"}
+            or self.requires_stronger_calibration != (self.diversity_label != "diverse")
             or not self.candidate_id
             or not self.model_id
             or not self.model_family
