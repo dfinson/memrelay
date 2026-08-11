@@ -294,6 +294,15 @@ class AnalysisError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
+class ReproductionError(DomainError):
+    """A sealed offline reproduction cannot verify the retained authority."""
+
+    def __init__(self, code: str, diagnostics: tuple[object, ...] = ()) -> None:
+        self.code = code
+        self.diagnostics = diagnostics
+        super().__init__(code.replace("_", " "))
+
+
 class TerminalDecisionConflictError(ReconciliationError):
     """A later report attempted to replace an immutable inclusion decision."""
 

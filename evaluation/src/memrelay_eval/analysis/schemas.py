@@ -25,6 +25,8 @@ POWER_PROTOCOL_ARTIFACT: Final = "frozen_power_protocol"
 POWER_EVALUATION_ARTIFACT: Final = "power_evaluation"
 SEALED_CLAIM_PROTOCOL_ARTIFACT: Final = "sealed_claim_protocol"
 THRESHOLD_POLICY_ARTIFACT: Final = "frozen_threshold_policy"
+REPRODUCTION_BUNDLE_ARTIFACT: Final = "reproduction_bundle"
+REPRODUCTION_COMPARISON_ARTIFACT: Final = "reproduction_comparison"
 
 _STATUS_CATEGORIES: Final = (
     "included",

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
+    allocate_stochastic_rerun_command,
     analyze_stage,
     backup_terminal,
     bootstrap,
@@ -14,6 +15,7 @@ from memrelay_eval.cli.commands import (
     lock_models,
     plan_offline_command,
     reconcile_stage,
+    reproduce_offline,
     run_stage,
     show_effective_configuration,
     show_foundation_status,
@@ -199,6 +201,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="derived-artifact root outside the immutable Parquet dataset root",
     )
     analyze.set_defaults(handler=analyze_stage)
+    reproduce = subcommands.add_parser(
+        "reproduce-offline",
+        help="verify a sealed analysis/grader/evidence reproduction without credentials or network",
+    )
+    reproduce.add_argument("--bundle", required=True)
+    reproduce.add_argument("--cas-root", required=True)
+    reproduce.add_argument("--backup-root")
+    reproduce.add_argument("--output-root", required=True)
+    reproduce.set_defaults(handler=reproduce_offline)
+    stochastic = subcommands.add_parser(
+        "allocate-stochastic-rerun",
+        help="allocate a separate non-confirmatory protocol/run/attempt identity",
+    )
+    stochastic.add_argument("--original-protocol-id", required=True)
+    stochastic.add_argument("--original-run-id", required=True)
+    stochastic.add_argument("--original-attempt-id", required=True)
+    stochastic.add_argument(
+        "--conclusion-class", choices=("null", "harm", "indeterminate", "positive"), required=True
+    )
+    stochastic.add_argument("--original-evidence-root", required=True)
+    stochastic.add_argument("--output-root", required=True)
+    stochastic.set_defaults(handler=allocate_stochastic_rerun_command)
     return parser
 
 

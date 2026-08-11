@@ -17,6 +17,12 @@ from memrelay_eval.analysis.queries import (
     DerivationSpec,
     ReadOnlyDuckDbAnalysis,
 )
+from memrelay_eval.analysis.replay import (
+    ReproductionBundle,
+    allocate_stochastic_rerun,
+    execute_sealed_replay,
+    publish_comparison,
+)
 from memrelay_eval.application.copilot_services import (
     CopilotSdkClient,
     bootstrap_runtime,
@@ -354,6 +360,37 @@ def analyze_stage(args: Namespace) -> int:
         )
         _write_immutable_command(command_path, canonical_bytes(command))
     print(canonical_bytes(command).decode("utf-8"))
+    return 0
+
+
+def reproduce_offline(args: Namespace) -> int:
+    """Run a hash-sealed rebuild and compare it with retained original outputs."""
+    bundle = ReproductionBundle.parse(Path(args.bundle).read_bytes())
+    comparison = execute_sealed_replay(
+        bundle,
+        cas_root=Path(args.cas_root),
+        backup_root=Path(args.backup_root) if args.backup_root else None,
+    )
+    path = publish_comparison(comparison, Path(args.output_root))
+    print(canonical_bytes({**comparison.document(), "path": path.as_posix()}).decode("utf-8"))
+    return 0 if comparison.matches else 1
+
+
+def allocate_stochastic_rerun_command(args: Namespace) -> int:
+    """Reserve distinct lineage for a governed stochastic rerun or replication."""
+    identity = allocate_stochastic_rerun(
+        original_protocol_id=args.original_protocol_id,
+        original_run_id=args.original_run_id,
+        original_attempt_id=args.original_attempt_id,
+        conclusion_class=args.conclusion_class,
+        output_root=Path(args.output_root),
+        original_evidence_root=Path(args.original_evidence_root),
+    )
+    print(
+        canonical_bytes(
+            {**identity.document(), "output_directory": identity.output_directory.as_posix()}
+        ).decode("utf-8")
+    )
     return 0
 
 
