@@ -5,14 +5,14 @@ from __future__ import annotations
 import shutil
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
 
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.errors import AnalysisError
 
-from .claims import BoundedClaim, ClaimScope, bound_claim
+from .claims import SOURCE_KINDS, BoundedClaim, ClaimScope, bound_claim
 from .gates import (
     CategoricalGateDecision,
     CategoricalGatePolicy,
@@ -118,6 +118,41 @@ class ReportItem:
 
 
 @dataclass(frozen=True, slots=True)
+class SourceAuthority:
+    """Sealed provenance classification bound to the exact verified stage dataset."""
+
+    source_kind: str
+    dataset_manifest_sha256: str
+    protocol_sha256: str
+    source_sha256: tuple[str, ...]
+    authority_sha256: str
+
+    def __post_init__(self) -> None:
+        if (
+            self.source_kind not in SOURCE_KINDS
+            or not _is_sha256(self.dataset_manifest_sha256)
+            or not _is_sha256(self.protocol_sha256)
+            or not self.source_sha256
+            or not all(_is_sha256(value) for value in self.source_sha256)
+            or self.authority_sha256 != canonical_digest(self._basis())
+        ):
+            raise AnalysisError("report_source_authority_invalid")
+
+    def _basis(self) -> dict[str, object]:
+        return {
+            "schema_version": "1.0.0",
+            "artifact_type": "report_source_authority",
+            "source_kind": self.source_kind,
+            "dataset_manifest_sha256": self.dataset_manifest_sha256,
+            "protocol_sha256": self.protocol_sha256,
+            "source_sha256": list(self.source_sha256),
+        }
+
+    def to_document(self) -> dict[str, object]:
+        return {**self._basis(), "authority_sha256": self.authority_sha256}
+
+
+@dataclass(frozen=True, slots=True)
 class ReportInput:
     """Inputs are typed analysis authority; release fitness is never caller-authored."""
 
@@ -142,6 +177,7 @@ class ReportInput:
     non_target_intervals: tuple[SimultaneousInterval, ...]
     categorical_policy: CategoricalGatePolicy
     categorical_decisions: tuple[CategoricalGateDecision, ...]
+    source_authority: SourceAuthority
     reproduction_status: str
     sections: Mapping[str, tuple[ReportItem, ...]]
 
@@ -172,6 +208,12 @@ class ReportInput:
             raise AnalysisError("report_input_incomplete")
         if self.family.protocol_sha256 != self.scope.protocol_sha256:
             raise AnalysisError("report_family_scope_conflict")
+        if (
+            self.source_authority.dataset_manifest_sha256 != self.dataset_manifest_sha256
+            or self.source_authority.protocol_sha256 != self.scope.protocol_sha256
+            or self.source_authority.source_sha256 != self.scope.source_sha256
+        ):
+            raise AnalysisError("report_source_authority_conflict")
         if any(
             decision.family_sha256 != self.family.family_sha256
             or decision.protocol_sha256 != self.scope.protocol_sha256
@@ -191,7 +233,7 @@ class ReportInput:
     @property
     def release_fitness(self) -> ReleaseFitnessDecision:
         """Recompute from the exact family, claims, intervals, and categorical authority."""
-        return evaluate_release_fitness(
+        decision = evaluate_release_fitness(
             target_decisions=self.claim_decisions,
             non_target_intervals=self.non_target_intervals,
             family=self.family,
@@ -216,6 +258,9 @@ class ReportInput:
             or (self.safety_sha256,),
             reproduction_status=self.reproduction_status,
         )
+        if self.source_authority.source_kind != "completed_reconciled_product":
+            return replace(decision, status="draft/unverified")
+        return decision
 
     @property
     def input_sha256(self) -> str:
@@ -248,6 +293,7 @@ class ReportInput:
             ],
             "categorical_policy": self.categorical_policy.to_document(),
             "categorical_decisions": [item.to_document() for item in self.categorical_decisions],
+            "source_authority": self.source_authority.to_document(),
             "reproduction_status": self.reproduction_status,
             "sections": {
                 name: [item.to_document() for item in self.sections[name]]
@@ -266,9 +312,9 @@ class EvidenceLinkedReport:
     def __post_init__(self) -> None:
         if self.terminal_status not in {"verified", "draft/unverified"} or not self.claims:
             raise AnalysisError("report_terminal_status_invalid")
-        if (
-            self.terminal_status == "verified"
-            and self.report_input.release_fitness.status != "pass"
+        if self.terminal_status == "verified" and (
+            self.report_input.release_fitness.status != "pass"
+            or self.report_input.source_authority.source_kind != "completed_reconciled_product"
         ):
             raise AnalysisError("report_release_fitness_not_passed")
 
@@ -288,6 +334,7 @@ class EvidenceLinkedReport:
             "stage": self.report_input.stage,
             "terminal_status": self.terminal_status,
             "scope": self.report_input.scope.to_document(),
+            "source_authority": self.report_input.source_authority.to_document(),
             "input_hashes": {
                 "dataset_manifest_sha256": self.report_input.dataset_manifest_sha256,
                 "table_sha256": list(self.report_input.table_sha256),
@@ -314,7 +361,7 @@ def render_report(report_input: ReportInput) -> EvidenceLinkedReport:
         bound_claim(
             decision,
             scope,
-            source_kind="completed_reconciled_product",
+            source_kind=report_input.source_authority.source_kind,
             reproduction_status=report_input.reproduction_status,
         )
         for decision, scope in zip(
@@ -337,6 +384,14 @@ def build_stage_report_input(dataset: FrozenDataset, sealed_input: ReportInput) 
         or sealed_input.scope.history_regime not in manifest["history_mode"]
     ):
         raise AnalysisError("report_stage_scope_conflict")
+    if sealed_input.source_authority.dataset_manifest_sha256 != dataset.manifest_sha256:
+        raise AnalysisError("report_source_authority_conflict")
+    source_manifest_sha256 = tuple(manifest["source_manifest_sha256"])
+    if (
+        sealed_input.scope.source_sha256 != source_manifest_sha256
+        or sealed_input.source_authority.source_sha256 != source_manifest_sha256
+    ):
+        raise AnalysisError("report_source_authority_conflict")
     return sealed_input
 
 
@@ -358,6 +413,7 @@ def publish_report(report: EvidenceLinkedReport, output_root: Path | str) -> Pat
                 "runtime_lock_sha256": report.report_input.runtime_lock_sha256,
                 "template_sha256": report.report_input.template_sha256,
                 "terminal_status": report.terminal_status,
+                "source_authority_sha256": report.report_input.source_authority.authority_sha256,
             }
         ),
     }

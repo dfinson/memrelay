@@ -13,11 +13,12 @@ from memrelay_eval.analysis.reports import (
     REPORT_TEMPLATE_SHA256,
     ReportInput,
     ReportItem,
+    SourceAuthority,
     StageScope,
     publish_report,
     render_report,
 )
-from memrelay_eval.canonical import canonical_bytes
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.cli.commands import _canonical_report_input
 from memrelay_eval.cli.main import main
 from memrelay_eval.domain.errors import AnalysisError
@@ -66,7 +67,32 @@ def _item(name: str, scope: ClaimScope) -> ReportItem:
     return ReportItem(name, scope, {"authority": "retained"})
 
 
-def _input(*, failing_claim: bool = False) -> ReportInput:
+def _source_authority(
+    source_kind: str,
+    dataset_manifest_sha256: str,
+    protocol_sha256: str,
+    source_sha256: tuple[str, ...],
+) -> SourceAuthority:
+    basis = {
+        "schema_version": "1.0.0",
+        "artifact_type": "report_source_authority",
+        "source_kind": source_kind,
+        "dataset_manifest_sha256": dataset_manifest_sha256,
+        "protocol_sha256": protocol_sha256,
+        "source_sha256": list(source_sha256),
+    }
+    return SourceAuthority(
+        source_kind=source_kind,
+        dataset_manifest_sha256=dataset_manifest_sha256,
+        protocol_sha256=protocol_sha256,
+        source_sha256=source_sha256,
+        authority_sha256=canonical_digest(basis),
+    )
+
+
+def _input(
+    *, failing_claim: bool = False, source_kind: str = "completed_reconciled_product"
+) -> ReportInput:
     bundle = _bundle()
     context = _context(bundle)
     categorical = context["categorical_gate_decision"]
@@ -136,6 +162,9 @@ def _input(*, failing_claim: bool = False) -> ReportInput:
         ),
         categorical_policy=bundle.categorical_policy,
         categorical_decisions=(categorical,),
+        source_authority=_source_authority(
+            source_kind, "9" * 64, stage.protocol_sha256, stage.source_sha256
+        ),
         reproduction_status="verified",
         sections=sections,
     )
@@ -155,9 +184,14 @@ def test_report_recomputes_fitness_and_supports_multi_endpoint_sections(tmp_path
             "utf-8"
         )
     )
+    claim_schema = json.loads(
+        (Path(__file__).parents[3] / "schemas" / "bounded-claim.schema.json").read_text("utf-8")
+    )
 
     jsonschema.Draft202012Validator(schema).validate(document)
     jsonschema.Draft202012Validator(input_schema).validate(report.report_input.to_document())
+    for claim in report.claims:
+        jsonschema.Draft202012Validator(claim_schema).validate(claim.to_document())
     assert document["terminal_status"] == "verified"
     assert {
         item["scope"]["endpoint_id"] for items in document["sections"].values() for item in items
@@ -196,6 +230,40 @@ def test_claim_lint_rejects_broad_safety_language() -> None:
         lint_claim_text("The product is safe.")
 
 
+@pytest.mark.parametrize(
+    "source_kind",
+    (
+        "construction",
+        "component_test",
+        "deterministic_fixture",
+        "unreconciled_trial",
+        "engine_upper_bound",
+        "pilot",
+        "completed_reconciled_product",
+    ),
+)
+def test_source_authority_controls_claim_promotion(source_kind: str) -> None:
+    report = render_report(_input(source_kind=source_kind))
+
+    if source_kind == "completed_reconciled_product":
+        assert report.claims[0].terminal_status == "positive"
+        assert report.terminal_status == "verified"
+    else:
+        assert report.claims[0].terminal_status == "indeterminate"
+        assert report.terminal_status == "draft/unverified"
+
+
+def test_tampered_source_authority_fails_closed() -> None:
+    report_input = _input()
+    with pytest.raises(AnalysisError, match="source authority"):
+        replace(
+            report_input,
+            source_authority=replace(
+                report_input.source_authority, source_kind="engine_upper_bound"
+            ),
+        )
+
+
 def test_sealed_input_rejects_caller_authored_release_pass() -> None:
     document = _input(failing_claim=True).to_document()
     document["release_fitness"]["status"] = "pass"
@@ -208,13 +276,19 @@ def test_cli_renders_from_verified_completed_parquet_stage(tmp_path: Path, capsy
     dataset = _dataset(tmp_path)
     report_input = _input()
     protocol = dataset.manifest["protocol_sha256"][0]
+    source_manifest_sha256 = tuple(dataset.manifest["source_manifest_sha256"])
     family = replace(
         report_input.family,
         protocol_sha256=protocol,
         source_dataset_manifest_sha256=dataset.manifest_sha256,
     )
     decisions = tuple(
-        replace(decision, protocol_sha256=protocol, family_sha256=family.family_sha256)
+        replace(
+            decision,
+            protocol_sha256=protocol,
+            family_sha256=family.family_sha256,
+            source_sha256=source_manifest_sha256[0],
+        )
         for decision in report_input.claim_decisions
     )
     intervals = tuple(
@@ -227,6 +301,7 @@ def test_cli_renders_from_verified_completed_parquet_stage(tmp_path: Path, capsy
         population_id=dataset.manifest["population_id"][0],
         stratum=dataset.manifest["stratum"][0],
         history_regime=dataset.manifest["history_mode"][0],
+        source_sha256=source_manifest_sha256,
     )
     claim_scopes = tuple(
         replace(
@@ -235,6 +310,7 @@ def test_cli_renders_from_verified_completed_parquet_stage(tmp_path: Path, capsy
             population_id=stage_scope.population_id,
             stratum=stage_scope.stratum,
             history_regime=stage_scope.history_regime,
+            source_sha256=stage_scope.source_sha256,
         )
         for scope in report_input.claim_scopes
     )
@@ -268,6 +344,12 @@ def test_cli_renders_from_verified_completed_parquet_stage(tmp_path: Path, capsy
         claim_scopes=claim_scopes,
         non_target_intervals=intervals,
         sections=sections,
+        source_authority=_source_authority(
+            "completed_reconciled_product",
+            dataset.manifest_sha256,
+            protocol,
+            stage_scope.source_sha256,
+        ),
     )
     evidence = tmp_path / "stage-evidence.json"
     evidence.write_bytes(canonical_bytes(stage_input.to_document()))

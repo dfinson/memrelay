@@ -11,7 +11,7 @@ from memrelay_eval.domain.errors import AnalysisError
 from .gates import ClaimGateDecision
 
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
-_SOURCE_KINDS = frozenset(
+SOURCE_KINDS = frozenset(
     {
         "completed_reconciled_product",
         "construction",
@@ -106,7 +106,7 @@ class BoundedClaim:
     def __post_init__(self) -> None:
         if self.terminal_status not in {"positive", "null", "harmful", "indeterminate"}:
             raise AnalysisError("bounded_claim_status_invalid")
-        if self.source_kind not in _SOURCE_KINDS:
+        if self.source_kind not in SOURCE_KINDS:
             raise AnalysisError("bounded_claim_source_kind_invalid")
         if self.reproduction_status not in {"verified", "pending", "failed"}:
             raise AnalysisError("bounded_claim_reproduction_invalid")
@@ -152,7 +152,7 @@ def bound_claim(
         raise AnalysisError("bounded_claim_endpoint_scope_conflict")
     if decision.protocol_sha256 != scope.protocol_sha256:
         raise AnalysisError("bounded_claim_protocol_scope_conflict")
-    if source_kind not in _SOURCE_KINDS:
+    if source_kind not in SOURCE_KINDS:
         raise AnalysisError("bounded_claim_source_kind_invalid")
     if reproduction_status not in {"verified", "pending", "failed"}:
         raise AnalysisError("bounded_claim_reproduction_invalid")

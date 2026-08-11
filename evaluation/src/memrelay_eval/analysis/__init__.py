@@ -1,6 +1,6 @@
 """Frozen confirmatory-analysis contracts."""
 
-from .claims import BoundedClaim, ClaimScope, bound_claim, lint_claim_text
+from .claims import SOURCE_KINDS, BoundedClaim, ClaimScope, bound_claim, lint_claim_text
 from .diagnostics import DiagnosticReport, build_diagnostics
 from .estimands import FrozenEstimand, FrozenEstimatorRegistry, MissingnessPolicy
 from .estimators import (
@@ -44,6 +44,7 @@ from .reports import (
     EvidenceLinkedReport,
     ReportInput,
     ReportItem,
+    SourceAuthority,
     StageScope,
     build_stage_report_input,
     publish_report,
@@ -80,9 +81,11 @@ __all__ = [
     "SimultaneousInterval",
     "EvidenceLinkedReport",
     "ReportInput",
+    "SOURCE_KINDS",
     "ReportItem",
     "ReleaseFitnessDecision",
     "StageScope",
+    "SourceAuthority",
     "build_diagnostics",
     "build_stage_report_input",
     "bound_claim",
