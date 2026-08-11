@@ -15,6 +15,7 @@ from memrelay_eval.cli.commands import (
     lock_models,
     plan_offline_command,
     reconcile_stage,
+    report_stage,
     reproduce_offline,
     run_stage,
     seal_reproduction_bundle_command,
@@ -238,6 +239,24 @@ def build_parser() -> argparse.ArgumentParser:
     stochastic.add_argument("--original-evidence-root", required=True)
     stochastic.add_argument("--output-root", required=True)
     stochastic.set_defaults(handler=allocate_stochastic_rerun_command)
+    report = subcommands.add_parser(
+        "report",
+        help="render one immutable, local evidence-linked report without reanalysing inputs",
+    )
+    report.add_argument("--stage", required=True)
+    report.add_argument(
+        "--stage-evidence",
+        required=True,
+        help="canonical sealed analysis report input; mutable aliases are not accepted",
+    )
+    report.add_argument("--parquet-root", required=True)
+    report.add_argument("--dataset-version", required=True)
+    report.add_argument(
+        "--output-root",
+        default="artifacts",
+        help="local artifact root; reports are appended below reports/<report-id>",
+    )
+    report.set_defaults(handler=report_stage)
     return parser
 
 

@@ -10,6 +10,8 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
+from memrelay_eval.analysis.claims import ClaimScope
+from memrelay_eval.analysis.gates import ClaimGateDecision
 from memrelay_eval.analysis.queries import (
     ANALYSIS_SCHEMA_VERSION,
     AnalysisQuery,
@@ -23,6 +25,12 @@ from memrelay_eval.analysis.replay import (
     execute_sealed_replay,
     publish_comparison,
     seal_reproduction_bundle,
+)
+from memrelay_eval.analysis.reports import (
+    ReportInput,
+    build_stage_report_input,
+    publish_report,
+    render_report,
 )
 from memrelay_eval.application.copilot_services import (
     CopilotSdkClient,
@@ -423,23 +431,34 @@ def allocate_stochastic_rerun_command(args: Namespace) -> int:
     return 0
 
 
-def _canonical_reproduction_json(path: Path, code: str) -> object:
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise AnalysisError(code)
-            result[key] = value
-        return result
+def report_stage(args: Namespace) -> int:
+    """Render a local report from one canonical frozen authority document."""
+    input_bytes = Path(args.stage_evidence).read_bytes()
+    report_input = _canonical_report_input(input_bytes)
+    if report_input.stage != args.stage:
+        raise AnalysisError("report_stage_authority_conflict")
+    from memrelay_eval.analysis.queries import FrozenDataset
 
-    try:
-        payload = path.read_bytes()
-        value = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise AnalysisError(code) from error
-    if canonical_bytes(value) != payload:
-        raise AnalysisError(code)
-    return value
+    report_input = build_stage_report_input(
+        FrozenDataset.open(args.parquet_root, args.dataset_version), report_input
+    )
+    report = render_report(report_input)
+    directory = publish_report(report, Path(args.output_root))
+    command = {
+        "schema_version": ANALYSIS_SCHEMA_VERSION,
+        "command": "report",
+        "stage": args.stage,
+        "terminal_status": report.terminal_status,
+        "exit_code": 0,
+        "report_id": report_input.report_id,
+        "report_sha256": report.report_sha256,
+        "report_input_sha256": report_input.input_sha256,
+        "protocol_sha256": report_input.scope.protocol_sha256,
+        "output_directory": str(directory),
+    }
+    command["command_sha256"] = canonical_digest(command)
+    print(canonical_bytes(command).decode("utf-8"))
+    return 0
 
 
 def _canonical_analysis_plan(data: bytes) -> dict[str, Any]:
@@ -494,6 +513,197 @@ def _canonical_analysis_plan(data: bytes) -> dict[str, Any]:
             or not isinstance(value["value"], str)
         ):
             raise AnalysisError("analysis_plan_schema_invalid")
+    return document
+
+
+def _canonical_reproduction_json(path: Path, code: str) -> object:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AnalysisError(code)
+            result[key] = value
+        return result
+
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AnalysisError(code) from error
+    if canonical_bytes(value) != payload:
+        raise AnalysisError(code)
+    return value
+
+
+def _claim_decision(document: object) -> ClaimGateDecision:
+    if not isinstance(document, dict):
+        raise AnalysisError("report_claim_decision_invalid")
+    required = {
+        "schema_version",
+        "artifact_type",
+        "endpoint_id",
+        "claim_type",
+        "claim_id",
+        "status",
+        "gate_trace",
+        "source_sha256",
+        "derivation_sha256",
+        "protocol_sha256",
+        "family_sha256",
+        "sealed_claim_protocol_sha256",
+        "threshold_sha256",
+        "power_sha256",
+        "power_evaluation_sha256",
+        "information_sha256",
+        "panel_gate_sha256",
+        "categorical_policy_sha256",
+        "categorical_gate_decision_sha256",
+    }
+    if (
+        set(document) != required
+        or document["schema_version"] != "1.0.0"
+        or document["artifact_type"] != "claim_gate_decision"
+    ):
+        raise AnalysisError("report_claim_decision_invalid")
+    try:
+        return ClaimGateDecision(
+            endpoint_id=document["endpoint_id"],
+            claim_type=document["claim_type"],
+            claim_id=document["claim_id"],
+            status=document["status"],
+            gate_trace=tuple(document["gate_trace"]),
+            source_sha256=document["source_sha256"],
+            derivation_sha256=document["derivation_sha256"],
+            protocol_sha256=document["protocol_sha256"],
+            family_sha256=document["family_sha256"],
+            sealed_claim_protocol_sha256=document["sealed_claim_protocol_sha256"],
+            threshold_sha256=document["threshold_sha256"],
+            power_sha256=document["power_sha256"],
+            power_evaluation_sha256=document["power_evaluation_sha256"],
+            information_sha256=document["information_sha256"],
+            panel_gate_sha256=document["panel_gate_sha256"],
+            categorical_policy_sha256=document["categorical_policy_sha256"],
+            categorical_gate_decision_sha256=document["categorical_gate_decision_sha256"],
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise AnalysisError("report_claim_decision_invalid") from error
+
+
+def _canonical_report_input(data: bytes) -> ReportInput:
+    """Replay a sealed report input and reject any altered release conclusion."""
+    from memrelay_eval.analysis.gates import CategoricalGateDecision, CategoricalGatePolicy
+    from memrelay_eval.analysis.intervals import SimultaneousInterval
+    from memrelay_eval.analysis.multiplicity import FrozenClaimFamily
+    from memrelay_eval.analysis.reports import ReportItem, SourceAuthority, StageScope
+
+    document = _canonical_json_document(data, "report_input_not_canonical")
+    if document.get("artifact_type") != "frozen_report_input":
+        raise AnalysisError("report_input_schema_invalid")
+
+    def claim_scope(scope_document: object) -> ClaimScope:
+        if not isinstance(scope_document, dict):
+            raise AnalysisError("report_scope_schema_invalid")
+        normalized = dict(scope_document)
+        normalized["source_sha256"] = tuple(normalized["source_sha256"])
+        normalized["evidence_ids"] = tuple(normalized["evidence_ids"])
+        return ClaimScope(**normalized)
+
+    try:
+        scope_document = dict(document["scope"])
+        scope_document["source_sha256"] = tuple(scope_document["source_sha256"])
+        scope_document["evidence_ids"] = tuple(scope_document["evidence_ids"])
+        scope = StageScope(**scope_document)
+        family_document = dict(document["family"])
+        family_document.pop("schema_version")
+        family_document.pop("artifact_type")
+        family = FrozenClaimFamily(**family_document)
+        decisions = tuple(_claim_decision(item) for item in document["claim_decisions"])
+        claim_scopes = tuple(claim_scope(item) for item in document["claim_scopes"])
+        intervals = tuple(SimultaneousInterval(**item) for item in document["non_target_intervals"])
+        policy_document = dict(document["categorical_policy"])
+        policy_document.pop("schema_version")
+        policy = CategoricalGatePolicy(**policy_document)
+        categorical = tuple(
+            CategoricalGateDecision(
+                scope_id=item["scope_id"],
+                status=item["status"],
+                blocking_event_ids=tuple(item["blocking_event_ids"]),
+                affected_claim_ids=tuple(item["affected_claim_ids"]),
+                policy_sha256=item["policy_sha256"],
+                evidence_sha256=tuple(item["evidence_sha256"]),
+                bounded_language_required=item["bounded_language_required"],
+            )
+            for item in document["categorical_decisions"]
+        )
+        source_document = dict(document["source_authority"])
+        source_document.pop("schema_version")
+        source_document.pop("artifact_type")
+        source_authority = SourceAuthority(
+            source_kind=source_document["source_kind"],
+            dataset_manifest_sha256=source_document["dataset_manifest_sha256"],
+            protocol_sha256=source_document["protocol_sha256"],
+            source_sha256=tuple(source_document["source_sha256"]),
+            authority_sha256=source_document["authority_sha256"],
+        )
+        sections = {
+            name: tuple(
+                ReportItem(
+                    item_id=item["item_id"],
+                    scope=claim_scope(item["scope"]),
+                    value=item["value"],
+                )
+                for item in values
+            )
+            for name, values in document["sections"].items()
+        }
+        result = ReportInput(
+            report_id=document["report_id"],
+            stage=document["stage"],
+            scope=scope,
+            dataset_manifest_sha256=document["dataset_manifest_sha256"],
+            table_sha256=tuple(document["table_sha256"]),
+            figure_sha256=tuple(document["figure_sha256"]),
+            estimator_sha256=document["estimator_sha256"],
+            interval_sha256=tuple(document["interval_sha256"]),
+            power_sha256=document["power_sha256"],
+            safety_sha256=document["safety_sha256"],
+            panel_sha256=document["panel_sha256"],
+            cost_revision_sha256=document["cost_revision_sha256"],
+            runtime_lock_sha256=document["runtime_lock_sha256"],
+            template_sha256=document["template_sha256"],
+            gate_ids=tuple(document["gate_ids"]),
+            family=family,
+            claim_decisions=decisions,
+            claim_scopes=claim_scopes,
+            non_target_intervals=intervals,
+            categorical_policy=policy,
+            categorical_decisions=categorical,
+            source_authority=source_authority,
+            reproduction_status=document["reproduction_status"],
+            sections=sections,
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise AnalysisError("report_input_schema_invalid") from error
+    if result.to_document() != document:
+        raise AnalysisError("report_input_authority_conflict")
+    return result
+
+
+def _canonical_json_document(data: bytes, code: str) -> dict[str, Any]:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AnalysisError(code)
+            result[key] = value
+        return result
+
+    try:
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AnalysisError(code) from error
+    if not isinstance(document, dict) or canonical_bytes(document) != data:
+        raise AnalysisError(code)
     return document
 
 

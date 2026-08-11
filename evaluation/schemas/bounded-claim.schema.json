@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/bounded-claim-1.0.0.json",
+  "title": "Bounded claim",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "artifact_type", "claim_id", "decision_sha256", "terminal_status", "source_kind", "reproduction_status", "scope", "language"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "artifact_type": {"const": "bounded_claim"},
+    "claim_id": {"type": "string", "minLength": 1},
+    "decision_sha256": {"$ref": "#/$defs/sha256"},
+    "terminal_status": {"enum": ["positive", "null", "harmful", "indeterminate"]},
+    "source_kind": {"enum": ["completed_reconciled_product", "construction", "component_test", "deterministic_fixture", "unreconciled_trial", "engine_upper_bound", "pilot"]},
+    "reproduction_status": {"enum": ["verified", "pending", "failed"]},
+    "scope": {"type": "object"},
+    "language": {"type": "string", "minLength": 1}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

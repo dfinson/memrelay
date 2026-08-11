@@ -54,6 +54,10 @@ def test_committed_json_schema_versions_describe_the_parquet_boundary() -> None:
         "claim-gate-decision.schema.json",
         "frozen-power-protocol.schema.json",
         "power-evaluation.schema.json",
+        "frozen-report-input.schema.json",
+        "bounded-claim.schema.json",
+        "release-fitness-decision.schema.json",
+        "evidence-linked-report.schema.json",
     ):
         document = json.loads((schemas / name).read_text(encoding="utf-8"))
         assert document["properties"]["schema_version"]["const"] in {
