@@ -9,6 +9,7 @@ from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from pathlib import Path
 
+from ...canonical import canonical_bytes
 from ...domain.errors import JudgePanelConformanceError
 from ...scoring.rubric import JudgeRuntimeResult, JudgeSessionRequest
 from .environment import (
@@ -20,7 +21,6 @@ from .launcher import (
     DisposableProcessLauncher,
     ProcessLaunchRequest,
 )
-from ...canonical import canonical_bytes
 
 
 class IsolatedJudgeProcessRuntime:
