@@ -1,6 +1,6 @@
 # Story 3.5: Adjudicate Frozen Disagreement Thresholds
 
-Status: ready-for-dev
+Status: ready-for-review
 
 ## Story
 
@@ -32,22 +32,22 @@ so that disputes are resolved transparently without replacing original judgments
 
 ## Tasks / Subtasks
 
-- [ ] Define frozen criterion-level disagreement evaluation and evidence record (AC: 1, 2)
-  - [ ] Evaluate every criterion deterministically against the sealed threshold and retain both crossed and non-crossed decisions.
-  - [ ] If any formula, threshold, eligibility rule, or required input is absent/unsealed, make zero provider calls and block finalization with typed evidence; never infer a threshold from judge outputs.
-- [ ] Implement the no-call branch as a tested provider-use invariant (AC: 1)
-  - [ ] Prove zero session/provider invocation when no criterion crosses.
-- [ ] Launch one fresh blinded adjudicator only when required (AC: 2)
-  - [ ] Select a qualified pinned model from `model-lock.json` under the frozen rule; if no eligible model exists, retain blocked/unavailable evidence without substitution. Create a new Copilot SDK session/process with only host auth and no assignment, judge identity, unblinded evidence, cost, OpenAI credential, or unrelated provider access.
-  - [ ] Supply only disputed criteria, deterministic blinded candidate evidence, and anonymized immutable rationales; require structured resolution, uncertainty, and artifact citations.
-- [ ] Append adjudication without mutation or replacement (AC: 3)
-  - [ ] Link original records by hash, retain their bytes/scores/rationales, and record `not_triggered`, `completed`, or `failed/blocked` status plus adjudicator runtime/prompt/rubric/tools/controls/order hashes when a call occurs.
-- [ ] Enforce bounded provider use and hard authority (AC: 1-3)
-  - [ ] At most one authorized fresh adjudicator session per candidate/view/panel/threshold-protocol hash tuple; an idempotent replay returns retained evidence or a typed conflict and never launches again.
-  - [ ] Enforce token/tool/time/concurrency caps and no hidden retry/fallback/repeated-until-consensus.
-  - [ ] Preserve failure evidence; block panel finalization as frozen rather than substituting. Never override executable failure or categorical blockers.
-- [ ] Add fake-runtime, boundary, privacy, immutability, failure, cap, and authority tests (AC: 1-3).
-  - [ ] Keep every fake-runtime/artifact/ledger/telemetry result ineligible for paid or study use until the corresponding Epic 4 adapters and reconciliation qualify.
+- [x] Define frozen criterion-level disagreement evaluation and evidence record (AC: 1, 2)
+  - [x] Evaluate every criterion deterministically against the sealed threshold and retain both crossed and non-crossed decisions.
+  - [x] If any formula, threshold, eligibility rule, or required input is absent/unsealed, make zero provider calls and block finalization with typed evidence; never infer a threshold from judge outputs.
+- [x] Implement the no-call branch as a tested provider-use invariant (AC: 1)
+  - [x] Prove zero session/provider invocation when no criterion crosses.
+- [x] Launch one fresh blinded adjudicator only when required (AC: 2)
+  - [x] Select a qualified pinned model from `model-lock.json` under the frozen rule; if no eligible model exists, retain blocked/unavailable evidence without substitution. Create a new Copilot SDK session/process with only host auth and no assignment, judge identity, unblinded evidence, cost, OpenAI credential, or unrelated provider access.
+  - [x] Supply only disputed criteria, deterministic blinded candidate evidence, and anonymized immutable rationales; require structured resolution, uncertainty, and artifact citations.
+- [x] Append adjudication without mutation or replacement (AC: 3)
+  - [x] Link original records by hash, retain their bytes/scores/rationales, and record `not_triggered`, `completed`, or `failed/blocked` status plus adjudicator runtime/prompt/rubric/tools/controls/order hashes when a call occurs.
+- [x] Enforce bounded provider use and hard authority (AC: 1-3)
+  - [x] At most one authorized fresh adjudicator session per candidate/view/panel/threshold-protocol hash tuple; an idempotent replay returns retained evidence or a typed conflict and never launches again.
+  - [x] Enforce token/tool/time/concurrency caps and no hidden retry/fallback/repeated-until-consensus.
+  - [x] Preserve failure evidence; block panel finalization as frozen rather than substituting. Never override executable failure or categorical blockers.
+- [x] Add fake-runtime, boundary, privacy, immutability, failure, cap, and authority tests (AC: 1-3).
+  - [x] Keep every fake-runtime/artifact/ledger/telemetry result ineligible for paid or study use until the corresponding Epic 4 adapters and reconciliation qualify.
 
 ## Developer Context
 
@@ -91,12 +91,31 @@ Adjudication is exceptional append-only evidence, not a fourth ordinary vote, re
 
 ### Agent Model Used
 
-TBD by implementation agent
+GitHub Copilot CLI (GPT-5.6)
 
 ### Debug Log References
 
+- `py -3.13 -m pytest evaluation\tests\unit\judge\test_adjudication.py evaluation\tests\contract\judge\test_adjudication.py evaluation\tests\security\judge\test_adjudication.py evaluation\tests\integration\judge\test_adjudication.py -q` (10 passed)
+- `py -3.13 -m pytest evaluation\tests\unit\judge evaluation\tests\contract\judge evaluation\tests\security\judge evaluation\tests\integration\judge evaluation\tests\architecture\test_process_boundary.py -q` (30 passed)
+- `py -3.13 -m pytest evaluation\tests -q` (1141 passed, 46 skipped; two unrelated catalog-publication cases passed on immediate targeted retry)
+- `py -3.13 -m ruff check` and `py -3.13 -m ruff format --check` on all Story 3.5 source and test paths (passed)
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Implemented frozen per-criterion spread evaluation, append-only adjudication records,
+  one-session authorization/replay binding, hard authority gates, and bounded failure retention.
+- Enforced stage-wide caps before any provider call and pinned the deterministic anonymous
+  rationale order used in each adjudication request.
+- Added schema and focused unit, contract, integration, and privacy tests using unpaid fake evidence.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/3-5-adjudicate-frozen-disagreement-thresholds.md`
+- `evaluation/schemas/adjudication-record.schema.json`
+- `evaluation/src/memrelay_eval/adapters/copilot/judge_worker.py`
+- `evaluation/src/memrelay_eval/adapters/process/judge.py`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/scoring/adjudication.py`
+- `evaluation/src/memrelay_eval/scoring/rubric.py`
+- `evaluation/tests/**/__init__.py`
+- `evaluation/tests/{unit,contract,integration,security}/judge/test_adjudication.py`

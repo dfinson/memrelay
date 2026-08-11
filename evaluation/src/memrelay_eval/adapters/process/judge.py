@@ -105,6 +105,8 @@ def _request_bytes(session: JudgeSessionRequest) -> bytes:
             "tools": [dict(tool) for tool in session.tools],
             "decoding_controls": dict(session.decoding_controls),
             "authorized_blinded_artifacts": dict(session.authorized_blinded_artifacts),
+            "response_contract": session.response_contract,
+            "disputed_criteria": list(session.disputed_criteria),
             "view": session.view_bytes.decode("utf-8"),
             "wall_seconds_limit": session.wall_seconds_limit,
         },

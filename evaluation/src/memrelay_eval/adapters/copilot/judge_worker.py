@@ -48,6 +48,7 @@ def _request_from_bytes(data: bytes) -> JudgeSessionRequest:
     tools = value.get("tools")
     controls = value.get("decoding_controls")
     artifacts = value.get("authorized_blinded_artifacts")
+    disputed_criteria = value.get("disputed_criteria", ())
     required_strings = (
         value.get("session_id"),
         value.get("candidate_id"),
@@ -63,6 +64,8 @@ def _request_from_bytes(data: bytes) -> JudgeSessionRequest:
         or any(not isinstance(item, str) or not item for item in required_strings)
         or not isinstance(value.get("wall_seconds_limit"), (int, float))
         or any(not isinstance(tool, Mapping) for tool in tools)
+        or not isinstance(disputed_criteria, list)
+        or any(not isinstance(name, str) for name in disputed_criteria)
         or any(
             not isinstance(location, str) or not isinstance(content, str)
             for location, content in artifacts.items()
@@ -83,6 +86,8 @@ def _request_from_bytes(data: bytes) -> JudgeSessionRequest:
             view_bytes=view.encode("utf-8"),
             wall_seconds_limit=value.get("wall_seconds_limit"),
             authorized_blinded_artifacts=artifacts,
+            response_contract=value.get("response_contract", "judge"),
+            disputed_criteria=tuple(disputed_criteria),
         )
     except JudgePanelConformanceError as error:
         raise JudgePanelConformanceError("judge_process_request_invalid") from error
