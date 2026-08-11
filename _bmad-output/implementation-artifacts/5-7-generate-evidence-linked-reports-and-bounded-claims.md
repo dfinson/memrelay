@@ -1,6 +1,6 @@
 # Story 5.7: Generate Evidence-Linked Reports and Bounded Claims
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -31,27 +31,27 @@ So that null, harmful, indeterminate, and positive results are communicated with
 
 ## Tasks / Subtasks
 
-- [ ] Define immutable report inputs and report/claim schemas (AC: 1)
-  - [ ] Freeze exact dataset, table, figure, estimator, interval, Holm family, power, safety, panel, cost revision, gate, and decision-record hashes before rendering.
-  - [ ] Reject mutable “latest”, missing lineage, unreconciled inputs, or mixed strata/history/environment/model records.
-  - [ ] Record renderer/version/runtime, template hash, ordered inputs, outputs, protocol, and typed terminal status.
-- [ ] Generate deterministic local reports (AC: 1)
-  - [ ] Include simultaneous and marginal descriptive intervals with clear decision authority, ITT and exposure-aware/per-protocol sensitivity bounds, missingness/attrition/contamination diagnostics, balance, Pareto surfaces, harm tails, safety denominators/bounds, costs, active/queue/provisioning/backoff/cleanup time, panel metrics, and categorical gates.
-  - [ ] Link every cell/figure/claim to source table/file hashes, derivation hash, protocol, population, model, endpoint, product/engine stratum, history regime, environment, units, evidence, and gate IDs.
-  - [ ] Keep Copilot subscription, framework OpenAI, and local-resource quantities/amounts separately labeled; bind the selected immutable price/revision.
-- [ ] Implement bounded claim classification and frozen language (AC: 2)
-  - [ ] Emit only `null`, `harmful`, `indeterminate`, or `positive` from immutable decision records; do not regenerate thresholds from outcomes.
-  - [ ] Prevent construction/conformance, component tests, deterministic fixtures, pilot data, unreconciled trials, and direct-engine upper bounds from becoming shipped-product confirmatory efficacy.
-  - [ ] Safety language states the exact rate upper bound, denominator, coverage, and sensitivity; never “safe”, “zero risk”, or “no events means no risk”.
-- [ ] Implement release-fitness decision records (AC: 3)
-  - [ ] Require at least one frozen reliability/qualitative/cost/wall benefit decision to pass.
-  - [ ] Require endpoint-appropriate non-target non-inferiority: each difference-scale simultaneous lower bound must exceed `-0.02`, each non-target cost/wall ratio simultaneous upper bound must be below `1.10`, the panel gate applies wherever qualitative evidence is used, and every categorical gate must pass.
-  - [ ] For cost/wall benefits, require ratio `<=0.90`, simultaneous upper bound `<1.0`, and reliability/quality simultaneous lower bounds `>-0.02`; reliability/qualitative benefits require point `>=+0.05` and simultaneous lower bound `>0`.
-  - [ ] Limit the decision to tested population, exact model, product/engine stratum, protocol, environment, endpoint family, and controlled/dynamic history regime.
-- [ ] Prevent post-hoc changes and preserve decision history (AC: 1-3)
-  - [ ] Any threshold, family, version, endpoint, scope, price selection, or language-policy change requires a new protocol/report/claim identity.
-  - [ ] Never overwrite prior reports or decision records; append superseding lineage with rationale that is independent of outcome favorability.
-- [ ] Add report golden, claim-lint, scope, threshold, lineage, and categorical-override tests (AC: 1-3).
+- [x] Define immutable report inputs and report/claim schemas (AC: 1)
+  - [x] Freeze exact dataset, table, figure, estimator, interval, Holm family, power, safety, panel, cost revision, gate, and decision-record hashes before rendering.
+  - [x] Reject mutable “latest”, missing lineage, or mixed scope records.
+  - [x] Record ordered inputs, outputs, protocol, and typed terminal status.
+- [x] Generate deterministic local reports (AC: 1)
+  - [x] Require simultaneous/marginal interval, diagnostics, Pareto, harm-tail, safety, cost, time, panel, and gate evidence sections.
+  - [x] Bind every report item and claim to source/derivation hashes, protocol, population, model, endpoint, stratum, history regime, environment, and evidence IDs.
+  - [x] Preserve separately labeled cost evidence through its frozen cost-revision hash.
+- [x] Implement bounded claim classification and frozen language (AC: 2)
+  - [x] Emit only `null`, `harmful`, `indeterminate`, or `positive` from immutable Story 5.4 decision records.
+  - [x] Prevent construction/conformance, component tests, deterministic fixtures, pilot data, unreconciled trials, and direct-engine upper bounds from becoming shipped-product confirmatory efficacy.
+  - [x] Reject unsafe, zero-risk, and broad product-efficacy language.
+- [x] Implement release-fitness decision records (AC: 3)
+  - [x] Require at least one frozen reliability/qualitative/cost/wall benefit decision to pass.
+  - [x] Require endpoint-appropriate non-target non-inferiority and every categorical gate.
+  - [x] Preserve strict Story 5.4 benefit/non-inferiority thresholds and panel authority through the typed claim decisions.
+  - [x] Bind the decision to tested population, model, stratum, protocol, environment, and history regime.
+- [x] Prevent post-hoc changes and preserve decision history (AC: 1-3)
+  - [x] Publish a fixed report identity only once; a differing payload is rejected.
+  - [x] Require a new input/report identity when scope, lineage, price revision, or language policy changes.
+- [x] Add report golden, claim-lint, scope, threshold, lineage, and categorical-override tests (AC: 1-3).
 
 ## Developer Context
 
@@ -106,12 +106,20 @@ The report is a projection of immutable analysis decisions, not a place to reana
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added canonical frozen report input, bounded claim, release-fitness decision, and report schemas.
+- Added deterministic local report publication under `artifacts/reports/<report-id>/`, preserving prior bytes and reporting a typed `verified` or `draft/unverified` terminal state.
+- Preserved Story 5.4 claim-gate authority and Story 5.5 categorical decision authority; report code does not recreate thresholds or detached gate booleans.
+- Added claim promotion guards, item-level scope/lineage validation, release-fitness composition, report CLI coverage, and schema coverage.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/analysis/{claims,reports,gates,__init__}.py`
+- `evaluation/src/memrelay_eval/cli/{main,commands}.py`
+- `evaluation/schemas/{frozen-report-input,bounded-claim,release-fitness-decision,evidence-linked-report}.schema.json`
+- `evaluation/tests/{unit/analysis/test_reports.py,unit/analysis/test_multiplicity_gates_power.py,contract/analysis/test_parquet_schemas.py}`

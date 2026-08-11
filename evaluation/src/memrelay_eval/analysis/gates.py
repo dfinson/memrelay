@@ -654,6 +654,159 @@ def release_fitness(
     return True
 
 
+@dataclass(frozen=True, slots=True)
+class ReleaseFitnessDecision:
+    """Immutable release conclusion composed from Story 5.4 and Story 5.5 authority."""
+
+    status: str
+    family_sha256: str
+    protocol_sha256: str
+    population_id: str
+    model_id: str
+    stratum: str
+    history_regime: str
+    environment_sha256: str
+    source_sha256: tuple[str, ...]
+    derivation_sha256: str
+    evidence_sha256: tuple[str, ...]
+    categorical_gate_decision_sha256: tuple[str, ...]
+    target_claim_decision_sha256: tuple[str, ...]
+    non_target_interval_sha256: tuple[str, ...]
+    reproduction_status: str
+
+    def __post_init__(self) -> None:
+        if self.status not in {"pass", "fail", "blocked", "draft/unverified"}:
+            raise AnalysisError("release_fitness_status_invalid")
+        if self.reproduction_status not in {"verified", "pending", "failed"}:
+            raise AnalysisError("release_fitness_reproduction_invalid")
+        if not all(
+            _valid_sha256(value)
+            for value in (
+                self.family_sha256,
+                self.protocol_sha256,
+                self.environment_sha256,
+                self.derivation_sha256,
+                *self.source_sha256,
+                *self.evidence_sha256,
+                *self.categorical_gate_decision_sha256,
+                *self.target_claim_decision_sha256,
+                *self.non_target_interval_sha256,
+            )
+        ):
+            raise AnalysisError("release_fitness_lineage_invalid")
+        if not all((self.population_id, self.model_id, self.stratum, self.history_regime)):
+            raise AnalysisError("release_fitness_scope_missing")
+        if not all(
+            (
+                self.source_sha256,
+                self.evidence_sha256,
+                self.categorical_gate_decision_sha256,
+                self.target_claim_decision_sha256,
+                self.non_target_interval_sha256,
+            )
+        ):
+            raise AnalysisError("release_fitness_evidence_missing")
+
+    @property
+    def decision_sha256(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "schema_version": "1.0.0",
+            "artifact_type": "release_fitness_decision",
+            "status": self.status,
+            "family_sha256": self.family_sha256,
+            "protocol_sha256": self.protocol_sha256,
+            "population_id": self.population_id,
+            "model_id": self.model_id,
+            "stratum": self.stratum,
+            "history_regime": self.history_regime,
+            "environment_sha256": self.environment_sha256,
+            "source_sha256": sorted(self.source_sha256),
+            "derivation_sha256": self.derivation_sha256,
+            "evidence_sha256": sorted(self.evidence_sha256),
+            "categorical_gate_decision_sha256": sorted(self.categorical_gate_decision_sha256),
+            "target_claim_decision_sha256": sorted(self.target_claim_decision_sha256),
+            "non_target_interval_sha256": sorted(self.non_target_interval_sha256),
+            "reproduction_status": self.reproduction_status,
+        }
+
+
+def evaluate_release_fitness(
+    *,
+    target_decisions: tuple[ClaimGateDecision, ...],
+    non_target_intervals: tuple[SimultaneousInterval, ...],
+    family: FrozenClaimFamily,
+    categorical_decisions: tuple[CategoricalGateDecision, ...],
+    population_id: str,
+    model_id: str,
+    stratum: str,
+    history_regime: str,
+    environment_sha256: str,
+    source_sha256: tuple[str, ...],
+    derivation_sha256: str,
+    evidence_sha256: tuple[str, ...],
+    reproduction_status: str,
+) -> ReleaseFitnessDecision:
+    """Require benefit, non-target non-inferiority, categorical gates, and reproduction."""
+    if not target_decisions or not categorical_decisions:
+        raise AnalysisError("release_fitness_authority_missing")
+    if any(
+        decision.family_sha256 != family.family_sha256
+        or decision.protocol_sha256 != family.protocol_sha256
+        for decision in target_decisions
+    ):
+        raise AnalysisError("release_fitness_family_drift")
+    if any(
+        decision.digest not in {item.categorical_gate_decision_sha256 for item in target_decisions}
+        for decision in categorical_decisions
+    ):
+        raise AnalysisError("release_fitness_categorical_binding_invalid")
+    categorical_blocked = any(decision.status != "pass" for decision in categorical_decisions)
+    if reproduction_status != "verified":
+        status = "draft/unverified"
+    elif categorical_blocked:
+        status = "blocked"
+    elif release_fitness(target_decisions, non_target_intervals, family):
+        status = "pass"
+    else:
+        status = "fail"
+    interval_hashes = tuple(
+        canonical_digest(
+            {
+                "endpoint_id": interval.endpoint_id,
+                "point_estimate": interval.point_estimate,
+                "lower": interval.lower,
+                "upper": interval.upper,
+                "confidence_level": interval.confidence_level,
+                "procedure": interval.procedure,
+                "family_sha256": interval.family_sha256,
+                "status": interval.status,
+                "sidedness": interval.sidedness,
+            }
+        )
+        for interval in non_target_intervals
+    )
+    return ReleaseFitnessDecision(
+        status=status,
+        family_sha256=family.family_sha256,
+        protocol_sha256=family.protocol_sha256,
+        population_id=population_id,
+        model_id=model_id,
+        stratum=stratum,
+        history_regime=history_regime,
+        environment_sha256=environment_sha256,
+        source_sha256=source_sha256,
+        derivation_sha256=derivation_sha256,
+        evidence_sha256=evidence_sha256,
+        categorical_gate_decision_sha256=tuple(item.digest for item in categorical_decisions),
+        target_claim_decision_sha256=tuple(item.decision_sha256 for item in target_decisions),
+        non_target_interval_sha256=interval_hashes,
+        reproduction_status=reproduction_status,
+    )
+
+
 _OVERRIDE_KINDS: Final = frozenset(
     {
         "credential_leak",

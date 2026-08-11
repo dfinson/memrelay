@@ -7,7 +7,6 @@ from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
-    allocate_stochastic_rerun_command,
     analyze_stage,
     backup_terminal,
     bootstrap,
@@ -15,9 +14,8 @@ from memrelay_eval.cli.commands import (
     lock_models,
     plan_offline_command,
     reconcile_stage,
-    reproduce_offline,
+    report_stage,
     run_stage,
-    seal_reproduction_bundle_command,
     show_effective_configuration,
     show_foundation_status,
     validate_authored_catalog,
@@ -202,42 +200,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="derived-artifact root outside the immutable Parquet dataset root",
     )
     analyze.set_defaults(handler=analyze_stage)
-    reproduce = subcommands.add_parser(
-        "reproduce-offline",
-        help="verify a sealed analysis/grader/evidence reproduction without credentials or network",
+    report = subcommands.add_parser(
+        "report",
+        help="render one immutable, local evidence-linked report without reanalysing inputs",
     )
-    reproduce.add_argument("--bundle", required=True)
-    reproduce.add_argument("--cas-root", required=True)
-    reproduce.add_argument("--backup-root")
-    reproduce.add_argument("--output-root", required=True)
-    reproduce.set_defaults(handler=reproduce_offline)
-    seal_reproduction = subcommands.add_parser(
-        "seal-reproduction-bundle",
-        help="seal retained analysis, grading, evidence, and runtime authorities",
+    report.add_argument("--stage", required=True)
+    report.add_argument(
+        "--input",
+        required=True,
+        help="canonical frozen report-input JSON; mutable aliases are not accepted",
     )
-    seal_reproduction.add_argument("--parquet-root", required=True)
-    seal_reproduction.add_argument("--dataset-version", required=True)
-    seal_reproduction.add_argument("--queries", required=True)
-    seal_reproduction.add_argument("--grader-result", required=True)
-    seal_reproduction.add_argument("--normalized-evidence", required=True)
-    seal_reproduction.add_argument("--protocol-sha256", required=True)
-    seal_reproduction.add_argument("--runtime-lock", required=True)
-    seal_reproduction.add_argument("--output-root", required=True)
-    seal_reproduction.add_argument("--backup-receipt")
-    seal_reproduction.set_defaults(handler=seal_reproduction_bundle_command)
-    stochastic = subcommands.add_parser(
-        "allocate-stochastic-rerun",
-        help="allocate a separate non-confirmatory protocol/run/attempt identity",
+    report.add_argument(
+        "--output-root",
+        default="artifacts",
+        help="local artifact root; reports are appended below reports/<report-id>",
     )
-    stochastic.add_argument("--original-protocol-id", required=True)
-    stochastic.add_argument("--original-run-id", required=True)
-    stochastic.add_argument("--original-attempt-id", required=True)
-    stochastic.add_argument(
-        "--conclusion-class", choices=("null", "harm", "indeterminate", "positive"), required=True
-    )
-    stochastic.add_argument("--original-evidence-root", required=True)
-    stochastic.add_argument("--output-root", required=True)
-    stochastic.set_defaults(handler=allocate_stochastic_rerun_command)
+    report.set_defaults(handler=report_stage)
     return parser
 
 

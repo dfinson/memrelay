@@ -15,6 +15,7 @@ from memrelay_eval.analysis.gates import (
     CategoricalGatePolicy,
     FrozenThresholdPolicy,
     evaluate_claim,
+    evaluate_release_fitness,
 )
 from memrelay_eval.analysis.intervals import SimultaneousInterval
 from memrelay_eval.analysis.multiplicity import FrozenClaimFamily, HolmResult
@@ -656,3 +657,41 @@ def test_reliability_boundaries_remain_strict_under_sealed_evidence() -> None:
         **context,
     )
     assert equal_bound.status in {"fail", "estimation-only"}
+
+
+def test_release_fitness_requires_reproduction_and_composes_typed_authority() -> None:
+    bundle = _bundle()
+    context = _context(bundle)
+    decision = evaluate_claim(
+        bundle.family,
+        bundle.thresholds,
+        _holm(bundle.family),
+        _interval(bundle.family),
+        claim_type="reliability_benefit",
+        **context,
+    )
+    categorical = context["categorical_gate_decision"]
+    assert isinstance(categorical, CategoricalGateDecision)
+    non_target = (
+        _interval(bundle.family, "EP-QUAL", point=0.05, lower=0.001),
+        _interval(bundle.family, "EP-HARM", point=0.0, lower=-0.019),
+    )
+
+    draft = evaluate_release_fitness(
+        target_decisions=(decision,),
+        non_target_intervals=non_target,
+        family=bundle.family,
+        categorical_decisions=(categorical,),
+        population_id="primary",
+        model_id="model-primary",
+        stratum="product",
+        history_regime="controlled",
+        environment_sha256=_ENVIRONMENT,
+        source_sha256=(_SOURCE,),
+        derivation_sha256=_DERIVATION,
+        evidence_sha256=("7" * 64,),
+        reproduction_status="pending",
+    )
+
+    assert draft.status == "draft/unverified"
+    assert draft.target_claim_decision_sha256 == (decision.decision_sha256,)

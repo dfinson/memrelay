@@ -1,5 +1,6 @@
 """Frozen confirmatory-analysis contracts."""
 
+from .claims import BoundedClaim, ClaimScope, bound_claim, lint_claim_text
 from .diagnostics import DiagnosticReport, build_diagnostics
 from .estimands import FrozenEstimand, FrozenEstimatorRegistry, MissingnessPolicy
 from .estimators import (
@@ -19,7 +20,14 @@ from .estimators import (
     gee_sensitivity,
     glmm_sensitivity,
 )
-from .gates import ClaimGateDecision, FrozenThresholdPolicy, evaluate_claim, release_fitness
+from .gates import (
+    ClaimGateDecision,
+    FrozenThresholdPolicy,
+    ReleaseFitnessDecision,
+    evaluate_claim,
+    evaluate_release_fitness,
+    release_fitness,
+)
 from .intervals import SimultaneousInterval, holm_simultaneous_intervals
 from .multiplicity import EndpointPValue, FrozenClaimFamily, HolmResult, holm_fwer
 from .power import (
@@ -32,12 +40,15 @@ from .power import (
     fixed_information_look,
 )
 from .preregistration import SealedClaimProtocol, SealedClaimRegistration
+from .reports import EvidenceLinkedReport, ReportInput, publish_report, render_report
 
 __all__ = [
     "AssignmentDisclosure",
     "AssignmentAnalysisLock",
     "CmhSensitivity",
     "ClaimGateDecision",
+    "ClaimScope",
+    "BoundedClaim",
     "DiagnosticReport",
     "EstimatorDecisionRecord",
     "FinalInformationProof",
@@ -59,7 +70,11 @@ __all__ = [
     "SealedClaimProtocol",
     "SealedClaimRegistration",
     "SimultaneousInterval",
+    "EvidenceLinkedReport",
+    "ReportInput",
+    "ReleaseFitnessDecision",
     "build_diagnostics",
+    "bound_claim",
     "cluster_sensitivity",
     "cmh_sensitivity",
     "estimator_decision",
@@ -68,9 +83,13 @@ __all__ = [
     "estimate_itt",
     "estimate_itt_bounds",
     "evaluate_claim",
+    "evaluate_release_fitness",
     "evaluate_power",
     "fixed_information_look",
     "holm_fwer",
     "holm_simultaneous_intervals",
+    "lint_claim_text",
+    "publish_report",
+    "render_report",
     "release_fitness",
 ]
