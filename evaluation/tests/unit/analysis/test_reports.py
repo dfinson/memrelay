@@ -6,7 +6,7 @@ from pathlib import Path
 
 import jsonschema
 import pytest
-from memrelay_eval.analysis.claims import ClaimScope, lint_claim_text
+from memrelay_eval.analysis.claims import ClaimScope, ReleaseClaimScope, lint_claim_text
 from memrelay_eval.analysis.gates import CategoricalGateDecision
 from memrelay_eval.analysis.intervals import SimultaneousInterval
 from memrelay_eval.analysis.reports import (
@@ -22,6 +22,11 @@ from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.cli.commands import _canonical_report_input
 from memrelay_eval.cli.main import main
 from memrelay_eval.domain.errors import AnalysisError
+from memrelay_eval.evidence.release_map import (
+    ReleaseEvidence,
+    ReleaseStatement,
+    map_release_evidence,
+)
 from tests.contract.analysis.test_duckdb_read_only import _dataset
 from tests.unit.analysis.test_multiplicity_gates_power import (
     _DERIVATION,
@@ -262,6 +267,60 @@ def test_tampered_source_authority_fails_closed() -> None:
                 report_input.source_authority, source_kind="engine_upper_bound"
             ),
         )
+
+
+def test_report_retains_scope_matched_release_evidence_map() -> None:
+    report_input = _input()
+    scope = ReleaseClaimScope(
+        artifact_id="artifact-opaque-1",
+        artifact_sha256="7" * 64,
+        evidence_id="EV-FIXTURE-RETRIEVAL",
+        path="release-fixture",
+        observation_mode="not_applicable",
+        configuration_sha256="2" * 64,
+        source_implementation_sha256="3" * 64,
+        runtime_lock_sha256=report_input.runtime_lock_sha256,
+        version_sha256="4" * 64,
+        protocol_sha256=report_input.scope.protocol_sha256,
+        population_id=report_input.scope.population_id,
+        model_id=report_input.scope.model_id,
+        stratum=report_input.scope.stratum,
+        history_regime=report_input.scope.history_regime,
+        endpoint_id="EP-WIRING",
+        estimand_id="deterministic-wiring",
+        source_sha256=report_input.scope.source_sha256,
+        derivation_sha256=report_input.scope.derivation_sha256,
+        reconciliation_sha256="5" * 64,
+        gate_id="GATE-FIXTURE",
+        gate_sha256="6" * 64,
+    )
+    evidence_map = map_release_evidence(
+        (
+            ReleaseEvidence(
+                scope,
+                "fixture_retrieval",
+                "CL-WIRING-RANK",
+                ("production efficacy",),
+                "passed",
+                "passed",
+            ),
+        ),
+        (
+            ReleaseStatement(
+                "release-statement-1",
+                "bounded_product_regression",
+                scope,
+                "CL-WIRING-RANK",
+            ),
+        ),
+    )
+
+    sealed_input = replace(report_input, release_evidence_map=evidence_map)
+    restored = _canonical_report_input(canonical_bytes(sealed_input.to_document()))
+    report = render_report(sealed_input)
+
+    assert restored.release_evidence_map == evidence_map
+    assert report.to_document()["release_evidence_map"] == evidence_map.to_document()
 
 
 def test_sealed_input_rejects_caller_authored_release_pass() -> None:

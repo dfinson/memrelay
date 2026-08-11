@@ -1,17 +1,20 @@
-# The memrelay release gate
+# The bounded memrelay pipeline-seam release gate
 
-memrelay's **pre-release trust gate** is a single hermetic end-to-end test:
+`EV-ROUNDTRIP-MCP` is a single hermetic end-to-end fixture test supporting only
+`CL-PIPELINE-SEAM`:
 
 > `tests/integration/test_release_gate_roundtrip.py::test_release_gate_fixture_session_recalled_through_mcp`
 
-A human runs it before cutting a release. If it is green, the whole trust contract that memrelay
-sells — *a real coding session is captured in the background and later surfaced to the agent's
-memory tools* — holds against the **real embedded graph**. If it is red, do **not** release.
+A human runs it before cutting a release. A passing result supports the named synthetic fixture's
+capture-to-MCP pipeline seam against the real embedded graph. It does not establish product
+efficacy, safety, economics, production completeness, generalization, or cross-repository fitness.
+A failing result means this bounded seam is not supported for the tested fixture.
 
-## What it proves
+## What the fixture supports
 
-The gate drives one fixture **session** through the exact production path an agent experiences,
-joining the two halves that ship on `main` but that no other test exercises together:
+The fixture drives one synthetic **session** through the same product components used for capture,
+ingest, and MCP recall, joining the two halves that ship on `main` but that no other test exercises
+together:
 
 1. **Capture.** A raw Copilot `events.jsonl` session → `run_observe` → the durable `Spool` at
    `<home>/spool/spool.db`. The namespace is **derived** from the session's git remote (the same
@@ -42,7 +45,7 @@ extraction, embeddings come from the real fastembed model (or a deterministic of
 the model cannot be downloaded), and the graph is embedded Ladybug on a temp dir; it never touches a
 real `~/.memrelay`.
 
-From a clean checkout:
+From a fresh checkout:
 
 ```bash
 pip install -e ".[dev]"
@@ -53,8 +56,8 @@ Expected: `1 passed`. No environment variables, secrets, or services are require
 
 ## What a failure means
 
-A red gate means the end-to-end trust path is broken somewhere along capture → spool → ingest →
-namespace derivation → daemon transport → MCP renderer. Triage from the failing assertion:
+A red gate means the tested fixture's capture → spool → ingest → namespace derivation → daemon
+transport → MCP renderer path is not supported. Triage from the failing assertion:
 
 | Failing assertion | Most likely culprit |
 | --- | --- |
@@ -64,5 +67,5 @@ namespace derivation → daemon transport → MCP renderer. Triage from the fail
 | `StubBackend` sentinel present | the daemon silently served the stub, not the real engine |
 | `backend != "ladybug"` | the embedded graph backend did not come up |
 
-Fix the regression — do not weaken the gate — before releasing. See [`RELEASING.md`](../RELEASING.md)
-for the surrounding release procedure.
+Fix the regression — do not weaken the gate — before relying on this fixture evidence. See
+[`RELEASING.md`](../RELEASING.md) for the surrounding release procedure.
