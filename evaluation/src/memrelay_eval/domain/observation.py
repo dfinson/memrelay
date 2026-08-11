@@ -507,6 +507,8 @@ class ObservationAssessment:
         if self.qualified:
             return "observation_qualified"
         if self.evidence.evidence_failure_reasons:
+            if ObservationFailureReason.DUPLICATED in self.evidence.evidence_failure_reasons:
+                return ObservationFailureReason.DUPLICATED.value
             for reason in (
                 ObservationFailureReason.LIVE_TAIL_DELIVERY_FAILED,
                 ObservationFailureReason.LIVE_TAIL_DELIVERY_MISSING,

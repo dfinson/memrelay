@@ -431,6 +431,50 @@ def test_telemetry_reconciliation_scopes_order_to_the_target_path_and_rejects_ba
     assert not malformed.complete
 
 
+def test_telemetry_reconciliation_compares_arrival_order_with_frozen_contract() -> None:
+    contract = _contract()
+    context = TelemetryContext(
+        experiment_id="exp_" + "1" * 32,
+        protocol_id="protocol_" + "2" * 32,
+        run_id="run_" + "3" * 32,
+        attempt_id="attempt_" + "4" * 32,
+        scenario_id="scenario_" + "5" * 32,
+        stratum_id="product",
+        history_mode="controlled",
+        identity=identity_for_span_class(SpanClass.DAEMON_DISPATCH.value),
+        evidence_class="observation_sentinel",
+        exposure_state="unexposed",
+        environment_fingerprint_sha256="a" * 64,
+    )
+    spans = tuple(
+        TelemetrySpan(
+            span_id=f"span-observation-{sentinel.sequence}",
+            span_class=SpanClass.DAEMON_DISPATCH,
+            context=context,
+            started_at=_STARTED_AT,
+            ended_at=_STARTED_AT,
+            attributes={
+                "sentinel_id": sentinel.identifier,
+                "sentinel_sequence": sentinel.sequence,
+                "observation_path": contract.path.value,
+                "restart_epoch": 0,
+            },
+        )
+        for sentinel in contract.expected_sentinels
+    )
+
+    telemetry = observation_telemetry_evidence(
+        (spans[2], spans[0], spans[1]),
+        path=contract.path,
+        expected_sentinels=contract.expected_sentinels,
+        collector_shutdown_verified=True,
+    )
+
+    assert "TEL-OUT-OF-ORDER" in telemetry.failure_codes
+    assert [record.sequence for record in telemetry.records] == [3, 1, 2]
+    assert not telemetry.complete
+
+
 def test_mixed_path_evidence_fails_without_a_completeness_claim() -> None:
     contract = _contract()
     assessment = assess_observation(
@@ -728,3 +772,95 @@ def test_observation_conformance_cli_rejects_serialized_identity_drift(
     )
     expected_error = ObservationFailureReason.CONFORMANCE_IDENTITY_DRIFT.value
     assert command_manifest["error_code"] == expected_error
+
+
+@pytest.mark.parametrize("boundary", tuple(ObservationBoundary))
+def test_observation_conformance_cli_reorder_faults_preserve_boundary_arrival_order(
+    tmp_path: Path, boundary: ObservationBoundary
+) -> None:
+    path = (
+        ObservationPath.FILE_WATCH
+        if boundary is ObservationBoundary.LIVE_TAIL
+        else ObservationPath.REPLAY
+    )
+    contract, product_config, runtime_lock = _cli_contract(tmp_path, path)
+    input_path = tmp_path / "observation-input.json"
+    input_path.write_bytes(canonical_bytes({"contract": contract.to_document()}))
+    output_root = tmp_path / "artifacts"
+
+    with pytest.raises(ObservationQualificationError) as error:
+        main(
+            [
+                "observation-conformance",
+                "--input",
+                str(input_path),
+                "--product-config",
+                str(product_config),
+                "--runtime-lock",
+                str(runtime_lock),
+                "--output-root",
+                str(output_root),
+                "--fault-injection",
+                f"reorder:{boundary.value}",
+            ]
+        )
+
+    assert error.value.code == ObservationFailureReason.REORDERED.value
+    decision = json.loads(
+        next(
+            output_root.glob(f"observation-qualification/{path.value}/*/decision-*.json")
+        ).read_text(encoding="utf-8")
+    )
+    assert decision["qualified"] is False
+    assert ObservationFailureReason.REORDERED.value in decision["failure_reasons"]
+    assert boundary.value in decision["reordered_boundaries"]
+    observed_sequences = [
+        record["sequence"]
+        for record in decision["evidence"]["records"]
+        if record["boundary"] == boundary.value
+    ]
+    first_occurrences = tuple(dict.fromkeys(observed_sequences))
+    assert first_occurrences == (3, 1, 2)
+    command_manifest = json.loads(
+        next(output_root.glob("commands/observation-conformance-*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert command_manifest["terminal_status"] == "failed"
+    assert command_manifest["error_code"] == ObservationFailureReason.REORDERED.value
+
+
+def test_observation_conformance_cli_post_idempotency_spool_duplicate_is_not_terminal_loss(
+    tmp_path: Path,
+) -> None:
+    contract, product_config, runtime_lock = _cli_contract(tmp_path, ObservationPath.REPLAY)
+    input_path = tmp_path / "observation-input.json"
+    input_path.write_bytes(canonical_bytes({"contract": contract.to_document()}))
+    output_root = tmp_path / "artifacts"
+
+    with pytest.raises(ObservationQualificationError) as error:
+        main(
+            [
+                "observation-conformance",
+                "--input",
+                str(input_path),
+                "--product-config",
+                str(product_config),
+                "--runtime-lock",
+                str(runtime_lock),
+                "--output-root",
+                str(output_root),
+                "--fault-injection",
+                "duplicate:spool",
+            ]
+        )
+
+    assert error.value.code == ObservationFailureReason.DUPLICATED.value
+    decision = json.loads(
+        next(output_root.glob("observation-qualification/replay/*/decision-*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert ObservationFailureReason.DUPLICATED.value in decision["failure_reasons"]
+    assert ObservationFailureReason.TERMINAL_FLUSH_MISSING.value not in decision["failure_reasons"]
+    assert decision["post_idempotency_duplicates"]

@@ -170,6 +170,8 @@ class ProductObservationRun:
     receipt: bytes
     telemetry_spans: tuple[TelemetrySpan, ...]
     evidence_failure_reasons: tuple[ObservationFailureReason, ...]
+    manifest_records: tuple[SentinelBoundaryRecord, ...]
+    reconciliation_records: tuple[SentinelBoundaryRecord, ...]
 
 
 class ObservationTelemetryCollector:
@@ -188,6 +190,12 @@ class ObservationTelemetryCollector:
     def spans(self) -> tuple[TelemetrySpan, ...]:
         return tuple(self._spans)
 
+    def reorder_arrivals(self) -> None:
+        """Inject a collector-side delivery rotation for deterministic fault coverage."""
+
+        if len(self._spans) > 1:
+            self._spans = [self._spans[-1], *self._spans[:-1]]
+
     def shutdown(self) -> bool:
         self._shutdown_verified = True
         return True
@@ -199,17 +207,28 @@ class _LiveTailDelivery:
 
     identifiers: tuple[str, ...]
     observed_at: Mapping[str, datetime]
+    restart_epochs: Mapping[str, int]
     failed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _SentinelArrival:
+    """One value-safe retained arrival from a concrete observation seam."""
+
+    identifier: str
+    observed_at: datetime
+    restart_epoch: int
 
 
 class _RecordingTailSource:
     """Proxy a live source while retaining only sentinel IDs and source timestamps."""
 
-    def __init__(self, source: Any, expected_ids: Sequence[str]) -> None:
+    def __init__(self, source: Any, expected_ids: Sequence[str], *, restart_epoch: int) -> None:
         self._source = source
         self._expected_ids = tuple(expected_ids)
+        self._restart_epoch = restart_epoch
         self._entered: Any | None = None
-        self._identifiers: set[str] = set()
+        self._identifiers: list[str] = []
         self._observed_at: dict[str, datetime] = {}
         self.failed = False
         self.exhausted = False
@@ -257,13 +276,14 @@ class _RecordingTailSource:
             return
         for identifier in self._expected_ids:
             if identifier in content:
-                self._identifiers.add(identifier)
+                self._identifiers.append(identifier)
                 self._observed_at.setdefault(identifier, timestamp)
 
     def delivery(self) -> _LiveTailDelivery:
         return _LiveTailDelivery(
-            identifiers=tuple(sorted(self._identifiers)),
+            identifiers=tuple(self._identifiers),
             observed_at=dict(self._observed_at),
+            restart_epochs=dict.fromkeys(self._observed_at, self._restart_epoch),
             failed=self.failed,
         )
 
@@ -271,13 +291,73 @@ class _RecordingTailSource:
 class _RecordingSpool:
     """Keep pre-idempotency ingress facts while delegating persistence to the real spool."""
 
-    def __init__(self, spool: Any) -> None:
+    def __init__(
+        self,
+        spool: Any,
+        *,
+        expected_ids: Sequence[str],
+        source_times: Mapping[str, datetime],
+        restart_epoch_for_session: Callable[[object], int],
+        inject_post_idempotency_duplicate: bool,
+    ) -> None:
         self._spool = spool
+        self._expected_ids = tuple(expected_ids)
+        self._source_times = source_times
+        self._restart_epoch_for_session = restart_epoch_for_session
+        self._inject_post_idempotency_duplicate = inject_post_idempotency_duplicate
+        self._duplicate_injected = False
         self.pre_idempotency_records: list[dict[str, Any]] = []
+        self.pre_idempotency_arrivals: list[_SentinelArrival] = []
+        self._spool_arrivals_by_key: dict[str, tuple[_SentinelArrival, ...]] = {}
 
     def append(self, record: dict[str, Any]) -> None:
         self.pre_idempotency_records.append(dict(record))
+        arrivals = self._arrivals_for(record)
+        self.pre_idempotency_arrivals.extend(arrivals)
+        key = record.get("idempotency_key")
+        if isinstance(key, str):
+            self._spool_arrivals_by_key.setdefault(key, arrivals)
         self._spool.append(record)
+        if (
+            self._inject_post_idempotency_duplicate
+            and not self._duplicate_injected
+            and arrivals
+            and isinstance(key, str)
+        ):
+            duplicate = dict(record)
+            duplicate_key = f"{key}:observation-post-idempotency-duplicate"
+            duplicate["idempotency_key"] = duplicate_key
+            self._spool_arrivals_by_key[duplicate_key] = arrivals
+            self._spool.append(duplicate)
+            self._duplicate_injected = True
+
+    def spool_arrivals(
+        self, stored_records: Sequence[Mapping[str, object]]
+    ) -> tuple[_SentinelArrival, ...]:
+        arrivals: list[_SentinelArrival] = []
+        for record in stored_records:
+            key = record.get("idempotency_key")
+            if isinstance(key, str):
+                arrivals.extend(self._spool_arrivals_by_key.get(key, ()))
+        return tuple(arrivals)
+
+    def _arrivals_for(self, record: Mapping[str, object]) -> tuple[_SentinelArrival, ...]:
+        content = record.get("content")
+        if not isinstance(content, str):
+            return ()
+        restart_epoch = self._restart_epoch_for_session(record.get("session_id"))
+        recorded_at = _parse_observed_at(record.get("ts"))
+        arrivals: list[_SentinelArrival] = []
+        for identifier in self._expected_ids:
+            if identifier in content:
+                arrivals.append(
+                    _SentinelArrival(
+                        identifier=identifier,
+                        observed_at=recorded_at or self._source_times[identifier],
+                        restart_epoch=restart_epoch,
+                    )
+                )
+        return tuple(arrivals)
 
 
 class _ObservationBackend:
@@ -376,46 +456,92 @@ def _synthetic_event_lines(
     return b"".join(canonical_bytes(event) + b"\n" for event in events).decode("utf-8")
 
 
-def _sentinel_ids_in(
-    records: Sequence[Mapping[str, object]], expected_ids: Sequence[str]
-) -> set[str]:
-    found: set[str] = set()
-    for record in records:
-        content = record.get("content")
-        if isinstance(content, str):
-            found.update(identifier for identifier in expected_ids if identifier in content)
-    return found
-
-
 def _records(
     *,
     path: ObservationPath,
     boundary: ObservationBoundary,
-    identifiers: Sequence[str],
+    arrivals: Sequence[_SentinelArrival],
     expected_sequences: Mapping[str, int],
-    observed_at: Mapping[str, datetime],
-    restart_epoch: int = 1,
 ) -> tuple[SentinelBoundaryRecord, ...]:
     return tuple(
         SentinelBoundaryRecord(
             path=path,
             boundary=boundary,
-            sentinel_id=identifier,
-            sequence=expected_sequences[identifier],
-            observed_at=observed_at[identifier],
-            restart_epoch=restart_epoch,
+            sentinel_id=arrival.identifier,
+            sequence=expected_sequences[arrival.identifier],
+            observed_at=arrival.observed_at,
+            restart_epoch=arrival.restart_epoch,
         )
-        for identifier in identifiers
-        if identifier in observed_at
+        for arrival in arrivals
+        if arrival.identifier in expected_sequences
     )
 
 
-def _ordered_identifiers(
-    identifiers: Sequence[str] | set[str], expected_sequences: Mapping[str, int]
-) -> tuple[str, ...]:
-    """Preserve the frozen sentinel order rather than incidental lexical identifier order."""
+def _reordered_arrivals(
+    arrivals: Sequence[_SentinelArrival], *, inject: bool
+) -> tuple[_SentinelArrival, ...]:
+    """Model a seam-local rotation while keeping ordinary producer order untouched."""
 
-    return tuple(sorted(identifiers, key=expected_sequences.__getitem__))
+    retained = tuple(arrivals)
+    if inject and len(retained) > 1:
+        return retained[-1:] + retained[:-1]
+    return retained
+
+
+def _arrivals_for_identifiers(
+    identifiers: Sequence[str],
+    *,
+    source_times: Mapping[str, datetime],
+    restart_epochs: Mapping[str, int],
+) -> tuple[_SentinelArrival, ...]:
+    return tuple(
+        _SentinelArrival(
+            identifier=identifier,
+            observed_at=source_times[identifier],
+            restart_epoch=restart_epochs.get(identifier, 0),
+        )
+        for identifier in identifiers
+        if identifier in source_times
+    )
+
+
+def _first_epoch_by_identifier(
+    arrivals: Sequence[_SentinelArrival],
+) -> dict[str, int]:
+    epochs: dict[str, int] = {}
+    for arrival in arrivals:
+        epochs.setdefault(arrival.identifier, arrival.restart_epoch)
+    return epochs
+
+
+def _last_epoch_by_identifier(
+    arrivals: Sequence[_SentinelArrival],
+) -> dict[str, int]:
+    epochs: dict[str, int] = {}
+    for arrival in arrivals:
+        epochs[arrival.identifier] = max(arrival.restart_epoch, epochs.get(arrival.identifier, 0))
+    return epochs
+
+
+def _parse_fault_injections(
+    fault_injections: Sequence[str],
+) -> tuple[frozenset[ObservationBoundary], bool]:
+    """Restrict deterministic test faults to explicit observation seams."""
+
+    reordered: set[ObservationBoundary] = set()
+    duplicate_spool = False
+    for injection in fault_injections:
+        if injection == "duplicate:spool":
+            duplicate_spool = True
+            continue
+        action, separator, boundary_name = injection.partition(":")
+        if action != "reorder" or not separator:
+            raise ObservationQualificationError("observation_fault_injection_invalid")
+        try:
+            reordered.add(ObservationBoundary(boundary_name))
+        except ValueError as error:
+            raise ObservationQualificationError("observation_fault_injection_invalid") from error
+    return frozenset(reordered), duplicate_spool
 
 
 def _source_event_times(contract: ObservationContract) -> dict[str, datetime]:
@@ -442,32 +568,19 @@ def _parse_observed_at(value: object) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _retained_record_times(
-    records: Sequence[Mapping[str, object]], expected_ids: Sequence[str]
-) -> dict[str, datetime]:
-    """Extract value-safe source times retained by real product episode records."""
-
-    observed_at: dict[str, datetime] = {}
-    for record in records:
-        content = record.get("content")
-        timestamp = _parse_observed_at(record.get("ts"))
-        if not isinstance(content, str) or timestamp is None:
-            continue
-        for identifier in expected_ids:
-            if identifier in content:
-                observed_at.setdefault(identifier, timestamp)
-    return observed_at
-
-
 async def _exercise_capture_composition(
     *,
     contract: ObservationContract,
     config: Any,
     workspace: Path,
     tail_source_factory: Callable[[Any], Any] | None,
+    inject_post_idempotency_duplicate: bool,
 ) -> tuple[
     tuple[dict[str, Any], ...],
-    tuple[dict[str, Any], ...],
+    tuple[_SentinelArrival, ...],
+    tuple[_SentinelArrival, ...],
+    tuple[_SentinelArrival, ...],
+    tuple[_SentinelArrival, ...],
     int,
     bool,
     tuple[str, ...],
@@ -509,6 +622,13 @@ async def _exercise_capture_composition(
     capture_types: list[str] = []
     active = list(refs)
     captures: dict[str, object] = {}
+    identifier_by_session = {
+        ref.session_id: sentinel.identifier
+        for ref, sentinel in zip(refs, contract.expected_sentinels, strict=True)
+    }
+    lifecycle_epochs = {ref.session_id: -1 for ref in refs}
+    discovery_cycles: list[tuple[str, ...]] = []
+    capture_arrivals: list[_SentinelArrival] = []
     tail_probes: list[_RecordingTailSource] = []
     tail_captures: list[tuple[_RecordingTailSource, object]] = []
     tail_task_failed = False
@@ -519,9 +639,24 @@ async def _exercise_capture_composition(
         await stop.wait()
 
     with Spool(spool_path) as persisted_spool:
-        spool = _RecordingSpool(persisted_spool)
+        spool = _RecordingSpool(
+            persisted_spool,
+            expected_ids=contract.expected_identifiers,
+            source_times=source_times,
+            restart_epoch_for_session=lambda session_id: lifecycle_epochs.get(session_id, 0),
+            inject_post_idempotency_duplicate=inject_post_idempotency_duplicate,
+        )
 
         def capture_factory(ref: SessionRef) -> object:
+            lifecycle_epochs[ref.session_id] += 1
+            identifier = identifier_by_session[ref.session_id]
+            capture_arrivals.append(
+                _SentinelArrival(
+                    identifier=identifier,
+                    observed_at=source_times[identifier],
+                    restart_epoch=lifecycle_epochs[ref.session_id],
+                )
+            )
             if config.ingest.intake_source == ObservationPath.FILE_WATCH.value:
                 source = (
                     tail_source_factory(ref)
@@ -532,7 +667,11 @@ async def _exercise_capture_composition(
                         start_at="beginning",
                     )
                 )
-                probe = _RecordingTailSource(source, contract.expected_identifiers)
+                probe = _RecordingTailSource(
+                    source,
+                    contract.expected_identifiers,
+                    restart_epoch=lifecycle_epochs[ref.session_id],
+                )
                 tail_probes.append(probe)
                 capture = LiveTailCapture(
                     ref,
@@ -595,8 +734,15 @@ async def _exercise_capture_composition(
                 for probe, capture in entries
             )
 
+        def discover() -> list[SessionRef]:
+            discovered = list(active)
+            discovery_cycles.append(
+                tuple(identifier_by_session[ref.session_id] for ref in discovered)
+            )
+            return discovered
+
         poller = SessionDiscoveryPoller(
-            discover=lambda: list(active),
+            discover=discover,
             capture_factory=capture_factory,
             poll_interval=config.ingest.session_poll_interval,
             max_sessions=len(refs),
@@ -622,11 +768,12 @@ async def _exercise_capture_composition(
             await poller.aclose()
 
         stored_records = tuple(record for _, record in persisted_spool.read_batch())
-        pre_idempotency = tuple(spool.pre_idempotency_records)
+        spool_arrivals = spool.spool_arrivals(stored_records)
         final_drain_completed = (
             final_stats["sessions_observed"] == 2 * len(refs)
             and final_stats["active_sessions"] == 0
-            and len(stored_records) == len(refs)
+            and {arrival.identifier for arrival in spool_arrivals}
+            == set(contract.expected_identifiers)
             and all(getattr(capture, "_task", None) is None for capture in captures.values())
         )
         if contract.path is ObservationPath.FILE_WATCH:
@@ -635,18 +782,35 @@ async def _exercise_capture_composition(
                 and isinstance(getattr(capture, "_replay", None), RunObserveCapture)
                 for capture in captures.values()
             )
-        tail_identifiers: set[str] = set()
+        tail_identifiers: list[str] = []
         tail_observed_at: dict[str, datetime] = {}
+        tail_restart_epochs: dict[str, int] = {}
         tail_failed = tail_task_failed
-        for probe in tail_probes:
+        latest_tail_probes = tail_probes[-len(refs) :]
+        for probe in latest_tail_probes:
             delivery = probe.delivery()
-            tail_identifiers.update(delivery.identifiers)
+            tail_identifiers.extend(delivery.identifiers)
             for identifier, observed_at in delivery.observed_at.items():
                 tail_observed_at.setdefault(identifier, observed_at)
+            for identifier, restart_epoch in delivery.restart_epochs.items():
+                tail_restart_epochs.setdefault(identifier, restart_epoch)
             tail_failed = tail_failed or delivery.failed
+        latest_discovery = next((cycle for cycle in reversed(discovery_cycles) if cycle), ())
+        discovery_arrivals = _arrivals_for_identifiers(
+            latest_discovery,
+            source_times=source_times,
+            restart_epochs={
+                identifier_by_session[ref.session_id]: lifecycle_epochs[ref.session_id]
+                for ref in refs
+            },
+        )
+        latest_capture_arrivals = tuple(capture_arrivals[-len(refs) :])
     return (
         stored_records,
-        pre_idempotency,
+        discovery_arrivals,
+        latest_capture_arrivals,
+        tuple(spool.pre_idempotency_arrivals),
+        spool_arrivals,
         final_stats["sessions_observed"],
         final_drain_completed,
         tuple(capture_types),
@@ -655,14 +819,9 @@ async def _exercise_capture_composition(
             stored_records[0].get("repo") if stored_records else None,
         ),
         _LiveTailDelivery(
-            identifiers=_ordered_identifiers(
-                tail_identifiers,
-                {
-                    sentinel.identifier: sentinel.sequence
-                    for sentinel in contract.expected_sentinels
-                },
-            ),
+            identifiers=tuple(tail_identifiers),
             observed_at=tail_observed_at,
+            restart_epochs=tail_restart_epochs,
             failed=tail_failed,
         ),
     )
@@ -677,8 +836,11 @@ async def _exercise_daemon_and_mcp(
     repo: str | None,
     path: ObservationPath,
     observed_at: Mapping[str, datetime],
+    restart_epochs: Mapping[str, int],
     telemetry: TelemetryAttemptEmitter,
-) -> tuple[set[str], set[str], bool]:
+    required_note_count: int,
+    reordered_boundaries: frozenset[ObservationBoundary],
+) -> tuple[tuple[str, ...], tuple[str, ...], bool]:
     """Drain through the actual daemon and query it through the actual MCP tool surface."""
 
     from memrelay.daemon.runtime import DaemonRuntime
@@ -695,22 +857,45 @@ async def _exercise_daemon_and_mcp(
         client = DaemonClient(endpoint, timeout=5.0)
         try:
             await _wait_until(
-                lambda: len(backend.notes) >= len(expected_ids),
+                lambda: len(backend.notes) >= required_note_count,
             )
-            daemon_ids = {
+            daemon_ids = tuple(
                 identifier
                 for content, _, _ in backend.notes
                 for identifier in expected_ids
                 if identifier in content
-            }
-            mcp_ids: set[str] = set()
-            for identifier in expected_ids:
+            )
+            if ObservationBoundary.DAEMON in reordered_boundaries:
+                daemon_ids = _reordered_arrivals(
+                    _arrivals_for_identifiers(
+                        daemon_ids,
+                        source_times=observed_at,
+                        restart_epochs=restart_epochs,
+                    ),
+                    inject=True,
+                )
+                daemon_ids = tuple(arrival.identifier for arrival in daemon_ids)
+            mcp_query_ids = daemon_ids
+            if ObservationBoundary.MCP_GRAPH in reordered_boundaries:
+                mcp_query_ids = tuple(
+                    arrival.identifier
+                    for arrival in _reordered_arrivals(
+                        _arrivals_for_identifiers(
+                            mcp_query_ids,
+                            source_times=observed_at,
+                            restart_epochs=restart_epochs,
+                        ),
+                        inject=True,
+                    )
+                )
+            mcp_ids: list[str] = []
+            for identifier in mcp_query_ids:
                 mcp = build_mcp_server(client, context_resolver=lambda: (namespace, repo))
                 result = await mcp.call_tool("memory_recall", {"query": identifier})
                 blocks = result[0] if isinstance(result, tuple) else result
                 text = blocks[0].text if blocks else ""
                 if identifier in text:
-                    mcp_ids.add(identifier)
+                    mcp_ids.append(identifier)
                     timestamp = observed_at.get(identifier)
                     if timestamp is not None:
                         telemetry.record(
@@ -721,11 +906,11 @@ async def _exercise_daemon_and_mcp(
                                 "sentinel_id": identifier,
                                 "sentinel_sequence": expected_ids.index(identifier) + 1,
                                 "observation_path": path.value,
-                                "restart_epoch": 1,
+                                "restart_epoch": restart_epochs.get(identifier, 0),
                             },
                         )
             health = await client.health()
-            return daemon_ids, mcp_ids, health.get("spool_pending") == 0
+            return daemon_ids, tuple(mcp_ids), health.get("spool_pending") == 0
         finally:
             runtime.request_shutdown()
             await asyncio.wait_for(serve_task, timeout=5.0)
@@ -752,13 +937,20 @@ def run_actual_observation_composition(
     workspace: Path,
     tail_source_factory: Callable[[Any], Any] | None = None,
     telemetry_collector_factory: Callable[[], ObservationTelemetryCollector] | None = None,
+    fault_injections: Sequence[str] = (),
 ) -> ProductObservationRun:
     """Inject sentinels and collect product records plus composition-emitted telemetry."""
 
+    reordered_boundaries, inject_post_idempotency_duplicate = _parse_fault_injections(
+        fault_injections
+    )
     workspace.mkdir(parents=True, exist_ok=False)
     (
         stored_records,
-        pre_records,
+        discovery_arrivals,
+        capture_arrivals,
+        pre_idempotency_arrivals,
+        raw_spool_arrivals,
         sessions_observed,
         final_drain_completed,
         capture_types,
@@ -770,16 +962,20 @@ def run_actual_observation_composition(
             config=config,
             workspace=workspace,
             tail_source_factory=tail_source_factory,
+            inject_post_idempotency_duplicate=inject_post_idempotency_duplicate,
         )
     )
     expected_ids = contract.expected_identifiers
     sentinels = contract.expected_sentinels
     expected_sequences = {sentinel.identifier: sentinel.sequence for sentinel in sentinels}
-    spool_ids = _sentinel_ids_in(stored_records, expected_ids)
-    pre_ids = _sentinel_ids_in(pre_records, expected_ids)
-    observed_at = _retained_record_times(stored_records, expected_ids)
-    for identifier, timestamp in _retained_record_times(pre_records, expected_ids).items():
-        observed_at.setdefault(identifier, timestamp)
+    source_times = _source_event_times(contract)
+    first_spool_epochs = _first_epoch_by_identifier(raw_spool_arrivals)
+    recovery_epochs = _last_epoch_by_identifier(
+        discovery_arrivals + capture_arrivals + pre_idempotency_arrivals
+    )
+    observed_at = dict(source_times)
+    for arrival in raw_spool_arrivals + pre_idempotency_arrivals:
+        observed_at[arrival.identifier] = arrival.observed_at
     collector = (
         telemetry_collector_factory()
         if telemetry_collector_factory is not None
@@ -799,12 +995,86 @@ def run_actual_observation_composition(
                 repo=repo,
                 path=contract.path,
                 observed_at=observed_at,
+                restart_epochs=first_spool_epochs,
                 telemetry=telemetry,
+                required_note_count=len(raw_spool_arrivals),
+                reordered_boundaries=reordered_boundaries,
             )
         )
     finally:
+        if ObservationBoundary.TELEMETRY in reordered_boundaries:
+            collector.reorder_arrivals()
         collector_shutdown_verified = collector.shutdown()
-    discovery_ids = set(expected_ids) if sessions_observed == 2 * len(expected_ids) else set()
+    discovery_arrivals = _reordered_arrivals(
+        discovery_arrivals,
+        inject=ObservationBoundary.DISCOVERY in reordered_boundaries,
+    )
+    capture_arrivals = _reordered_arrivals(
+        capture_arrivals,
+        inject=ObservationBoundary.CAPTURE in reordered_boundaries,
+    )
+    pre_idempotency_arrivals = _reordered_arrivals(
+        pre_idempotency_arrivals,
+        inject=ObservationBoundary.PRE_IDEMPOTENCY in reordered_boundaries,
+    )
+    spool_arrivals = _reordered_arrivals(
+        raw_spool_arrivals,
+        inject=ObservationBoundary.SPOOL in reordered_boundaries,
+    )
+    live_tail_arrivals = _reordered_arrivals(
+        _arrivals_for_identifiers(
+            live_tail.identifiers,
+            source_times=live_tail.observed_at,
+            restart_epochs=live_tail.restart_epochs,
+        ),
+        inject=ObservationBoundary.LIVE_TAIL in reordered_boundaries,
+    )
+    daemon_arrivals = _arrivals_for_identifiers(
+        daemon_ids,
+        source_times=observed_at,
+        restart_epochs=first_spool_epochs,
+    )
+    mcp_arrivals = _arrivals_for_identifiers(
+        mcp_ids,
+        source_times=observed_at,
+        restart_epochs=first_spool_epochs,
+    )
+    terminal_arrivals = _reordered_arrivals(
+        _arrivals_for_identifiers(
+            tuple(arrival.identifier for arrival in raw_spool_arrivals)
+            if final_drain_completed
+            else (),
+            source_times=source_times,
+            restart_epochs=recovery_epochs,
+        ),
+        inject=ObservationBoundary.TERMINAL_FLUSH in reordered_boundaries,
+    )
+    manifest_records = _records(
+        path=contract.path,
+        boundary=ObservationBoundary.MANIFEST,
+        arrivals=_reordered_arrivals(
+            _arrivals_for_identifiers(
+                tuple(arrival.identifier for arrival in raw_spool_arrivals),
+                source_times=source_times,
+                restart_epochs=recovery_epochs,
+            ),
+            inject=ObservationBoundary.MANIFEST in reordered_boundaries,
+        ),
+        expected_sequences=expected_sequences,
+    )
+    reconciliation_records = _records(
+        path=contract.path,
+        boundary=ObservationBoundary.RECONCILIATION,
+        arrivals=_reordered_arrivals(
+            _arrivals_for_identifiers(
+                tuple(arrival.identifier for arrival in raw_spool_arrivals),
+                source_times=source_times,
+                restart_epochs=recovery_epochs,
+            ),
+            inject=ObservationBoundary.RECONCILIATION in reordered_boundaries,
+        ),
+        expected_sequences=expected_sequences,
+    )
     capture_composition_verified = len(capture_types) == 2 * len(expected_ids) and all(
         item
         == ("RunObserveCapture" if contract.path is ObservationPath.REPLAY else "LiveTailCapture")
@@ -813,85 +1083,66 @@ def run_actual_observation_composition(
     live_tail_delivery_verified = (
         set(live_tail.identifiers) == set(expected_ids) and not live_tail.failed
     )
-    capture_ids = (
-        set(expected_ids)
-        if capture_composition_verified
-        and (contract.path is ObservationPath.REPLAY or live_tail_delivery_verified)
-        else set()
-    )
     records = (
         _records(
             path=contract.path,
             boundary=ObservationBoundary.DISCOVERY,
-            identifiers=_ordered_identifiers(discovery_ids, expected_sequences),
+            arrivals=discovery_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.LIVE_TAIL,
-            identifiers=live_tail.identifiers,
+            arrivals=live_tail_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=live_tail.observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.CAPTURE,
-            identifiers=_ordered_identifiers(capture_ids, expected_sequences),
+            arrivals=capture_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.PRE_IDEMPOTENCY,
-            identifiers=tuple(
-                identifier
-                for record in pre_records
-                for identifier in expected_ids
-                if isinstance(record.get("content"), str) and identifier in record["content"]
-            ),
+            arrivals=pre_idempotency_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.SPOOL,
-            identifiers=_ordered_identifiers(spool_ids, expected_sequences),
+            arrivals=spool_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.DAEMON,
-            identifiers=_ordered_identifiers(daemon_ids, expected_sequences),
+            arrivals=daemon_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.MCP_GRAPH,
-            identifiers=_ordered_identifiers(mcp_ids, expected_sequences),
+            arrivals=mcp_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
         + _records(
             path=contract.path,
             boundary=ObservationBoundary.TERMINAL_FLUSH,
-            identifiers=(
-                _ordered_identifiers(spool_ids, expected_sequences) if final_drain_completed else ()
-            ),
+            arrivals=terminal_arrivals,
             expected_sequences=expected_sequences,
-            observed_at=observed_at,
         )
     )
+    expected_membership = set(expected_ids)
     independently_verified = (
-        set(expected_ids)
-        == discovery_ids
-        == capture_ids
-        == pre_ids
-        == spool_ids
-        == daemon_ids
-        == mcp_ids
+        sessions_observed == 2 * len(expected_ids)
+        and {arrival.identifier for arrival in discovery_arrivals} == expected_membership
+        and capture_composition_verified
+        and {arrival.identifier for arrival in capture_arrivals} == expected_membership
+        and {arrival.identifier for arrival in pre_idempotency_arrivals} == expected_membership
+        and {arrival.identifier for arrival in raw_spool_arrivals} == expected_membership
+        and set(daemon_ids) == expected_membership
+        and set(mcp_ids) == expected_membership
         and final_drain_completed
         and daemon_drained
         and (contract.path is ObservationPath.REPLAY or live_tail_delivery_verified)
@@ -916,11 +1167,20 @@ def run_actual_observation_composition(
             "spool_sha256": sha256(
                 (config.home_path / "spool" / "spool.db").read_bytes()
             ).hexdigest(),
-            "pre_idempotency_ids": sorted(pre_ids),
-            "spool_ids": sorted(spool_ids),
-            "daemon_ids": sorted(daemon_ids),
-            "mcp_ids": sorted(mcp_ids),
+            "discovery_ids": [arrival.identifier for arrival in discovery_arrivals],
+            "capture_ids": [arrival.identifier for arrival in capture_arrivals],
+            "pre_idempotency_ids": [arrival.identifier for arrival in pre_idempotency_arrivals],
+            "spool_ids": [arrival.identifier for arrival in spool_arrivals],
+            "daemon_ids": list(daemon_ids),
+            "mcp_ids": list(mcp_ids),
             "live_tail_ids": list(live_tail.identifiers),
+            "terminal_flush_ids": [arrival.identifier for arrival in terminal_arrivals],
+            "manifest_ids": [record.sentinel_id for record in manifest_records],
+            "reconciliation_ids": [record.sentinel_id for record in reconciliation_records],
+            "restart_epochs": {
+                identifier: recovery_epochs.get(identifier, 0) for identifier in expected_ids
+            },
+            "fault_injections": list(fault_injections),
             "live_tail_failed": live_tail.failed,
             "sessions_observed": sessions_observed,
             "final_drain_completed": final_drain_completed,
@@ -938,6 +1198,8 @@ def run_actual_observation_composition(
         receipt=receipt,
         telemetry_spans=collector.spans,
         evidence_failure_reasons=tuple(evidence_failure_reasons),
+        manifest_records=manifest_records,
+        reconciliation_records=reconciliation_records,
     )
 
 

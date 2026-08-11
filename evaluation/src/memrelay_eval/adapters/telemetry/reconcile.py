@@ -45,6 +45,7 @@ def reconcile_telemetry(
     spans: Sequence[TelemetrySpan],
     *,
     expected_order: Sequence[str] = (),
+    observed_order: Sequence[str] | None = None,
     expected_classes: Collection[SpanClass] | None = None,
     partial_success: bool = False,
     collector_shutdown_verified: bool = False,
@@ -85,8 +86,14 @@ def reconcile_telemetry(
     if not collector_shutdown_verified:
         failure_codes.add("TEL-FAILURE")
     order = tuple(expected_order)
-    if order and tuple(item for item in raw_ids if item in set(order)) != order:
-        failure_codes.add("TEL-OUT-OF-ORDER")
+    if order:
+        actual_order = (
+            tuple(observed_order)
+            if observed_order is not None
+            else tuple(item for item in raw_ids if item in set(order))
+        )
+        if actual_order != order:
+            failure_codes.add("TEL-OUT-OF-ORDER")
     projection = {
         "schema_version": TELEMETRY_SCHEMA_VERSION,
         "spans": [span.to_record() for span in canonical],

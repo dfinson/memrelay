@@ -227,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="artifacts",
         help="append-only artifact root for path-scoped decisions and manifests",
     )
+    observation.add_argument(
+        "--fault-injection",
+        action="append",
+        default=[],
+        help=argparse.SUPPRESS,
+    )
     _add_command_manifest_root(observation)
     observation.set_defaults(handler=observation_conformance)
     reconcile = subcommands.add_parser(

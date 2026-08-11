@@ -66,10 +66,11 @@ def observation_telemetry_evidence(
             continue
         target_spans.append(span)
 
-    expected_order = tuple(span.span_id for span in target_spans)
+    expected_order = tuple(sentinel.identifier for sentinel in expected_sentinels)
     reconciliation = reconcile_telemetry(
         target_spans,
         expected_order=expected_order,
+        observed_order=tuple(str(span.attributes["sentinel_id"]) for span in target_spans),
         expected_classes={SpanClass.DAEMON_DISPATCH},
         collector_shutdown_verified=collector_shutdown_verified,
     )
@@ -102,12 +103,15 @@ def observation_telemetry_evidence(
             malformed = True
             continue
         observed_counts[record.sentinel_id] = observed_counts.get(record.sentinel_id, 0) + 1
+    duplicate_delivery = any(count > 1 for count in observed_counts.values())
     if set(observed_counts) != set(expected_by_identifier) or any(
         count != 1 for count in observed_counts.values()
     ):
         delivery_loss = True
 
     failure_codes = set(reconciliation.failure_codes)
+    if duplicate_delivery:
+        failure_codes.add("TEL-DUPLICATE")
     if malformed:
         failure_codes.add("TEL-OBSERVATION-MALFORMED")
     if mixed_path:

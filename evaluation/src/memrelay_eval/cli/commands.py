@@ -540,6 +540,7 @@ def observation_conformance(args: Namespace) -> int:
         contract=contract,
         config=product_config,
         workspace=workspace,
+        fault_injections=tuple(args.fault_injection),
     )
     native_receipt_sha256 = product_observation_receipt_sha256(run)
     _persist_observation_native_receipt(
