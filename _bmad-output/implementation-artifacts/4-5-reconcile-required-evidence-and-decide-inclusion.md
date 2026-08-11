@@ -1,6 +1,6 @@
 # Story 4.5: Reconcile Required Evidence and Decide Inclusion
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -35,28 +35,28 @@ So that only complete, unconflicted terminal runs enter analysis.
 
 ## Tasks / Subtasks
 
-- [ ] Define a versioned required-evidence matrix (AC: 1, 2)
-  - [ ] Key requirements by stage, stratum, history mode, task/failure state, provider path, and applicable grader/panel/adjudication conditions.
-  - [ ] Classify fields/evidence as primary-required, conditionally required, explicit `unavailable` permitted, or prohibited.
-  - [ ] Require 100% primary evidence for inclusion; pilot overall completeness threshold never waives a primary item or categorical blocker.
-  - [ ] Include the zero-missing primary inventory: experiment/run/task/replicate/history/sequence/repository/model IDs; opaque assignment and hash; workspace/image/revision/prompt/tool-policy/budget/grader hashes; start/terminal timestamps and terminal class; executable outcome; patch hash or explicit `no_patch`; attempt/retry lineage; exclusion/quarantine reason; expected-artifact inventory; and reconciliation status.
-- [ ] Build cross-authority reconciliation (AC: 1)
-  - [ ] Compare Inspect `.eval`/JSON, native SDK events/terminal, memrelay logs, OTel classes, workspace/snapshot/patch, treatment, grader/judge records, artifact writes, cost quantities, configuration/model/parity/environment fingerprints, cleanup, and ledger transitions.
-  - [ ] Verify every referenced CAS digest/manifest and preserve contradictory source references.
-  - [ ] Treat OTLP success as transport evidence only.
-- [ ] Implement deterministic reconciliation reports and identity (AC: 1, 2)
-  - [ ] Canonicalize inputs, matrix/version, per-authority findings, completeness counts, blockers, and decision basis into one reconciliation hash.
-  - [ ] Make rerun idempotent: the same canonical input yields the same report/decision. Changed evidence may append a new report, but it cannot replace or flip an already-terminal inclusion decision; a conflicting second decision is rejected and requires a new governed run/stage lineage.
-- [ ] Append exactly one immutable inclusion decision through the sole writer (AC: 2)
-  - [ ] Submit a typed intent containing run/stage, included/excluded, reconciliation hash, typed reasons, and evidence refs.
-  - [ ] Reject duplicate-conflicting decisions; preserve retry/attempt lineage and all excluded runs for ITT.
-- [ ] Implement categorical fail-closed policy (AC: 3)
-  - [ ] Block missing/corrupt evidence, authority conflict, credential leak, disclosure, contamination, tamper, favorable substitution, grading conflict, and causal-validity conflict.
-  - [ ] Enforce one blocker is sufficient; scores, percentages, operator override, or favorable panel output cannot waive it.
-- [ ] Wire `memrelay-eval reconcile --stage <stage>` (AC: 2)
-  - [ ] Non-interactive, typed exit; write a command manifest with input/output/runtime/protocol hashes and terminal status.
-  - [ ] Never read a decoded aggregate to alter thresholds or select favorable records.
-- [ ] Add matrix, fault, idempotency, and architecture tests (AC: 1-3).
+- [x] Define a versioned required-evidence matrix (AC: 1, 2)
+  - [x] Key requirements by stage, stratum, history mode, task/failure state, provider path, and applicable grader/panel/adjudication conditions.
+  - [x] Classify fields/evidence as primary-required, conditionally required, explicit `unavailable` permitted, or prohibited.
+  - [x] Require 100% primary evidence for inclusion; pilot overall completeness threshold never waives a primary item or categorical blocker.
+  - [x] Include the zero-missing primary inventory: experiment/run/task/replicate/history/sequence/repository/model IDs; opaque assignment and hash; workspace/image/revision/prompt/tool-policy/budget/grader hashes; start/terminal timestamps and terminal class; executable outcome; patch hash or explicit `no_patch`; attempt/retry lineage; exclusion/quarantine reason; expected-artifact inventory; and reconciliation status.
+- [x] Build cross-authority reconciliation (AC: 1)
+  - [x] Compare Inspect `.eval`/JSON, native SDK events/terminal, memrelay logs, OTel classes, workspace/snapshot/patch, treatment, grader/judge records, artifact writes, cost quantities, configuration/model/parity/environment fingerprints, cleanup, and ledger transitions.
+  - [x] Verify every referenced CAS digest/manifest and preserve contradictory source references.
+  - [x] Treat OTLP success as transport evidence only.
+- [x] Implement deterministic reconciliation reports and identity (AC: 1, 2)
+  - [x] Canonicalize inputs, matrix/version, per-authority findings, completeness counts, blockers, and decision basis into one reconciliation hash.
+  - [x] Make rerun idempotent: the same canonical input yields the same report/decision. Changed evidence may append a new report, but it cannot replace or flip an already-terminal inclusion decision; a conflicting second decision is rejected and requires a new governed run/stage lineage.
+- [x] Append exactly one immutable inclusion decision through the sole writer (AC: 2)
+  - [x] Submit a typed intent containing run/stage, included/excluded, reconciliation hash, typed reasons, and evidence refs.
+  - [x] Reject duplicate-conflicting decisions; preserve retry/attempt lineage and all excluded runs for ITT.
+- [x] Implement categorical fail-closed policy (AC: 3)
+  - [x] Block missing/corrupt evidence, authority conflict, credential leak, disclosure, contamination, tamper, favorable substitution, grading conflict, and causal-validity conflict.
+  - [x] Enforce one blocker is sufficient; scores, percentages, operator override, or favorable panel output cannot waive it.
+- [x] Wire `memrelay-eval reconcile --stage <stage>` (AC: 2)
+  - [x] Non-interactive, typed exit; write a command manifest with input/output/runtime/protocol hashes and terminal status.
+  - [x] Never read a decoded aggregate to alter thresholds or select favorable records.
+- [x] Add matrix, fault, idempotency, and architecture tests (AC: 1-3).
 
 ## Developer Context
 
@@ -119,12 +119,31 @@ An `included` run is eligible only for the analysis/stage scope named by its fro
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6
 
 ### Debug Log References
+
+- `py -3.13 -m pytest evaluation\tests\contract\evidence\test_required_matrix.py evaluation\tests\integration\evidence\test_reconcile_inclusion.py evaluation\tests\fault\evidence\test_reconcile_fail_closed.py evaluation\tests\architecture\test_reconciliation_boundary.py -q` — 25 passed
+- `py -3.13 -m pytest evaluation\tests -q` — 1183 passed, 46 skipped
+- `python -m ruff check ...` and `python -m ruff format --check ...` for Story 4.5 files — passed
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a frozen condition-keyed evidence matrix, canonical reconciliation reports,
+  CAS/manifest verification, categorical blocker policy, and typed sole-writer decisions.
+- Added noninteractive `memrelay-eval reconcile --stage <stage>` command manifests and
+  contract, integration, fault, and boundary coverage.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/4-5-reconcile-required-evidence-and-decide-inclusion.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/README.md`
+- `evaluation/schemas/{required-evidence,reconciliation-report,inclusion-decision}.schema.json`
+- `evaluation/src/memrelay_eval/{application/reconciliation_services.py,cli/{commands,main}.py}`
+- `evaluation/src/memrelay_eval/{domain/{entities,errors,ports}.py,evidence/{manifest,reconcile,required}.py}`
+- `evaluation/src/memrelay_eval/{adapters/fakes.py,ledger/repository.py}`
+- `evaluation/tests/{architecture/test_reconciliation_boundary.py,contract/evidence/test_required_matrix.py}`
+- `evaluation/tests/integration/evidence/test_reconcile_inclusion.py`
+- `evaluation/tests/fault/evidence/test_reconcile_fail_closed.py`

@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
-from memrelay_eval.canonical import CanonicalizationError, canonical_bytes
+from memrelay_eval.canonical import CanonicalizationError, canonical_bytes, canonical_digest
 from memrelay_eval.domain.entities import ArtifactManifest
 from memrelay_eval.domain.errors import InvalidArtifactManifestError
 from memrelay_eval.domain.ids import (
@@ -189,3 +189,32 @@ def _optional_identifier(
     if value is None:
         return None
     return identifier_type(_string(value, name))
+
+
+def reconciliation_command_manifest(
+    *,
+    stage: str,
+    terminal_status: str,
+    exit_code: int,
+    input_hashes: Mapping[str, str],
+    output_hashes: Mapping[str, str],
+    runtime_lock_sha256: str | None,
+    protocol_sha256: str | None,
+    error_code: str | None,
+) -> bytes:
+    """Create the canonical terminal manifest for a noninteractive reconcile command."""
+
+    document = {
+        "schema_version": "1.0.0",
+        "command": "reconcile",
+        "stage": stage,
+        "terminal_status": terminal_status,
+        "exit_code": exit_code,
+        "input_hashes": dict(sorted(input_hashes.items())),
+        "output_hashes": dict(sorted(output_hashes.items())),
+        "runtime_lock_sha256": runtime_lock_sha256,
+        "protocol_sha256": protocol_sha256,
+        "error_code": error_code,
+    }
+    document["digest"] = canonical_digest(document)
+    return canonical_json_bytes(document)

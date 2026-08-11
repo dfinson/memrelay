@@ -270,3 +270,11 @@ def plan_offline_command(args: Namespace) -> int:
     command_manifest = plan_offline_to_command_manifest(result)
     print(command_manifest.decode("utf-8"))
     return result.exit_code
+
+
+def reconcile_stage(args: Namespace) -> int:
+    """Compose the reconciliation application service without adapter imports here."""
+
+    from memrelay_eval.application.reconciliation_services import reconcile_stage_command
+
+    return reconcile_stage_command(args)
