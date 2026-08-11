@@ -478,6 +478,16 @@ def _inventory_item(path: Path, relative_path: str) -> dict[str, object]:
     }
 
 
+def verify_backup_generation(*, backup_root: Path | str, generation_id: str) -> BackupReceipt:
+    """Verify an immutable backup generation without restoring or changing it."""
+    source = Path(backup_root).expanduser().resolve(strict=True) / "generations" / generation_id
+    receipt = _load_receipt(source)
+    if receipt.generation_id != generation_id:
+        raise BackupConformanceError("restore_receipt_identity_mismatch")
+    _verify_generation(source, receipt)
+    return receipt
+
+
 def _verify_generation(generation: Path, receipt: BackupReceipt) -> None:
     expected = receipt.bytes()
     receipt_path = generation / "backup-receipt.json"

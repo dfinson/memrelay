@@ -391,9 +391,11 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
     host_sentinel = tmp_path / "host-sentinel.txt"
     host_sentinel.write_text("must not be readable", encoding="utf-8")
     script = (
-        "import json, os, pathlib, shutil, socket, subprocess, sys\n"
+        "import json, os, pathlib, shlex, shutil, socket, ssl, subprocess, sys\n"
         f"port={port}\n"
         f"host_sentinel={str(host_sentinel)!r}\n"
+        "captured_system=os.system\n"
+        "captured_popen=subprocess.Popen\n"
         "def denied(operation):\n"
         "    try:\n"
         "        operation()\n"
@@ -407,6 +409,12 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "child=subprocess.run([sys.executable, '-c', "
         "'import socket,sys; sys.exit(0 if socket.socket().connect_ex((\"127.0.0.1\", '"
         "+str(port)+')) else 1)']).returncode == 0\n"
+        "spawn_code='import socket,sys;sys.exit(0 if socket.socket().connect_ex("
+        "(\"127.0.0.1\",'+str(port)+')) else 1)'\n"
+        "popen=captured_popen((sys.executable,'-c',spawn_code)).wait() == 0\n"
+        "system=captured_system(shlex.join((sys.executable,'-c',spawn_code))) == 0\n"
+        "native_ssl=denied(lambda: ssl.create_default_context().wrap_socket("
+        "socket.socket(),server_hostname='localhost').connect(('127.0.0.1',port)))\n"
         "ipv6=denied(lambda: socket.create_connection(('::1', port), timeout=0.2)) "
         "if socket.has_ipv6 else True\n"
         "dns=denied(lambda: socket.getaddrinfo('example.invalid', port))\n"
@@ -420,7 +428,8 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "input_readable=pathlib.Path(sys.argv[2], 'app.py').read_text() == 'answer = 2\\n'\n"
         "input_immutable=not os.access(sys.argv[2], os.W_OK)\n"
         "unprivileged=os.geteuid() == 65534\n"
-        "checks={'direct':direct,'connect_ex':connect_ex,'child':child,'ipv6':ipv6,'dns':dns,"
+        "checks={'direct':direct,'connect_ex':connect_ex,'child':child,'popen':popen,'system':system,"
+        "'native_ssl':native_ssl,'ipv6':ipv6,'dns':dns,"
         "'sudo':sudo,'nsenter':nsenter,'host_file':host_file,'input_readable':input_readable,"
         "'input_immutable':input_immutable,'unprivileged':unprivileged,'docker':docker}\n"
         "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
@@ -447,8 +456,11 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "input_immutable": 1.0,
         "input_readable": 1.0,
         "ipv6": 1.0,
+        "native_ssl": 1.0,
         "nsenter": 1.0,
+        "popen": 1.0,
         "sudo": 1.0,
+        "system": 1.0,
         "unprivileged": 1.0,
     }
     assert accepted == []

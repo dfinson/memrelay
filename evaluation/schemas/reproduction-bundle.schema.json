@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifact_type": {
+      "const": "reproduction_bundle"
+    },
+    "bundle_id": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "expected": {
+      "type": "object"
+    },
+    "inputs": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "derivation_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "path": {
+            "pattern": "^(?!.*\\\\.\\\\.)(?!/).+$",
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "analysis_source",
+              "analysis_data",
+              "backup_receipt",
+              "evidence_source",
+              "grader_artifact",
+              "grader_contract",
+              "replay_runner",
+              "runtime_lock"
+            ]
+          },
+          "root": {
+            "enum": [
+              "cas",
+              "backup"
+            ]
+          },
+          "sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "source_sha256": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          }
+        },
+        "required": [
+          "derivation_sha256",
+          "path",
+          "role",
+          "root",
+          "sha256",
+          "source_sha256"
+        ],
+        "type": "object"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "normalization": {
+      "additionalProperties": false,
+      "properties": {
+        "paths": {
+          "const": "relative_posix"
+        },
+        "timestamps": {
+          "const": "omitted"
+        }
+      },
+      "required": [
+        "paths",
+        "timestamps"
+      ],
+      "type": "object"
+    },
+    "protocol_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "runtime": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "properties": {
+        "duckdb": {
+          "const": "1.5.5"
+        },
+        "lock_sha256": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "pyarrow": {
+          "const": "25.0.0"
+        },
+        "python": {
+          "const": "3.13"
+        }
+      },
+      "required": [
+        "python",
+        "duckdb",
+        "pyarrow",
+        "lock_sha256"
+      ],
+      "type": "object"
+    },
+    "runner_path": {
+      "pattern": "^(?!.*\\\\.\\\\.)(?!/).+$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0.0"
+    }
+  },
+  "required": [
+    "artifact_type",
+    "bundle_id",
+    "expected",
+    "inputs",
+    "normalization",
+    "protocol_sha256",
+    "runner_path",
+    "runtime",
+    "schema_version"
+  ],
+  "type": "object"
+}

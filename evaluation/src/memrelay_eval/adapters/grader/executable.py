@@ -809,6 +809,24 @@ def _run_python_in_network_sandbox(
         raise NetworkSandboxUnavailableError() from error
 
 
+def run_in_network_sandbox(
+    command: tuple[str, ...],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Execute only through a preflight-proven OS network isolation authority."""
+    kind = _require_network_sandbox(cwd, environment)
+    return _run_python_in_network_sandbox(
+        command,
+        cwd=cwd,
+        environment=environment,
+        timeout_seconds=timeout_seconds,
+        kind=kind,
+    )
+
+
 def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
     """Select only an authority that can execute the complete restricted profile."""
     if sys.platform != "linux":
