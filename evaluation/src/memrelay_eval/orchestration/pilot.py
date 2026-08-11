@@ -3,22 +3,36 @@
 from __future__ import annotations
 
 import math
+import os
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 
+from memrelay_eval.analysis.gates import CategoricalGateDecision
 from memrelay_eval.canonical import canonical_bytes, canonical_digest, verify_digest
 from memrelay_eval.domain.errors import StageControlError
 from memrelay_eval.domain.ids import ProtocolId, StageId
 from memrelay_eval.domain.states import StageKind
 from memrelay_eval.orchestration.stages import StageEntryBundle
+from memrelay_eval.scoring.blinding import LEAKAGE_AUC_UPPER_BOUND
+from memrelay_eval.scoring.calibration import (
+    AGREEMENT_THRESHOLD,
+    HUMAN_CALIBRATION_MAE_THRESHOLD,
+)
+from memrelay_eval.scoring.reliability import (
+    CriterionAgreement,
+    GateDecision,
+    PanelGateEvidence,
+)
 
 PILOT_TASK_COUNT = 16
 PILOT_ASSIGNMENT_COUNT = 128
 PILOT_ASSIGNMENTS_PER_TASK = PILOT_ASSIGNMENT_COUNT // PILOT_TASK_COUNT
 PILOT_EVIDENCE_CLASSIFICATION = "non-confirmatory"
-PILOT_REQUIRED_GATES = frozenset(
-    {"panel", "blinding", "security", "governance", "grading", "evidence", "causal"}
+PILOT_REQUIRED_CATEGORICAL_GATES = frozenset(
+    {"security", "governance", "grading", "evidence", "causal"}
 )
 _SHA256_LENGTH = 64
 
@@ -190,6 +204,14 @@ class FrozenPilotPlan:
             or len(set(unit_ids)) != PILOT_ASSIGNMENT_COUNT
         ):
             raise StageControlError("pilot_assignment_cardinality_invalid")
+        session_ids = tuple(
+            session_id
+            for task in tasks
+            for unit_id in task.assignment_unit_ids
+            for session_id in task.session_ids_by_unit[unit_id]
+        )
+        if len(session_ids) != len(set(session_ids)):
+            raise StageControlError("pilot_session_receipt_reuse_forbidden")
         if self.evidence_classification != PILOT_EVIDENCE_CLASSIFICATION:
             raise StageControlError("pilot_evidence_must_be_non_confirmatory")
         object.__setattr__(self, "tasks", tasks)
@@ -304,36 +326,106 @@ class PilotEvidenceCompleteness:
 
 
 @dataclass(frozen=True, slots=True)
-class PilotPanelMetrics:
-    reliability: float | None
-    calibration_mae: float | None
-    leakage_auc_upper_95: float | None
+class PilotPanelEvidence:
+    """Bind the canonical Story 3.4 panel artifact to this exact pilot identity."""
+
+    stage_id: StageId
+    protocol_id: ProtocolId
+    model_lock_sha256: str
+    evidence_matrix_sha256: str
+    panel: PanelGateEvidence
 
     def __post_init__(self) -> None:
-        values = (self.reliability, self.calibration_mae, self.leakage_auc_upper_95)
-        if any(
-            value is not None
-            and (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or not math.isfinite(value)
-                or value < 0
-                or value > 1
-            )
-            for value in values
+        _require_sha256(self.model_lock_sha256, "pilot_panel_lineage_invalid")
+        _require_sha256(self.evidence_matrix_sha256, "pilot_panel_lineage_invalid")
+        if not isinstance(self.panel, PanelGateEvidence):
+            raise StageControlError("pilot_panel_evidence_required")
+
+    @property
+    def sha256(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def bind(self, plan: FrozenPilotPlan) -> None:
+        if (
+            self.stage_id != plan.stage_id
+            or self.protocol_id != plan.protocol_id
+            or self.model_lock_sha256 != plan.contracts.model_lock_sha256
+            or self.evidence_matrix_sha256 != plan.contracts.evidence_matrix_sha256
         ):
-            raise StageControlError("pilot_panel_metrics_invalid")
+            raise StageControlError("pilot_panel_scope_mismatch")
+        required = {"agreement", "human_calibration", "leakage"}
+        if not required.issubset(self.panel.gates):
+            raise StageControlError("pilot_panel_required_gate_missing")
+        agreement = self.panel.gates["agreement"]
+        calibration = self.panel.gates["human_calibration"]
+        leakage = self.panel.gates["leakage"]
+        if (
+            agreement.threshold != AGREEMENT_THRESHOLD
+            or calibration.threshold != HUMAN_CALIBRATION_MAE_THRESHOLD
+            or leakage.threshold != LEAKAGE_AUC_UPPER_BOUND
+            or any(self.panel.gates[name].status != "passed" for name in required)
+            or not self.panel.reliability_passed
+        ):
+            raise StageControlError("pilot_panel_or_blinding_gate_failed")
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "stage_id": str(self.stage_id),
+            "protocol_id": str(self.protocol_id),
+            "model_lock_sha256": self.model_lock_sha256,
+            "evidence_matrix_sha256": self.evidence_matrix_sha256,
+            "panel_sha256": self.panel.sha256,
+            "panel": self.panel.document(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class PilotCategoricalGateEvidence:
+    """A scope-bound Story 5.5 safety decision, never a caller-authored status."""
+
+    gate_name: str
+    stage_id: StageId
+    protocol_id: ProtocolId
+    model_lock_sha256: str
+    evidence_matrix_sha256: str
+    decision: CategoricalGateDecision
+
+    def __post_init__(self) -> None:
+        if self.gate_name not in PILOT_REQUIRED_CATEGORICAL_GATES:
+            raise StageControlError("pilot_required_gate_name_invalid")
+        _require_sha256(self.model_lock_sha256, "pilot_required_gate_lineage_invalid")
+        _require_sha256(self.evidence_matrix_sha256, "pilot_required_gate_lineage_invalid")
+        if not isinstance(self.decision, CategoricalGateDecision):
+            raise StageControlError("pilot_categorical_gate_evidence_required")
+
+    @property
+    def sha256(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def bind(self, plan: FrozenPilotPlan) -> None:
+        if (
+            self.stage_id != plan.stage_id
+            or self.protocol_id != plan.protocol_id
+            or self.model_lock_sha256 != plan.contracts.model_lock_sha256
+            or self.evidence_matrix_sha256 != plan.contracts.evidence_matrix_sha256
+            or self.decision.scope_id != f"{plan.stage_id}:{self.gate_name}"
+        ):
+            raise StageControlError("pilot_required_gate_scope_mismatch")
 
     @property
     def passed(self) -> bool:
-        return (
-            self.reliability is not None
-            and self.reliability >= 0.70
-            and self.calibration_mae is not None
-            and self.calibration_mae <= 0.10
-            and self.leakage_auc_upper_95 is not None
-            and self.leakage_auc_upper_95 <= 0.60
-        )
+        return self.decision.status == "pass"
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "gate_name": self.gate_name,
+            "stage_id": str(self.stage_id),
+            "protocol_id": str(self.protocol_id),
+            "model_lock_sha256": self.model_lock_sha256,
+            "evidence_matrix_sha256": self.evidence_matrix_sha256,
+            "decision_sha256": self.decision.digest,
+            "decision": self.decision.to_document(),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,8 +477,8 @@ class FrozenPowerPublication:
 class PilotExitEvidence:
     plan_sha256: str
     completeness: PilotEvidenceCompleteness
-    panel: PilotPanelMetrics
-    required_gate_statuses: Mapping[str, str]
+    panel: PilotPanelEvidence
+    categorical_gates: tuple[PilotCategoricalGateEvidence, ...]
     variance_sha256: str
     icc_sha256: str
     attrition_sha256: str
@@ -402,12 +494,15 @@ class PilotExitEvidence:
             self.harm_sha256,
         ):
             _require_sha256(value, "pilot_publication_missing")
-        statuses = dict(self.required_gate_statuses)
-        if set(statuses) != PILOT_REQUIRED_GATES or any(
-            value not in {"passed", "failed", "missing"} for value in statuses.values()
+        gates = tuple(self.categorical_gates)
+        if (
+            len(gates) != len(PILOT_REQUIRED_CATEGORICAL_GATES)
+            or {gate.gate_name for gate in gates} != PILOT_REQUIRED_CATEGORICAL_GATES
         ):
-            raise StageControlError("pilot_required_gate_status_invalid")
-        object.__setattr__(self, "required_gate_statuses", MappingProxyType(statuses))
+            raise StageControlError("pilot_required_gate_set_invalid")
+        object.__setattr__(
+            self, "categorical_gates", tuple(sorted(gates, key=lambda gate: gate.gate_name))
+        )
 
     @property
     def digest(self) -> str:
@@ -420,12 +515,8 @@ class PilotExitEvidence:
                 "item_present": dict(sorted(self.completeness.item_present.items())),
                 "mandatory_item_ids": list(self.completeness.mandatory_item_ids),
             },
-            "panel": {
-                "reliability": self.panel.reliability,
-                "calibration_mae": self.panel.calibration_mae,
-                "leakage_auc_upper_95": self.panel.leakage_auc_upper_95,
-            },
-            "required_gate_statuses": dict(sorted(self.required_gate_statuses.items())),
+            "panel": self.panel.to_document(),
+            "categorical_gates": [gate.to_document() for gate in self.categorical_gates],
             "variance_sha256": self.variance_sha256,
             "icc_sha256": self.icc_sha256,
             "attrition_sha256": self.attrition_sha256,
@@ -435,6 +526,84 @@ class PilotExitEvidence:
 
     def bytes(self) -> bytes:
         return canonical_bytes({**self.to_document(), "digest": self.digest})
+
+
+def _load_pilot_panel_evidence(document: Mapping[str, object]) -> PilotPanelEvidence:
+    try:
+        panel_document = dict(document["panel"])
+        agreement_document = dict(panel_document["criterion_agreement"])
+        gates_document = dict(panel_document["gates"])
+        panel = PanelGateEvidence(
+            qualification_protocol_sha256=str(panel_document["qualification_protocol_sha256"]),
+            panel_protocol_sha256=panel_document["panel_protocol_sha256"],
+            records_sha256=str(panel_document["records_sha256"]),
+            diversity_label=panel_document["panel_diversity"],
+            criterion_agreement={
+                criterion: CriterionAgreement(
+                    metric=str(dict(value)["metric"]),
+                    decision=GateDecision(
+                        status=str(dict(value)["status"]),
+                        value=dict(value)["value"],
+                        threshold=dict(value)["threshold"],
+                        comparison=str(dict(value)["comparison"]),
+                    ),
+                )
+                for criterion, value in agreement_document.items()
+            },
+            gates={
+                name: GateDecision(
+                    status=str(dict(value)["status"]),
+                    value=dict(value)["value"],
+                    threshold=dict(value)["threshold"],
+                    comparison=str(dict(value)["comparison"]),
+                )
+                for name, value in gates_document.items()
+            },
+            per_judge_drift=dict(panel_document["per_judge_drift"]),
+            per_criterion_calibration_mae=dict(panel_document["per_criterion_calibration_mae"]),
+            blocking_codes=tuple(panel_document["blocking_codes"]),
+            schema_version=str(panel_document["schema_version"]),
+        )
+        result = PilotPanelEvidence(
+            stage_id=StageId(str(document["stage_id"])),
+            protocol_id=ProtocolId(str(document["protocol_id"])),
+            model_lock_sha256=str(document["model_lock_sha256"]),
+            evidence_matrix_sha256=str(document["evidence_matrix_sha256"]),
+            panel=panel,
+        )
+    except (KeyError, TypeError, ValueError, StageControlError) as error:
+        raise StageControlError("pilot_panel_evidence_corrupt") from error
+    if result.to_document() != dict(document):
+        raise StageControlError("pilot_panel_evidence_corrupt")
+    return result
+
+
+def _load_pilot_categorical_gate(document: Mapping[str, object]) -> PilotCategoricalGateEvidence:
+    try:
+        decision_document = dict(document["decision"])
+        decision = CategoricalGateDecision(
+            scope_id=str(decision_document["scope_id"]),
+            status=str(decision_document["status"]),
+            blocking_event_ids=tuple(decision_document["blocking_event_ids"]),
+            affected_claim_ids=tuple(decision_document["affected_claim_ids"]),
+            policy_sha256=str(decision_document["policy_sha256"]),
+            evidence_sha256=tuple(decision_document["evidence_sha256"]),
+            bounded_language_required=decision_document["bounded_language_required"],
+            schema_version=str(decision_document["schema_version"]),
+        )
+        result = PilotCategoricalGateEvidence(
+            gate_name=str(document["gate_name"]),
+            stage_id=StageId(str(document["stage_id"])),
+            protocol_id=ProtocolId(str(document["protocol_id"])),
+            model_lock_sha256=str(document["model_lock_sha256"]),
+            evidence_matrix_sha256=str(document["evidence_matrix_sha256"]),
+            decision=decision,
+        )
+    except (KeyError, TypeError, ValueError, StageControlError) as error:
+        raise StageControlError("pilot_required_gate_evidence_corrupt") from error
+    if result.to_document() != dict(document):
+        raise StageControlError("pilot_required_gate_evidence_corrupt")
+    return result
 
 
 def load_pilot_exit_evidence(data: bytes) -> PilotExitEvidence:
@@ -447,7 +616,6 @@ def load_pilot_exit_evidence(data: bytes) -> PilotExitEvidence:
         if not isinstance(document, dict) or not verify_digest(document):
             raise ValueError
         completeness_document = dict(document["completeness"])
-        panel_document = dict(document["panel"])
         power_document = dict(document["power"])
         evidence = PilotExitEvidence(
             plan_sha256=str(document["plan_sha256"]),
@@ -455,12 +623,10 @@ def load_pilot_exit_evidence(data: bytes) -> PilotExitEvidence:
                 item_present=dict(completeness_document["item_present"]),
                 mandatory_item_ids=tuple(completeness_document["mandatory_item_ids"]),
             ),
-            panel=PilotPanelMetrics(
-                reliability=panel_document["reliability"],
-                calibration_mae=panel_document["calibration_mae"],
-                leakage_auc_upper_95=panel_document["leakage_auc_upper_95"],
+            panel=_load_pilot_panel_evidence(dict(document["panel"])),
+            categorical_gates=tuple(
+                _load_pilot_categorical_gate(dict(item)) for item in document["categorical_gates"]
             ),
-            required_gate_statuses=dict(document["required_gate_statuses"]),
             variance_sha256=str(document["variance_sha256"]),
             icc_sha256=str(document["icc_sha256"]),
             attrition_sha256=str(document["attrition_sha256"]),
@@ -544,13 +710,17 @@ def evaluate_pilot_exit(plan: FrozenPilotPlan, evidence: PilotExitEvidence) -> P
         failures.append("pilot_mandatory_evidence_missing")
     if evidence.completeness.proportion < 0.98:
         failures.append("pilot_evidence_completeness_below_98_percent")
-    if not evidence.panel.passed:
-        failures.append("pilot_panel_or_blinding_gate_failed")
-    failures.extend(
-        f"pilot_{name}_gate_{status}"
-        for name, status in evidence.required_gate_statuses.items()
-        if status != "passed"
-    )
+    try:
+        evidence.panel.bind(plan)
+    except StageControlError as error:
+        failures.append(error.code)
+    for gate in evidence.categorical_gates:
+        try:
+            gate.bind(plan)
+            if not gate.passed:
+                failures.append(f"pilot_{gate.gate_name}_gate_{gate.decision.status}")
+        except StageControlError as error:
+            failures.append(error.code)
     return PilotExitDecision(
         plan_sha256=plan.digest,
         exit_evidence_sha256=evidence.digest,
@@ -560,13 +730,63 @@ def evaluate_pilot_exit(plan: FrozenPilotPlan, evidence: PilotExitEvidence) -> P
 
 
 def require_fresh_pilot_stage(
-    plan: FrozenPilotPlan, decision: PilotExitDecision, replacement_stage_id: StageId
+    plan: FrozenPilotPlan, decision: PilotExitDecision, replacement_plan: FrozenPilotPlan
 ) -> None:
-    """Forbid resuming, replacing, or selectively rerunning a rejected pilot."""
+    """Require a wholly new stage, protocol, and 128-unit plan after rejection."""
 
     if decision.plan_sha256 != plan.digest:
         raise StageControlError("pilot_exit_plan_mismatch")
     if not decision.fresh_stage_required:
         raise StageControlError("pilot_rerun_not_authorized")
-    if replacement_stage_id == plan.stage_id:
+    if replacement_plan.stage_id == plan.stage_id:
         raise StageControlError("pilot_fresh_stage_id_required")
+    if replacement_plan.protocol_id == plan.protocol_id:
+        raise StageControlError("pilot_fresh_protocol_id_required")
+    if replacement_plan.digest == plan.digest:
+        raise StageControlError("pilot_fresh_plan_required")
+
+
+class PilotExitStore:
+    """Atomically preserve one terminal decision for each pilot stage identity."""
+
+    def __init__(self, root: Path) -> None:
+        self._root = Path(root) / "pilot-exits"
+
+    def path_for(self, stage_id: StageId) -> Path:
+        return self._root / f"{stage_id}.json"
+
+    def gate(
+        self, plan: FrozenPilotPlan, evidence: PilotExitEvidence
+    ) -> tuple[PilotExitDecision, Path, str]:
+        """Evaluate and seal once; any later regrade for the stage fails closed."""
+
+        decision = evaluate_pilot_exit(plan, evidence)
+        path = self.path_for(plan.stage_id)
+        outcome = self._write_once(path, decision.bytes())
+        return decision, path, outcome
+
+    def _write_once(self, path: Path, data: bytes) -> str:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            if not path.is_file():
+                raise StageControlError("pilot_stage_mutation_regrade_prohibited")
+            existing = path.read_bytes()
+            if existing != data:
+                raise StageControlError("pilot_stage_mutation_regrade_prohibited")
+            return "reused"
+        staged = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.staged")
+        try:
+            with staged.open("xb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(staged, path)
+            except FileExistsError:
+                if not path.is_file() or path.read_bytes() != data:
+                    raise StageControlError("pilot_stage_mutation_regrade_prohibited") from None
+                return "reused"
+        finally:
+            if staged.exists():
+                staged.unlink()
+        return "sealed"

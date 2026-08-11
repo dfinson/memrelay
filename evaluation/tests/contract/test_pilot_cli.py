@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+from memrelay_eval.analysis.gates import CategoricalGateDecision
 from memrelay_eval.cli.main import main
 from memrelay_eval.domain.ids import ProtocolId, StageAuthorizationId, StageId
 from memrelay_eval.domain.policies import STAGE_ENTRY_LOCK_FIELDS
@@ -11,13 +12,18 @@ from memrelay_eval.orchestration.pilot import (
     FrozenPilotPlan,
     FrozenPowerPublication,
     PilotBudget,
+    PilotCategoricalGateEvidence,
     PilotContracts,
     PilotEvidenceCompleteness,
     PilotExitEvidence,
-    PilotPanelMetrics,
+    PilotPanelEvidence,
     PilotTask,
 )
 from memrelay_eval.orchestration.stages import StageAuthorization, StageEntryBundle, StageExitBundle
+from memrelay_eval.scoring.blinding import LEAKAGE_AUC_UPPER_BOUND
+from memrelay_eval.scoring.calibration import AGREEMENT_THRESHOLD, HUMAN_CALIBRATION_MAE_THRESHOLD
+from memrelay_eval.scoring.reliability import CriterionAgreement, GateDecision, PanelGateEvidence
+from memrelay_eval.scoring.rubric import JUDGE_CRITERIA
 
 HASH = "a" * 64
 CI_MARKERS = (
@@ -53,14 +59,51 @@ def _pilot_plan(stage_id: StageId, protocol_id: ProtocolId) -> FrozenPilotPlan:
 
 
 def _exit_evidence(plan: FrozenPilotPlan) -> PilotExitEvidence:
+    gates = {
+        "agreement": GateDecision("passed", AGREEMENT_THRESHOLD, AGREEMENT_THRESHOLD, "minimum"),
+        "human_calibration": GateDecision(
+            "passed", HUMAN_CALIBRATION_MAE_THRESHOLD, HUMAN_CALIBRATION_MAE_THRESHOLD, "maximum"
+        ),
+        "leakage": GateDecision(
+            "passed", LEAKAGE_AUC_UPPER_BOUND, LEAKAGE_AUC_UPPER_BOUND, "maximum"
+        ),
+    }
+    panel = PilotPanelEvidence(
+        plan.stage_id,
+        plan.protocol_id,
+        plan.contracts.model_lock_sha256,
+        plan.contracts.evidence_matrix_sha256,
+        PanelGateEvidence(
+            HASH,
+            HASH,
+            HASH,
+            "diverse",
+            {
+                criterion: CriterionAgreement("icc", gates["agreement"])
+                for criterion in JUDGE_CRITERIA
+            },
+            gates,
+            {"judge": 0.0},
+            dict.fromkeys(JUDGE_CRITERIA, 0.0),
+            (),
+        ),
+    )
+    categorical = tuple(
+        PilotCategoricalGateEvidence(
+            gate,
+            plan.stage_id,
+            plan.protocol_id,
+            plan.contracts.model_lock_sha256,
+            plan.contracts.evidence_matrix_sha256,
+            CategoricalGateDecision(f"{plan.stage_id}:{gate}", "pass", (), (), HASH, (), False),
+        )
+        for gate in ("security", "governance", "grading", "evidence", "causal")
+    )
     return PilotExitEvidence(
         plan.digest,
         PilotEvidenceCompleteness({"mandatory": True, "optional": True}, ("mandatory",)),
-        PilotPanelMetrics(0.70, 0.10, 0.60),
-        dict.fromkeys(
-            ("panel", "blinding", "security", "governance", "grading", "evidence", "causal"),
-            "passed",
-        ),
+        panel,
+        categorical,
         HASH,
         HASH,
         HASH,

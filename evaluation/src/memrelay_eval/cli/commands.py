@@ -68,8 +68,8 @@ from memrelay_eval.orchestration.control import (
     write_model_lock,
 )
 from memrelay_eval.orchestration.pilot import (
+    PilotExitStore,
     authorize_pilot_plan,
-    evaluate_pilot_exit,
     load_pilot_exit_evidence,
     load_pilot_plan,
 )
@@ -313,9 +313,8 @@ def gate_pilot(args: Namespace) -> int:
     plan_bytes = _read_stage_input(args.pilot_plan, "pilot_plan_unreadable")
     evidence_bytes = _read_stage_input(args.exit_evidence, "pilot_exit_evidence_unreadable")
     plan = load_pilot_plan(plan_bytes)
-    decision = evaluate_pilot_exit(plan, load_pilot_exit_evidence(evidence_bytes))
-    path = Path(args.output_root) / "pilot-exits" / str(plan.stage_id) / f"{decision.digest}.json"
-    _write_immutable_stage_manifest(path, decision.bytes())
+    evidence = load_pilot_exit_evidence(evidence_bytes)
+    decision, _path, _outcome = PilotExitStore(Path(args.output_root)).gate(plan, evidence)
     print(decision.bytes().decode("utf-8"))
     return 0 if decision.status == "accepted" else 2
 
