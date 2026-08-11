@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 from memrelay_eval.domain.errors import StageAuthorizationError, StageControlError
@@ -274,6 +276,60 @@ def test_bundle_store_concurrent_identical_writer_reuses(
     path, outcome = store.seal_entry(entry)
     assert outcome == "reused"
     assert path.read_bytes() == entry.bytes()
+
+
+def test_bundle_store_threaded_identical_writers_publish_once_and_reuse(tmp_path: Path) -> None:
+    entry, _predecessor, _authorization = _bundles()
+    store = StageBundleStore(tmp_path)
+    barrier = Barrier(8)
+
+    def seal() -> tuple[Path, str]:
+        barrier.wait()
+        return store.seal_entry(entry)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(lambda _index: seal(), range(8)))
+
+    paths, outcomes = zip(*results, strict=True)
+    assert len(set(paths)) == 1
+    assert outcomes.count("sealed") == 1
+    assert outcomes.count("reused") == 7
+    assert paths[0].read_bytes() == entry.bytes()
+    assert not list(paths[0].parent.glob(".*.staged"))
+
+
+def test_bundle_store_threaded_differing_writers_fail_closed(tmp_path: Path) -> None:
+    entry, _predecessor, _authorization = _bundles()
+    locks = dict(entry.locks)
+    locks["model_lock_sha256"] = "b" * 64
+    conflicting = StageEntryBundle(
+        stage_id=entry.stage_id,
+        stage_kind=entry.stage_kind,
+        protocol_id=entry.protocol_id,
+        predecessor_stage_kind=entry.predecessor_stage_kind,
+        locks=locks,
+    )
+    store = StageBundleStore(tmp_path)
+    barrier = Barrier(2)
+
+    def seal(bundle: StageEntryBundle) -> tuple[Path, str]:
+        barrier.wait()
+        return store.seal_entry(bundle)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(seal, bundle) for bundle in (entry, conflicting)]
+        results = [
+            future.result() if not future.exception() else future.exception() for future in futures
+        ]
+
+    assert sum(isinstance(result, StageControlError) for result in results) == 1
+    failure = next(result for result in results if isinstance(result, StageControlError))
+    assert failure.code == "stage_bundle_mutation"
+    success = next(result for result in results if not isinstance(result, StageControlError))
+    assert isinstance(success, tuple)
+    assert success[1] == "sealed"
+    assert success[0].read_bytes() in {entry.bytes(), conflicting.bytes()}
+    assert not list(success[0].parent.glob(".*.staged"))
 
 
 def test_entry_bundle_with_nan_token_fails_closed() -> None:

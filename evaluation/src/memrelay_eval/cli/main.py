@@ -436,9 +436,34 @@ def _invoke_with_command_manifest(
         error_code=error_code,
     )
     digest = json.loads(manifest.decode("utf-8"))["digest"]
-    _write_immutable_manifest(
-        _command_manifest_root(args) / "commands" / f"{command}-{digest}.json", manifest
-    )
+    manifest_path = _command_manifest_root(args) / "commands" / f"{command}-{digest}.json"
+    original_error_code = error_code if error is not None else None
+    publication_failure: StageControlError | None = None
+    emitted_manifest = manifest
+    try:
+        _write_immutable_manifest(manifest_path, manifest)
+    except StageControlError as publication_error:
+        emitted_manifest = stage_command_manifest(
+            command=command,
+            stage=str(getattr(args, "stage", "conformance")),
+            terminal_status="failed",
+            exit_code=2,
+            input_hashes=input_hashes,
+            output_hashes=output_hashes,
+            runtime_lock_sha256=runtime_lock_sha256,
+            protocol_sha256=protocol_sha256,
+            error_code=publication_error.code,
+            prior_error_code=original_error_code,
+        )
+        publication_failure = publication_error
+    finally:
+        if publication_failure is not None:
+            print(emitted_manifest.decode("utf-8"))
+    if publication_failure is not None:
+        evidence = (str(manifest_path),)
+        if original_error_code is not None:
+            evidence += (original_error_code,)
+        raise StageControlError(publication_failure.code, evidence) from publication_failure
     if error is not None:
         raise error
     return exit_code
@@ -578,23 +603,28 @@ def _error_code(error: Exception) -> str:
 
 
 def _write_immutable_manifest(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        if path.is_file() and path.read_bytes() == data:
-            return
-        raise StageControlError("command_manifest_conflict", (str(path),))
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
-        temporary.write_bytes(data)
-        os.link(temporary, path)
-    except FileExistsError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists():
+            if path.is_file() and path.read_bytes() == data:
+                return
+            raise StageControlError("command_manifest_conflict", (str(path),))
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            temporary.write_bytes(data)
+            os.link(temporary, path)
+        except FileExistsError:
+            if not path.is_file() or path.read_bytes() != data:
+                raise StageControlError("command_manifest_conflict", (str(path),)) from None
+        finally:
+            if temporary.exists():
+                temporary.unlink()
         if not path.is_file() or path.read_bytes() != data:
-            raise StageControlError("command_manifest_conflict", (str(path),)) from None
-    finally:
-        if temporary.exists():
-            temporary.unlink()
-    if not path.is_file() or path.read_bytes() != data:
-        raise StageControlError("command_manifest_publish_failed", (str(path),))
+            raise StageControlError("command_manifest_publish_failed", (str(path),))
+    except StageControlError:
+        raise
+    except OSError as error:
+        raise StageControlError("command_manifest_publish_failed", (str(path),)) from error
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@
     "runtime_lock_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
     "protocol_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
     "error_code": {"oneOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+    "prior_error_code": {"type": "string", "minLength": 1},
     "digest": {"$ref": "#/$defs/sha256"}
   },
   "$defs": {

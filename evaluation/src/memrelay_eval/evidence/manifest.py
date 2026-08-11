@@ -231,6 +231,7 @@ def stage_command_manifest(
     runtime_lock_sha256: str | None,
     protocol_sha256: str | None,
     error_code: str | None,
+    prior_error_code: str | None = None,
 ) -> bytes:
     """Create the shared canonical command manifest for a noninteractive stage command.
 
@@ -250,5 +251,7 @@ def stage_command_manifest(
         "protocol_sha256": protocol_sha256,
         "error_code": error_code,
     }
+    if prior_error_code is not None:
+        document["prior_error_code"] = prior_error_code
     document["digest"] = canonical_digest(document)
     return canonical_json_bytes(document)

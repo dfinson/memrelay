@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import types
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -569,7 +570,7 @@ class StageBundleStore:
             if not path.is_file() or path.read_bytes() != data:
                 raise StageControlError(conflict_code, (path.name,))
             return "reused"
-        staged = path.with_name(f".{path.name}.{os.getpid()}.staged")
+        staged = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.staged")
         try:
             with staged.open("xb") as handle:
                 handle.write(data)
