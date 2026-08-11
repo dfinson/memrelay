@@ -21,6 +21,13 @@ from .calibration import (
     FrozenPanelQualificationProtocol,
     HumanGoldLabel,
 )
+from .outcomes import (
+    CategoricalBlockerRecord,
+    EndpointRecord,
+    FrozenQualitativeAggregation,
+    NormalizedOutcomes,
+    normalize_outcomes,
+)
 from .reliability import (
     CriterionAgreement,
     GateDecision,
@@ -40,10 +47,13 @@ from .service import (
 __all__ = [
     "BlindedEvidenceView",
     "BlindingPolicy",
+    "CategoricalBlockerRecord",
     "CriterionAgreement",
+    "EndpointRecord",
     "FrozenLeakageProtocol",
     "FrozenPanelPassRules",
     "FrozenPanelQualificationProtocol",
+    "FrozenQualitativeAggregation",
     "GateDecision",
     "GradingReplayComparison",
     "HUMAN_CALIBRATION_MAE_THRESHOLD",
@@ -51,6 +61,7 @@ __all__ = [
     "LeakageCandidate",
     "LeakageConformance",
     "PanelGateEvidence",
+    "NormalizedOutcomes",
     "AGREEMENT_THRESHOLD",
     "classify_candidate_flakiness",
     "compare_grading_replays",
@@ -60,6 +71,7 @@ __all__ = [
     "generate_blinded_view",
     "generate_sentinel_corpus",
     "grade_with_bounded_regrades",
+    "normalize_outcomes",
     "require_blinding_conformance",
     "require_executable_outcome",
     "require_intake_stability",

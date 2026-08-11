@@ -1,6 +1,6 @@
 # Story 3.6: Normalize Outcomes Under Separate Authorities
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -32,25 +32,25 @@ so that hard correctness, qualitative quality, and categorical blockers cannot s
 
 ## Tasks / Subtasks
 
-- [ ] Define separate versioned hard, qualitative, and categorical outcome records (AC: 1)
-  - [ ] Retain opaque IDs, status/value/unavailable reason, authority, scorer/rubric/grader/snapshot/protocol hashes, source evidence, and derivation hash.
-  - [ ] Represent adjudication as `not_triggered`, `completed`, or `failed/blocked`; a retained no-threshold evaluation is required when no call occurred, while a required failed adjudication blocks qualitative finalization.
-- [ ] Implement explicit authority policy (AC: 1, 2)
-  - [ ] Hard endpoint derives only from deterministic grader authority.
-  - [ ] Qualitative co-primary endpoint derives only from the three-judge panel plus applicable reliability/adjudication policy.
-  - [ ] Security, governance, evidence-integrity, grading, and causal-validity blockers remain separate hard gates.
-  - [ ] Require a prospectively frozen qualitative aggregation/scale/weighting and missingness policy; do not invent averaging, weights, or fallback values during normalization.
-- [ ] Enforce all qualitative prerequisites (AC: 1, 2)
-  - [ ] Require three fresh blinded judge records, frozen human calibration, agreement, drift, duplicate/sentinel checks, arm-classifier 95% upper AUC `<=0.60`, and partial/homogeneous-panel shared-bias gate.
-  - [ ] Treat failed/missing panel gates as blocked/unavailable qualitative confirmation, never zero, pass, or an executable rewrite.
-- [ ] Append adjudication correctly (AC: 1, 2)
-  - [ ] Use it only for threshold-crossed disputed criteria; retain originals; prohibit it from waiving panel gates, executable failure, or categorical blockers.
-- [ ] Preserve authority conflicts for downstream reconciliation (AC: 2)
-  - [ ] Favorable panel quality alongside hard failure remains a valid multi-record state; never collapse to the favorable result.
-  - [ ] Preserve hard or qualitative `unavailable` separately from `failed`; never coerce unresolved grader/panel evidence to pass, fail, or zero.
-- [ ] Enforce architecture boundaries mechanically (AC: 3)
-  - [ ] AST/import tests reject scoring-to-assignment and cross-adapter imports; runtime ports expose only blinded evidence/domain records.
-- [ ] Add exhaustive authority-table, missingness, conflict, tamper, lineage, and import-boundary tests (AC: 1-3).
+- [x] Define separate versioned hard, qualitative, and categorical outcome records (AC: 1)
+  - [x] Retain opaque IDs, status/value/unavailable reason, authority, scorer/rubric/grader/snapshot/protocol hashes, source evidence, and derivation hash.
+  - [x] Represent adjudication as `not_triggered`, `completed`, or `failed/blocked`; a retained no-threshold evaluation is required when no call occurred, while a required failed adjudication blocks qualitative finalization.
+- [x] Implement explicit authority policy (AC: 1, 2)
+  - [x] Hard endpoint derives only from deterministic grader authority.
+  - [x] Qualitative co-primary endpoint derives only from the three-judge panel plus applicable reliability/adjudication policy.
+  - [x] Security, governance, evidence-integrity, grading, and causal-validity blockers remain separate hard gates.
+  - [x] Require a prospectively frozen qualitative aggregation/scale/weighting and missingness policy; do not invent averaging, weights, or fallback values during normalization.
+- [x] Enforce all qualitative prerequisites (AC: 1, 2)
+  - [x] Require three fresh blinded judge records, frozen human calibration, agreement, drift, duplicate/sentinel checks, arm-classifier 95% upper AUC `<=0.60`, and partial/homogeneous-panel shared-bias gate.
+  - [x] Treat failed/missing panel gates as blocked/unavailable qualitative confirmation, never zero, pass, or an executable rewrite.
+- [x] Append adjudication correctly (AC: 1, 2)
+  - [x] Use it only for threshold-crossed disputed criteria; retain originals; prohibit it from waiving panel gates, executable failure, or categorical blockers.
+- [x] Preserve authority conflicts for downstream reconciliation (AC: 2)
+  - [x] Favorable panel quality alongside hard failure remains a valid multi-record state; never collapse to the favorable result.
+  - [x] Preserve hard or qualitative `unavailable` separately from `failed`; never coerce unresolved grader/panel evidence to pass, fail, or zero.
+- [x] Enforce architecture boundaries mechanically (AC: 3)
+  - [x] AST/import tests reject scoring-to-assignment and cross-adapter imports; runtime ports expose only blinded evidence/domain records.
+- [x] Add exhaustive authority-table, missingness, conflict, tamper, lineage, and import-boundary tests (AC: 1-3).
 
 ## Developer Context
 
@@ -101,6 +101,23 @@ TBD by implementation agent
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable endpoint records with explicit deterministic-grader and blinded-panel authorities,
+  source evidence hashes, and canonical derivation hashes.
+- Added a sealed qualitative aggregation protocol. Missing, malformed, partial, conflicting, or
+  unauthorized authority evidence finalizes only as unavailable or blocked; it never substitutes a
+  pass, failure, or zero.
+- Preserved favorable qualitative outcomes beside executable failures and categorical blocker records
+  for later reconciliation. Panel reliability and required adjudication failures block only qualitative
+  finalization and never rewrite executable authority.
+- Added endpoint schema, authority and tamper tests, and AST checks rejecting scoring imports from
+  assignment resolution or adapters.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/3-6-normalize-outcomes-under-separate-authorities.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/schemas/endpoint-record.schema.json`
+- `evaluation/src/memrelay_eval/scoring/__init__.py`
+- `evaluation/src/memrelay_eval/scoring/outcomes.py`
+- `evaluation/tests/contract/scoring/test_outcome_boundaries.py`
+- `evaluation/tests/unit/scoring/test_outcomes.py`
