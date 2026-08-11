@@ -275,6 +275,15 @@ class UnqualifiedEvidencePortError(IneligibleEvidenceError):
     code = "unqualified_evidence_port"
 
 
+class BlindingConformanceError(IneligibleEvidenceError):
+    """A blinded evidence transform or preregistered leakage gate failed closed."""
+
+    def __init__(self, code: str, categories: tuple[str, ...] = ()) -> None:
+        self.code = code
+        self.categories = categories
+        super().__init__(code.replace("_", " "))
+
+
 class TelemetryConformanceError(DomainError):
     """A versioned telemetry contract, delivery, or Collector proof failed closed."""
 

@@ -1,6 +1,6 @@
 # Story 3.2: Generate Deterministic Blinded Evidence Views
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -36,20 +36,20 @@ so that judges receive sufficient evidence without learning treatment.
 
 ## Tasks / Subtasks
 
-- [ ] Define a versioned, hash-pinned blinding policy and view schema (AC: 1, 2)
-  - [ ] Maintain explicit deny/transform/allow rules; default-deny assignment, treatment, provider, tool, path, and timing fields not needed for judgment.
-- [ ] Build canonical deterministic blinded views from immutable source references (AC: 1, 2)
-  - [ ] Retain judgment-relevant requirements, code, patch, policy-allowed tests, and stable blinded artifact locations.
-  - [ ] Keep source immutable/access-separated and record source, policy, transform, and output hashes.
-- [ ] Implement leakage conformance and randomized sentinel corpus (AC: 3)
-  - [ ] Detect direct labels, aliases, paths, metadata, ordering, timing/tool/provider proxies, and sentinel transformations.
-  - [ ] Freeze the sentinel corpus/generator, seed, feature projection, train/evaluation split, classifier algorithm, confidence-bound method, and all hashes before outcome access.
-  - [ ] Run that preregistered treatment-arm classifier without outcome-informed feature tuning; require the frozen 95% upper AUC bound `<=0.60` (not mean/point AUC).
-  - [ ] Fail scoring conformance on any direct leak or classifier-gate failure; do not waive or average this gate.
-- [ ] Use fake artifact ports until Story 4.1 CAS qualification (AC: 4)
-  - [ ] Mark artifacts `unpaid_conformance` and mechanically deny paid execution/study inclusion.
-  - [ ] Preserve inherited fake-ledger/fake-telemetry ineligibility; Story 4.1 alone does not authorize a paid or included run.
-- [ ] Add golden-byte, property, access-control, leakage, classifier, and corruption tests (AC: 1-4).
+- [x] Define a versioned, hash-pinned blinding policy and view schema (AC: 1, 2)
+  - [x] Maintain explicit deny/transform/allow rules; default-deny assignment, treatment, provider, tool, path, and timing fields not needed for judgment.
+- [x] Build canonical deterministic blinded views from immutable source references (AC: 1, 2)
+  - [x] Retain judgment-relevant requirements, code, patch, policy-allowed tests, and stable blinded artifact locations.
+  - [x] Keep source immutable/access-separated and record source, policy, transform, and output hashes.
+- [x] Implement leakage conformance and randomized sentinel corpus (AC: 3)
+  - [x] Detect direct labels, aliases, paths, metadata, ordering, timing/tool/provider proxies, and sentinel transformations.
+  - [x] Freeze the sentinel corpus/generator, seed, feature projection, train/evaluation split, classifier algorithm, confidence-bound method, and all hashes before outcome access.
+  - [x] Run that preregistered treatment-arm classifier without outcome-informed feature tuning; require the frozen 95% upper AUC bound `<=0.60` (not mean/point AUC).
+  - [x] Fail scoring conformance on any direct leak or classifier-gate failure; do not waive or average this gate.
+- [x] Use fake artifact ports until Story 4.1 CAS qualification (AC: 4)
+  - [x] Mark artifacts `unpaid_conformance` and mechanically deny paid execution/study inclusion.
+  - [x] Preserve inherited fake-ledger/fake-telemetry ineligibility; Story 4.1 alone does not authorize a paid or included run.
+- [x] Add golden-byte, property, access-control, leakage, classifier, and corruption tests (AC: 1-4).
 
 ## Developer Context
 
@@ -94,12 +94,31 @@ The blinded view is a deterministic derived artifact, not a redacted replacement
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added a versioned default-deny blinding policy and RFC 8785 canonical blinded-view
+  schema with immutable source, policy, transform, and output provenance.
+- Added deterministic location aliases, direct metadata leak detection, reproducible
+  sentinel generation, and a local preregistered token classifier with a hard 95% upper
+  AUC gate.
+- Preserved the fake-only unpaid artifact boundary; derived views require a matching
+  ArtifactManifest schema 1.0.0 provenance record and cannot authorize paid or study use.
+- Added unit, schema-contract, and scoring-boundary coverage for byte identity, source
+  immutability, schema validation, access separation, leak classes, classifier boundaries,
+  and fake-port gating.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/3-2-generate-deterministic-blinded-evidence-views.md`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+- `evaluation/schemas/blinded-view.schema.json`
+- `evaluation/src/memrelay_eval/domain/errors.py`
+- `evaluation/src/memrelay_eval/scoring/__init__.py`
+- `evaluation/src/memrelay_eval/scoring/blinding.py`
+- `evaluation/tests/contract/scoring/test_blinded_view_schema.py`
+- `evaluation/tests/security/scoring/test_blinding_boundary.py`
+- `evaluation/tests/unit/scoring/test_blinding.py`
