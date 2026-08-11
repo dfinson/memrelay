@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/blinded-view-1.0.0.json",
+  "title": "Blinded Evidence View",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source",
+    "policy_sha256",
+    "transform_sha256",
+    "evidence",
+    "artifact_locations"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "sha256"],
+      "properties": {
+        "artifact_id": {"type": "string", "pattern": "^art_[a-f0-9]{32}$"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "transform_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evidence": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["object", "array", "string", "number", "integer", "boolean", "null"]
+      }
+    },
+    "artifact_locations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^artifact://blinded/[a-f0-9]{64}$"
+      }
+    }
+  }
+}
