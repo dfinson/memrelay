@@ -262,6 +262,14 @@ class ReconciliationError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
+class MaterializationError(DomainError):
+    """A reconciled analysis dataset cannot be safely materialized or verified."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
 class TerminalDecisionConflictError(ReconciliationError):
     """A later report attempted to replace an immutable inclusion decision."""
 

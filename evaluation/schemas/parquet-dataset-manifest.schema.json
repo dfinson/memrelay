@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/parquet-dataset-manifest.schema.json",
+  "title": "Memrelay immutable Parquet dataset manifest",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "dataset_version",
+    "materialization_sha256",
+    "source_manifest_sha256",
+    "schema_sha256",
+    "files",
+    "ordering"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "artifact_type": { "const": "parquet_dataset_manifest" },
+    "dataset_version": { "type": "string", "minLength": 1 },
+    "materialization_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "source_manifest_sha256": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "schema_sha256": { "type": "object" },
+    "files": { "type": "object" },
+    "ordering": { "type": "object" }
+  }
+}

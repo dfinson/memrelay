@@ -411,7 +411,26 @@ class ReconciliationResult:
     report_ref: ArtifactRef
     report_manifest_ref: ArtifactRef
     decision: InclusionDecision
+    decision_ref: ArtifactRef
+    decision_manifest_ref: ArtifactRef
     decision_idempotent: bool
+
+
+def inclusion_decision_document(
+    decision: InclusionDecision, report_ref: ArtifactRef
+) -> dict[str, object]:
+    """Project the ledger's terminal decision into immutable analysis authority."""
+    return {
+        "schema_version": RECONCILIATION_SCHEMA_VERSION,
+        "artifact_type": "inclusion_decision",
+        "inclusion_id": str(decision.id),
+        "run_id": str(decision.run_id),
+        "status": decision.status.value,
+        "reason": decision.reason,
+        "reconciliation_sha256": decision.reconciliation_sha256,
+        "occurred_at": _utc_timestamp(decision.occurred_at),
+        "reconciliation_report_sha256": report_ref.sha256,
+    }
 
 
 @dataclass(frozen=True, slots=True)
@@ -645,8 +664,17 @@ class ReconciliationService:
                     raise TerminalDecisionConflictError(
                         report_ref=report_ref, report_manifest_ref=report_manifest_ref
                     )
+                decision_ref, decision_manifest_ref = self._persist_decision(
+                    request, report_ref, existing
+                )
                 return ReconciliationResult(
-                    report, report_ref, report_manifest_ref, existing, decision_idempotent=True
+                    report,
+                    report_ref,
+                    report_manifest_ref,
+                    existing,
+                    decision_ref,
+                    decision_manifest_ref,
+                    decision_idempotent=True,
                 )
             raise TerminalDecisionConflictError(
                 report_ref=report_ref, report_manifest_ref=report_manifest_ref
@@ -711,11 +739,14 @@ class ReconciliationService:
             decision,
             decision_prior_digest,
         )
+        decision_ref, decision_manifest_ref = self._persist_decision(request, report_ref, decision)
         return ReconciliationResult(
             report,
             report_ref,
             report_manifest_ref,
             decision,
+            decision_ref,
+            decision_manifest_ref,
             decision_idempotent=acknowledgement.idempotent,
         )
 
@@ -876,6 +907,43 @@ class ReconciliationService:
         except ArtifactIntegrityError as error:
             raise ReconciliationError("reconciliation_report_manifest_unavailable") from error
         return report_ref, manifest_ref
+
+    def _persist_decision(
+        self,
+        request: ReconciliationInput,
+        report_ref: ArtifactRef,
+        decision: InclusionDecision,
+    ) -> tuple[ArtifactRef, ArtifactRef]:
+        """Seal the ledger decision as immutable, read-only analysis authority."""
+        payload = canonical_bytes(inclusion_decision_document(decision, report_ref))
+        decision_ref = self._artifact_store.put_bytes(
+            payload,
+            media_type="application/json",
+            classification="inclusion_decision",
+        )
+        manifest = ArtifactManifest(
+            artifact_id=decision_ref.artifact_id,
+            kind="inclusion_decision",
+            sha256=decision_ref.sha256,
+            size_bytes=decision_ref.size_bytes,
+            media_type="application/json",
+            created_at=decision.occurred_at,
+            producer_component="evidence_reconcile",
+            producer_version=RECONCILIATION_SCHEMA_VERSION,
+            classification="inclusion_decision",
+            contains_secrets=False,
+            source_artifact_ids=(report_ref.artifact_id,),
+            retention_policy_id=request.retention_policy_id,
+            encryption=None,
+            scope=ArtifactScope.ATTEMPT,
+            run_id=request.run_id,
+            attempt_id=request.attempt_id,
+        )
+        try:
+            manifest_ref = self._artifact_store.write_manifest(manifest)
+        except ArtifactIntegrityError as error:
+            raise ReconciliationError("inclusion_decision_manifest_unavailable") from error
+        return decision_ref, manifest_ref
 
 
 def load_reconciliation_input(data: bytes) -> ReconciliationInput:
