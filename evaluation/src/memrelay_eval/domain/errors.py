@@ -284,6 +284,14 @@ class BlindingConformanceError(IneligibleEvidenceError):
         super().__init__(code.replace("_", " "))
 
 
+class JudgePanelConformanceError(IneligibleEvidenceError):
+    """A frozen blinded-judge panel contract failed without a substitute path."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
 class TelemetryConformanceError(DomainError):
     """A versioned telemetry contract, delivery, or Collector proof failed closed."""
 

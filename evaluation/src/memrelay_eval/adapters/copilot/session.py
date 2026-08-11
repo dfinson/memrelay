@@ -24,6 +24,7 @@ from memrelay_eval.domain.entities import (
     QualificationUsage,
 )
 from memrelay_eval.domain.errors import ConformancePauseError, QualificationLimitError
+from memrelay_eval.scoring.rubric import JudgeRuntimeResult, JudgeSessionRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +153,65 @@ class CopilotSdkSessionRuntime:
         self._live_envelope = live_envelope
         self._native_factory = client_factory is None
         self._consumed = False
+        self._judge_session_ids: set[str] = set()
+
+    async def run_session(self, session: object) -> object:
+        """Run one fresh, pinned blinded-judge session through the official SDK only."""
+
+        if not isinstance(session, JudgeSessionRequest):
+            raise ConformancePauseError(
+                "sdk_judge_request_invalid",
+                "official SDK judge runtime requires a typed judge request",
+            )
+        if session.session_id in self._judge_session_ids:
+            raise ConformancePauseError(
+                "sdk_judge_session_reused", "a judge SDK session identity may be consumed only once"
+            )
+        self._judge_session_ids.add(session.session_id)
+        client = self._client_factory()
+        start = getattr(client, "start", None)
+        stop = getattr(client, "stop", None)
+        create_session = getattr(client, "create_session", None)
+        if not callable(start) or not callable(stop) or not callable(create_session):
+            raise ConformancePauseError(
+                "sdk_session_unsupported", "official SDK session API is unavailable"
+            )
+        await start()
+        sdk_session: object | None = None
+        started = time.monotonic()
+        try:
+            options: dict[str, object] = {
+                "model": session.model_id,
+                "tools": [dict(tool) for tool in session.tools],
+                **dict(session.decoding_controls),
+            }
+            if session.reasoning_effort != "unavailable":
+                options["reasoning_effort"] = session.reasoning_effort
+            if session.context_tier != "unavailable":
+                options["context_tier"] = session.context_tier
+            try:
+                sdk_session = await create_session(**options)
+            except TypeError as error:
+                raise ConformancePauseError(
+                    "sdk_judge_controls_unsupported",
+                    "official SDK session does not accept the frozen judge controls",
+                ) from error
+            send_and_wait = getattr(sdk_session, "send_and_wait", None)
+            if not callable(send_and_wait):
+                raise ConformancePauseError(
+                    "sdk_send_unsupported", "official SDK session cannot send judge assessments"
+                )
+            event = await send_and_wait(session.prompt, timeout=session.wall_seconds_limit)
+            return _judge_terminal_result(event, time.monotonic() - started)
+        except asyncio.CancelledError:
+            await _cancel_session(sdk_session)
+            return JudgeRuntimeResult("failed", None, failure_code="judge_cancelled")
+        except TimeoutError:
+            await _cancel_session(sdk_session)
+            return JudgeRuntimeResult("failed", None, failure_code="judge_timeout")
+        finally:
+            await _disconnect_session(sdk_session)
+            await stop()
 
     async def execute(self, task: InspectTaskRequest) -> NativeTerminalRecord:
         if self._native_factory:
@@ -394,6 +454,61 @@ def _native_usage(event: object, elapsed: float) -> QualificationUsage:
         sessions=1,
         credits=float(credits),
         tokens=tokens,
+        active_seconds=elapsed,
+        wall_seconds=elapsed,
+    )
+
+
+def _judge_terminal_result(event: object, elapsed: float) -> JudgeRuntimeResult:
+    """Normalize the narrow structured-judge SDK response without retaining raw output."""
+
+    if event is None or not hasattr(event, "to_dict"):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_event_invalid")
+    try:
+        data = event.to_dict()
+    except (TypeError, ValueError):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_event_invalid")
+    if not isinstance(data, Mapping):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_event_invalid")
+    usage = _find_usage_mapping(data)
+    if usage is None:
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_usage_unavailable")
+    tokens = usage.get("total_tokens")
+    tool_calls = usage.get("tool_calls")
+    if (
+        isinstance(tokens, bool)
+        or isinstance(tool_calls, bool)
+        or not isinstance(tokens, int)
+        or not isinstance(tool_calls, int)
+    ):
+        return JudgeRuntimeResult("failed", None, failure_code="judge_native_usage_invalid")
+    status = data.get("status")
+    if status != "succeeded":
+        return JudgeRuntimeResult(
+            "failed",
+            None,
+            tokens=tokens,
+            tool_calls=tool_calls,
+            active_seconds=elapsed,
+            wall_seconds=elapsed,
+            failure_code="judge_native_terminal_failure",
+        )
+    response = data.get("structured_output", data.get("result"))
+    if not isinstance(response, Mapping):
+        return JudgeRuntimeResult(
+            "failed",
+            None,
+            tokens=tokens,
+            tool_calls=tool_calls,
+            active_seconds=elapsed,
+            wall_seconds=elapsed,
+            failure_code="judge_native_response_missing",
+        )
+    return JudgeRuntimeResult(
+        "completed",
+        dict(response),
+        tokens=tokens,
+        tool_calls=tool_calls,
         active_seconds=elapsed,
         wall_seconds=elapsed,
     )
