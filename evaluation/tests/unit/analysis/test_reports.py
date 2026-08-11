@@ -2,219 +2,275 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from pathlib import Path
 
+import jsonschema
 import pytest
-from memrelay_eval.analysis.claims import ClaimScope, bound_claim, lint_claim_text
-from memrelay_eval.analysis.gates import ClaimGateDecision, ReleaseFitnessDecision
+from memrelay_eval.analysis.claims import ClaimScope, lint_claim_text
+from memrelay_eval.analysis.gates import CategoricalGateDecision
+from memrelay_eval.analysis.intervals import SimultaneousInterval
 from memrelay_eval.analysis.reports import (
     REPORT_TEMPLATE_SHA256,
     ReportInput,
+    ReportItem,
+    StageScope,
     publish_report,
     render_report,
 )
 from memrelay_eval.canonical import canonical_bytes
+from memrelay_eval.cli.commands import _canonical_report_input
 from memrelay_eval.cli.main import main
 from memrelay_eval.domain.errors import AnalysisError
-
-_PROTOCOL = "a" * 64
-_SOURCE = "b" * 64
-_DERIVATION = "c" * 64
-_FAMILY = "d" * 64
-_POWER = "e" * 64
-_ENVIRONMENT = "f" * 64
-_EVIDENCE = "evidence-primary"
-
-
-def _scope() -> ClaimScope:
-    return ClaimScope(
-        protocol_sha256=_PROTOCOL,
-        population_id="primary-itt",
-        model_id="model-primary",
-        endpoint_id="EP-PRIM-SUCCESS",
-        stratum="product",
-        history_regime="controlled",
-        environment_sha256=_ENVIRONMENT,
-        source_sha256=(_SOURCE,),
-        derivation_sha256=_DERIVATION,
-        evidence_ids=(_EVIDENCE,),
-    )
+from tests.contract.analysis.test_duckdb_read_only import _dataset
+from tests.unit.analysis.test_multiplicity_gates_power import (
+    _DERIVATION,
+    _ENVIRONMENT,
+    _SOURCE,
+    _bundle,
+    _context,
+    _holm,
+    _interval,
+)
 
 
-def _decision(status: str = "pass") -> ClaimGateDecision:
-    return ClaimGateDecision(
-        endpoint_id="EP-PRIM-SUCCESS",
-        claim_type="reliability_benefit",
-        claim_id="claim-primary",
-        status=status,
-        gate_trace=("frozen",),
-        source_sha256=_SOURCE,
-        derivation_sha256=_DERIVATION,
-        protocol_sha256=_PROTOCOL,
-        family_sha256=_FAMILY,
-        sealed_claim_protocol_sha256="1" * 64,
-        threshold_sha256="2" * 64,
-        power_sha256=_POWER,
-        power_evaluation_sha256="3" * 64,
-        information_sha256="4" * 64,
-        panel_gate_sha256=None,
-        categorical_policy_sha256="5" * 64,
-        categorical_gate_decision_sha256="6" * 64,
-    )
-
-
-def _release(decision: ClaimGateDecision, *, status: str = "pass") -> ReleaseFitnessDecision:
-    return ReleaseFitnessDecision(
-        status=status,
-        family_sha256=_FAMILY,
-        protocol_sha256=_PROTOCOL,
-        population_id="primary-itt",
+def _scopes() -> tuple[StageScope, tuple[ClaimScope, ...]]:
+    stage = StageScope(
+        protocol_sha256="a" * 64,
+        population_id="primary",
         model_id="model-primary",
         stratum="product",
         history_regime="controlled",
         environment_sha256=_ENVIRONMENT,
         source_sha256=(_SOURCE,),
         derivation_sha256=_DERIVATION,
-        evidence_sha256=("7" * 64,),
-        categorical_gate_decision_sha256=("6" * 64,),
-        target_claim_decision_sha256=(decision.decision_sha256,),
-        non_target_interval_sha256=("8" * 64,),
-        reproduction_status="verified",
+        evidence_ids=("evidence-primary",),
     )
-
-
-def _sections(scope: ClaimScope) -> dict[str, tuple[dict[str, object], ...]]:
-    return {
-        name: (
-            {
-                "item_id": name,
-                "source_sha256": list(scope.source_sha256),
-                "derivation_sha256": scope.derivation_sha256,
-                "evidence_ids": list(scope.evidence_ids),
-                "protocol_sha256": scope.protocol_sha256,
-                "population_id": scope.population_id,
-                "model_id": scope.model_id,
-                "endpoint_id": scope.endpoint_id,
-                "stratum": scope.stratum,
-                "history_regime": scope.history_regime,
-                "environment_sha256": scope.environment_sha256,
-                "value": "unavailable",
-            },
+    return stage, tuple(
+        ClaimScope(
+            protocol_sha256=stage.protocol_sha256,
+            population_id=stage.population_id,
+            model_id=stage.model_id,
+            endpoint_id=endpoint,
+            stratum=stage.stratum,
+            history_regime=stage.history_regime,
+            environment_sha256=stage.environment_sha256,
+            source_sha256=stage.source_sha256,
+            derivation_sha256=stage.derivation_sha256,
+            evidence_ids=stage.evidence_ids,
         )
-        for name in (
-            "simultaneous_intervals",
-            "marginal_descriptive_intervals",
-            "diagnostics",
-            "pareto_surfaces",
-            "harm_tails",
-            "safety",
-            "costs",
-            "time",
-            "panel_metrics",
-            "gates",
+        for endpoint in ("EP-PRIM-SUCCESS", "EP-QUAL", "EP-HARM")
+    )
+
+
+def _item(name: str, scope: ClaimScope) -> ReportItem:
+    return ReportItem(name, scope, {"authority": "retained"})
+
+
+def _input(*, failing_claim: bool = False) -> ReportInput:
+    bundle = _bundle()
+    context = _context(bundle)
+    categorical = context["categorical_gate_decision"]
+    assert isinstance(categorical, CategoricalGateDecision)
+    decisions = (
+        replace(
+            __import__("memrelay_eval.analysis.gates", fromlist=["evaluate_claim"]).evaluate_claim(
+                bundle.family,
+                bundle.thresholds,
+                _holm(bundle.family),
+                _interval(bundle.family),
+                claim_type="reliability_benefit",
+                **context,
+            ),
+            status="fail" if failing_claim else "pass",
+        ),
+    )
+    stage, scopes = _scopes()
+    sections = {
+        name: (_item(name, scopes[index % len(scopes)]),)
+        for index, name in enumerate(
+            (
+                "simultaneous_intervals",
+                "marginal_descriptive_intervals",
+                "diagnostics",
+                "pareto_surfaces",
+                "harm_tails",
+                "safety",
+                "costs",
+                "time",
+                "panel_metrics",
+                "gates",
+            )
         )
     }
-
-
-def _input(*, source_kind: str = "completed_reconciled_product") -> ReportInput:
-    scope = _scope()
-    decision = _decision()
     return ReportInput(
         report_id="primary-report",
         stage="primary",
-        scope=scope,
+        scope=stage,
         dataset_manifest_sha256="9" * 64,
         table_sha256=("a" * 64,),
         figure_sha256=("b" * 64,),
         estimator_sha256="c" * 64,
         interval_sha256=("d" * 64,),
-        family_sha256=_FAMILY,
-        power_sha256=_POWER,
+        power_sha256=bundle.protocol.power_sha256,
         safety_sha256="e" * 64,
         panel_sha256="f" * 64,
         cost_revision_sha256="0" * 64,
-        runtime_lock_sha256="a" * 64,
+        runtime_lock_sha256="1" * 64,
         template_sha256=REPORT_TEMPLATE_SHA256,
         gate_ids=("gate-primary",),
-        claim_decisions=(decision,),
-        release_fitness=_release(decision),
-        source_kind=source_kind,
+        family=bundle.family,
+        claim_decisions=decisions,
+        claim_scopes=(scopes[0],),
+        non_target_intervals=(
+            _interval(bundle.family, "EP-QUAL", point=0.06, lower=0.001),
+            SimultaneousInterval(
+                "EP-HARM",
+                0.0,
+                -0.019,
+                0.01,
+                0.95,
+                "holm-compatible",
+                bundle.family.family_sha256,
+                sidedness="two-sided",
+            ),
+        ),
+        categorical_policy=bundle.categorical_policy,
+        categorical_decisions=(categorical,),
         reproduction_status="verified",
-        sections=_sections(scope),
+        sections=sections,
     )
 
 
-def test_report_is_deterministic_and_binds_every_required_surface(tmp_path) -> None:
+def test_report_recomputes_fitness_and_supports_multi_endpoint_sections(tmp_path: Path) -> None:
     report = render_report(_input())
-    first = publish_report(report, tmp_path)
-    second = publish_report(render_report(_input()), tmp_path)
+    directory = publish_report(report, tmp_path)
+    document = json.loads((directory / "report.json").read_text("utf-8"))
+    schema = json.loads(
+        (Path(__file__).parents[3] / "schemas" / "evidence-linked-report.schema.json").read_text(
+            "utf-8"
+        )
+    )
+    input_schema = json.loads(
+        (Path(__file__).parents[3] / "schemas" / "frozen-report-input.schema.json").read_text(
+            "utf-8"
+        )
+    )
 
-    document = json.loads((first / "report.json").read_text(encoding="utf-8"))
-    assert first == second
+    jsonschema.Draft202012Validator(schema).validate(document)
+    jsonschema.Draft202012Validator(input_schema).validate(report.report_input.to_document())
     assert document["terminal_status"] == "verified"
-    assert set(document["sections"]) == set(_sections(_scope()))
-    assert document["claims"][0]["terminal_status"] == "positive"
-    assert document["claims"][0]["scope"]["model_id"] == "model-primary"
+    assert {
+        item["scope"]["endpoint_id"] for items in document["sections"].values() for item in items
+    } == {
+        "EP-PRIM-SUCCESS",
+        "EP-QUAL",
+        "EP-HARM",
+    }
 
 
-@pytest.mark.parametrize(
-    ("source_kind", "reproduction_status"),
-    (
-        ("construction", "verified"),
-        ("component_test", "verified"),
-        ("deterministic_fixture", "verified"),
-        ("unreconciled_trial", "verified"),
-        ("engine_upper_bound", "verified"),
-        ("pilot", "verified"),
-        ("completed_reconciled_product", "pending"),
-    ),
-)
-def test_nonconfirmatory_sources_cannot_be_promoted(
-    source_kind: str, reproduction_status: str
-) -> None:
-    claim = bound_claim(
-        _decision(),
-        _scope(),
-        source_kind=source_kind,
-        reproduction_status=reproduction_status,
+def test_failing_claim_cannot_render_release_pass() -> None:
+    report_input = _input(failing_claim=True)
+
+    assert report_input.release_fitness.status == "fail"
+    assert render_report(report_input).terminal_status == "draft/unverified"
+
+
+def test_incomplete_or_duplicate_categorical_scope_fails_closed() -> None:
+    report_input = _input()
+    missing = replace(report_input, categorical_decisions=())
+    with pytest.raises(AnalysisError, match="authority missing"):
+        _ = missing.release_fitness
+    duplicate = replace(
+        report_input,
+        categorical_decisions=(
+            report_input.categorical_decisions[0],
+            report_input.categorical_decisions[0],
+        ),
     )
+    with pytest.raises(AnalysisError, match="scope incomplete"):
+        _ = duplicate.release_fitness
 
-    assert claim.terminal_status == "indeterminate"
-    assert "release-fitness conclusion" in claim.language
 
-
-def test_harmful_and_null_language_follow_existing_decision_authority() -> None:
-    no_regression = replace(_decision("fail"), claim_type="no_regression", claim_id="claim-harm")
-    scope = _scope()
-    harmful = bound_claim(
-        no_regression,
-        scope,
-        source_kind="completed_reconciled_product",
-        reproduction_status="verified",
-    )
-
-    assert harmful.terminal_status == "harmful"
+def test_claim_lint_rejects_broad_safety_language() -> None:
     with pytest.raises(AnalysisError, match="language forbidden"):
         lint_claim_text("The product is safe.")
 
 
-def test_report_rejects_item_without_complete_scope_lineage() -> None:
+def test_sealed_input_rejects_caller_authored_release_pass() -> None:
+    document = _input(failing_claim=True).to_document()
+    document["release_fitness"]["status"] = "pass"
+
+    with pytest.raises(AnalysisError, match="authority conflict"):
+        _canonical_report_input(canonical_bytes(document))
+
+
+def test_cli_renders_from_verified_completed_parquet_stage(tmp_path: Path, capsys) -> None:
+    dataset = _dataset(tmp_path)
     report_input = _input()
-    bad_sections = _sections(_scope())
-    bad_sections["costs"][0]["evidence_ids"] = []
-
-    with pytest.raises(AnalysisError, match="item lineage"):
-        replace(report_input, sections=bad_sections)
-
-
-def test_report_rejects_unreconciled_trial_input() -> None:
-    with pytest.raises(AnalysisError, match="unreconciled input"):
-        _input(source_kind="unreconciled_trial")
-
-
-def test_cli_renders_only_canonical_explicit_report_input(tmp_path, capsys) -> None:
-    report_input = _input()
-    path = tmp_path / "report-input.json"
-    path.write_bytes(canonical_bytes(report_input.to_document()))
+    protocol = dataset.manifest["protocol_sha256"][0]
+    family = replace(
+        report_input.family,
+        protocol_sha256=protocol,
+        source_dataset_manifest_sha256=dataset.manifest_sha256,
+    )
+    decisions = tuple(
+        replace(decision, protocol_sha256=protocol, family_sha256=family.family_sha256)
+        for decision in report_input.claim_decisions
+    )
+    intervals = tuple(
+        replace(interval, family_sha256=family.family_sha256)
+        for interval in report_input.non_target_intervals
+    )
+    stage_scope = replace(
+        report_input.scope,
+        protocol_sha256=protocol,
+        population_id=dataset.manifest["population_id"][0],
+        stratum=dataset.manifest["stratum"][0],
+        history_regime=dataset.manifest["history_mode"][0],
+    )
+    claim_scopes = tuple(
+        replace(
+            scope,
+            protocol_sha256=protocol,
+            population_id=stage_scope.population_id,
+            stratum=stage_scope.stratum,
+            history_regime=stage_scope.history_regime,
+        )
+        for scope in report_input.claim_scopes
+    )
+    sections = {
+        name: tuple(
+            replace(
+                item,
+                scope=replace(
+                    item.scope,
+                    protocol_sha256=stage_scope.protocol_sha256,
+                    population_id=stage_scope.population_id,
+                    model_id=stage_scope.model_id,
+                    stratum=stage_scope.stratum,
+                    history_regime=stage_scope.history_regime,
+                    environment_sha256=stage_scope.environment_sha256,
+                    source_sha256=stage_scope.source_sha256,
+                    derivation_sha256=stage_scope.derivation_sha256,
+                    evidence_ids=stage_scope.evidence_ids,
+                ),
+            )
+            for item in items
+        )
+        for name, items in report_input.sections.items()
+    }
+    stage_input = replace(
+        report_input,
+        scope=stage_scope,
+        dataset_manifest_sha256=dataset.manifest_sha256,
+        family=family,
+        claim_decisions=decisions,
+        claim_scopes=claim_scopes,
+        non_target_intervals=intervals,
+        sections=sections,
+    )
+    evidence = tmp_path / "stage-evidence.json"
+    evidence.write_bytes(canonical_bytes(stage_input.to_document()))
 
     assert (
         main(
@@ -222,8 +278,12 @@ def test_cli_renders_only_canonical_explicit_report_input(tmp_path, capsys) -> N
                 "report",
                 "--stage",
                 "primary",
-                "--input",
-                str(path),
+                "--stage-evidence",
+                str(evidence),
+                "--parquet-root",
+                str(dataset.root),
+                "--dataset-version",
+                dataset.dataset_version,
                 "--output-root",
                 str(tmp_path / "artifacts"),
             )

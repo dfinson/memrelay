@@ -738,6 +738,7 @@ def evaluate_release_fitness(
     target_decisions: tuple[ClaimGateDecision, ...],
     non_target_intervals: tuple[SimultaneousInterval, ...],
     family: FrozenClaimFamily,
+    categorical_policy: CategoricalGatePolicy,
     categorical_decisions: tuple[CategoricalGateDecision, ...],
     population_id: str,
     model_id: str,
@@ -758,9 +759,24 @@ def evaluate_release_fitness(
         for decision in target_decisions
     ):
         raise AnalysisError("release_fitness_family_drift")
+    if not categorical_policy.required_scope_ids:
+        raise AnalysisError("release_fitness_categorical_scope_unregistered")
     if any(
-        decision.digest not in {item.categorical_gate_decision_sha256 for item in target_decisions}
-        for decision in categorical_decisions
+        decision.policy_sha256 != categorical_policy.sha256 for decision in categorical_decisions
+    ):
+        raise AnalysisError("release_fitness_categorical_policy_mismatch")
+    expected_scopes = categorical_policy.required_scope_ids
+    actual_scopes = tuple(decision.scope_id for decision in categorical_decisions)
+    if (
+        len(actual_scopes) != len(set(actual_scopes))
+        or set(actual_scopes) != set(expected_scopes)
+        or len(expected_scopes) != len(actual_scopes)
+    ):
+        raise AnalysisError("release_fitness_categorical_scope_incomplete")
+    decision_hashes = {decision.digest for decision in categorical_decisions}
+    if any(
+        decision.categorical_gate_decision_sha256 not in decision_hashes
+        for decision in target_decisions
     ):
         raise AnalysisError("release_fitness_categorical_binding_invalid")
     categorical_blocked = any(decision.status != "pass" for decision in categorical_decisions)
@@ -828,10 +844,16 @@ class CategoricalGatePolicy:
 
     policy_id: str
     policy_document_sha256: str
+    required_scope_ids: tuple[str, ...] = ()
     schema_version: str = SAFETY_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
-        if not self.policy_id or self.schema_version != SAFETY_SCHEMA_VERSION:
+        if (
+            not self.policy_id
+            or self.schema_version != SAFETY_SCHEMA_VERSION
+            or any(not scope_id for scope_id in self.required_scope_ids)
+            or len(set(self.required_scope_ids)) != len(self.required_scope_ids)
+        ):
             raise SafetyAnalysisError("categorical_gate_policy_invalid")
         _require_sha256(self.policy_document_sha256, "categorical_gate_policy_hash_invalid")
 
@@ -844,6 +866,7 @@ class CategoricalGatePolicy:
             "schema_version": self.schema_version,
             "policy_id": self.policy_id,
             "policy_document_sha256": self.policy_document_sha256,
+            "required_scope_ids": list(self.required_scope_ids),
         }
 
 

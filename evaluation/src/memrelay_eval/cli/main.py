@@ -206,10 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--stage", required=True)
     report.add_argument(
-        "--input",
+        "--stage-evidence",
         required=True,
-        help="canonical frozen report-input JSON; mutable aliases are not accepted",
+        help="canonical sealed analysis report input; mutable aliases are not accepted",
     )
+    report.add_argument("--parquet-root", required=True)
+    report.add_argument("--dataset-version", required=True)
     report.add_argument(
         "--output-root",
         default="artifacts",

@@ -212,6 +212,7 @@ def _bundle(
     categorical_policy = CategoricalGatePolicy(
         policy_id="primary-categorical-policy",
         policy_document_sha256=_CATEGORICAL_POLICY_DOCUMENT,
+        required_scope_ids=(_CATEGORICAL_SCOPE,),
     )
     provisional_family = _family(mode=mode, registry=registry, seal_sha256="0" * 64)
     provisional_thresholds = FrozenThresholdPolicy(
@@ -682,6 +683,7 @@ def test_release_fitness_requires_reproduction_and_composes_typed_authority() ->
         non_target_intervals=non_target,
         family=bundle.family,
         categorical_decisions=(categorical,),
+        categorical_policy=bundle.categorical_policy,
         population_id="primary",
         model_id="model-primary",
         stratum="product",

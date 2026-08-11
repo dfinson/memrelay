@@ -40,7 +40,15 @@ from .power import (
     fixed_information_look,
 )
 from .preregistration import SealedClaimProtocol, SealedClaimRegistration
-from .reports import EvidenceLinkedReport, ReportInput, publish_report, render_report
+from .reports import (
+    EvidenceLinkedReport,
+    ReportInput,
+    ReportItem,
+    StageScope,
+    build_stage_report_input,
+    publish_report,
+    render_report,
+)
 
 __all__ = [
     "AssignmentDisclosure",
@@ -72,8 +80,11 @@ __all__ = [
     "SimultaneousInterval",
     "EvidenceLinkedReport",
     "ReportInput",
+    "ReportItem",
     "ReleaseFitnessDecision",
+    "StageScope",
     "build_diagnostics",
+    "build_stage_report_input",
     "bound_claim",
     "cluster_sensitivity",
     "cmh_sensitivity",

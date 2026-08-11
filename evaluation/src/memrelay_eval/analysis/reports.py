@@ -13,7 +13,16 @@ from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.errors import AnalysisError
 
 from .claims import BoundedClaim, ClaimScope, bound_claim
-from .gates import ClaimGateDecision, ReleaseFitnessDecision
+from .gates import (
+    CategoricalGateDecision,
+    CategoricalGatePolicy,
+    ClaimGateDecision,
+    ReleaseFitnessDecision,
+    evaluate_release_fitness,
+)
+from .intervals import SimultaneousInterval
+from .multiplicity import FrozenClaimFamily
+from .queries import FrozenDataset
 
 _REQUIRED_SECTIONS = (
     "simultaneous_intervals",
@@ -28,32 +37,98 @@ _REQUIRED_SECTIONS = (
     "gates",
 )
 REPORT_RENDERER_VERSION = "1.0.0"
-REPORT_TEMPLATE_SHA256 = sha256(b"evidence-linked-report-markdown-v1").hexdigest()
-_REPORT_SOURCE_KINDS = frozenset(
-    {
-        "completed_reconciled_product",
-        "construction",
-        "component_test",
-        "deterministic_fixture",
-        "engine_upper_bound",
-        "pilot",
-    }
-)
+REPORT_TEMPLATE_SHA256 = sha256(b"evidence-linked-report-markdown-v2").hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class StageScope:
+    """Scope common to a stage; endpoint authority remains item-local."""
+
+    protocol_sha256: str
+    population_id: str
+    model_id: str
+    stratum: str
+    history_regime: str
+    environment_sha256: str
+    source_sha256: tuple[str, ...]
+    derivation_sha256: str
+    evidence_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if not all(
+            (
+                _is_sha256(self.protocol_sha256),
+                _is_sha256(self.environment_sha256),
+                _is_sha256(self.derivation_sha256),
+                self.population_id,
+                self.model_id,
+                self.stratum,
+                self.history_regime,
+                self.source_sha256,
+                self.evidence_ids,
+            )
+        ) or not all(_is_sha256(value) for value in self.source_sha256):
+            raise AnalysisError("report_scope_invalid")
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "protocol_sha256": self.protocol_sha256,
+            "population_id": self.population_id,
+            "model_id": self.model_id,
+            "stratum": self.stratum,
+            "history_regime": self.history_regime,
+            "environment_sha256": self.environment_sha256,
+            "source_sha256": list(self.source_sha256),
+            "derivation_sha256": self.derivation_sha256,
+            "evidence_ids": list(self.evidence_ids),
+        }
+
+    def contains(self, scope: ClaimScope) -> bool:
+        return (
+            scope.protocol_sha256 == self.protocol_sha256
+            and scope.population_id == self.population_id
+            and scope.model_id == self.model_id
+            and scope.stratum == self.stratum
+            and scope.history_regime == self.history_regime
+            and scope.environment_sha256 == self.environment_sha256
+            and scope.source_sha256 == self.source_sha256
+            and scope.derivation_sha256 == self.derivation_sha256
+            and scope.evidence_ids == self.evidence_ids
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ReportItem:
+    """One table, figure, or metric with its own endpoint scope."""
+
+    item_id: str
+    scope: ClaimScope
+    value: Mapping[str, object]
+
+    def __post_init__(self) -> None:
+        if not self.item_id or not isinstance(self.value, Mapping):
+            raise AnalysisError("report_item_invalid")
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "item_id": self.item_id,
+            "scope": self.scope.to_document(),
+            "value": dict(self.value),
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class ReportInput:
-    """All report inputs are immutable authority references, never latest aliases."""
+    """Inputs are typed analysis authority; release fitness is never caller-authored."""
 
     report_id: str
     stage: str
-    scope: ClaimScope
+    scope: StageScope
     dataset_manifest_sha256: str
     table_sha256: tuple[str, ...]
     figure_sha256: tuple[str, ...]
     estimator_sha256: str
     interval_sha256: tuple[str, ...]
-    family_sha256: str
     power_sha256: str
     safety_sha256: str
     panel_sha256: str
@@ -61,19 +136,19 @@ class ReportInput:
     runtime_lock_sha256: str
     template_sha256: str
     gate_ids: tuple[str, ...]
+    family: FrozenClaimFamily
     claim_decisions: tuple[ClaimGateDecision, ...]
-    release_fitness: ReleaseFitnessDecision
-    source_kind: str
+    claim_scopes: tuple[ClaimScope, ...]
+    non_target_intervals: tuple[SimultaneousInterval, ...]
+    categorical_policy: CategoricalGatePolicy
+    categorical_decisions: tuple[CategoricalGateDecision, ...]
     reproduction_status: str
-    sections: Mapping[str, tuple[Mapping[str, object], ...]]
+    sections: Mapping[str, tuple[ReportItem, ...]]
 
     def __post_init__(self) -> None:
-        if not self.report_id or not self.stage:
-            raise AnalysisError("report_identity_missing")
         hashes = (
             self.dataset_manifest_sha256,
             self.estimator_sha256,
-            self.family_sha256,
             self.power_sha256,
             self.safety_sha256,
             self.panel_sha256,
@@ -84,60 +159,63 @@ class ReportInput:
             *self.figure_sha256,
             *self.interval_sha256,
         )
-        if not hashes or any(not _is_sha256(value) for value in hashes):
+        if not self.report_id or not self.stage or not all(_is_sha256(value) for value in hashes):
             raise AnalysisError("report_input_lineage_invalid")
-        if not self.gate_ids or any(not item for item in self.gate_ids):
-            raise AnalysisError("report_gate_ids_missing")
         if self.template_sha256 != REPORT_TEMPLATE_SHA256:
             raise AnalysisError("report_template_drift")
-        if self.source_kind == "unreconciled_trial":
-            raise AnalysisError("report_unreconciled_input_forbidden")
-        if self.source_kind not in _REPORT_SOURCE_KINDS:
-            raise AnalysisError("report_source_kind_invalid")
-        if self.reproduction_status not in {"verified", "pending", "failed"}:
-            raise AnalysisError("report_reproduction_status_invalid")
-        if not self.claim_decisions:
-            raise AnalysisError("report_claim_decisions_missing")
         if (
-            self.release_fitness.protocol_sha256 != self.scope.protocol_sha256
-            or self.release_fitness.family_sha256 != self.family_sha256
-            or self.release_fitness.derivation_sha256 != self.scope.derivation_sha256
-            or self.release_fitness.source_sha256 != self.scope.source_sha256
-            or self.release_fitness.reproduction_status != self.reproduction_status
+            not self.gate_ids
+            or not self.claim_decisions
+            or len(self.claim_decisions) != len(self.claim_scopes)
+            or set(self.sections) != set(_REQUIRED_SECTIONS)
         ):
-            raise AnalysisError("report_release_fitness_lineage_conflict")
-        if (
-            self.source_kind != "completed_reconciled_product"
-            or self.reproduction_status != "verified"
-        ) and self.release_fitness.status != "draft/unverified":
-            raise AnalysisError("report_release_fitness_promotion_forbidden")
+            raise AnalysisError("report_input_incomplete")
+        if self.family.protocol_sha256 != self.scope.protocol_sha256:
+            raise AnalysisError("report_family_scope_conflict")
         if any(
-            decision.protocol_sha256 != self.scope.protocol_sha256
+            decision.family_sha256 != self.family.family_sha256
+            or decision.protocol_sha256 != self.scope.protocol_sha256
             or decision.source_sha256 not in self.scope.source_sha256
             or decision.derivation_sha256 != self.scope.derivation_sha256
-            or decision.endpoint_id != self.scope.endpoint_id
-            for decision in self.claim_decisions
+            or decision.endpoint_id != item_scope.endpoint_id
+            or not self.scope.contains(item_scope)
+            for decision, item_scope in zip(self.claim_decisions, self.claim_scopes, strict=True)
         ):
             raise AnalysisError("report_claim_lineage_conflict")
-        if set(self.sections) != set(_REQUIRED_SECTIONS):
-            raise AnalysisError("report_sections_incomplete")
-        for name, values in self.sections.items():
-            if not values or any(not isinstance(value, Mapping) for value in values):
-                raise AnalysisError("report_section_evidence_missing", (name,))
-            for value in values:
-                if (
-                    tuple(value.get("source_sha256", ())) != self.scope.source_sha256
-                    or value.get("derivation_sha256") != self.scope.derivation_sha256
-                    or tuple(value.get("evidence_ids", ())) != self.scope.evidence_ids
-                    or value.get("protocol_sha256") != self.scope.protocol_sha256
-                    or value.get("population_id") != self.scope.population_id
-                    or value.get("model_id") != self.scope.model_id
-                    or value.get("endpoint_id") != self.scope.endpoint_id
-                    or value.get("stratum") != self.scope.stratum
-                    or value.get("history_regime") != self.scope.history_regime
-                    or value.get("environment_sha256") != self.scope.environment_sha256
-                ):
-                    raise AnalysisError("report_item_lineage_conflict", (name,))
+        if any(
+            not values or any(not self.scope.contains(item.scope) for item in values)
+            for values in self.sections.values()
+        ):
+            raise AnalysisError("report_item_lineage_conflict")
+
+    @property
+    def release_fitness(self) -> ReleaseFitnessDecision:
+        """Recompute from the exact family, claims, intervals, and categorical authority."""
+        return evaluate_release_fitness(
+            target_decisions=self.claim_decisions,
+            non_target_intervals=self.non_target_intervals,
+            family=self.family,
+            categorical_policy=self.categorical_policy,
+            categorical_decisions=self.categorical_decisions,
+            population_id=self.scope.population_id,
+            model_id=self.scope.model_id,
+            stratum=self.scope.stratum,
+            history_regime=self.scope.history_regime,
+            environment_sha256=self.scope.environment_sha256,
+            source_sha256=self.scope.source_sha256,
+            derivation_sha256=self.scope.derivation_sha256,
+            evidence_sha256=tuple(
+                sorted(
+                    {
+                        value
+                        for decision in self.categorical_decisions
+                        for value in decision.evidence_sha256
+                    }
+                )
+            )
+            or (self.safety_sha256,),
+            reproduction_status=self.reproduction_status,
+        )
 
     @property
     def input_sha256(self) -> str:
@@ -155,19 +233,27 @@ class ReportInput:
             "figure_sha256": list(self.figure_sha256),
             "estimator_sha256": self.estimator_sha256,
             "interval_sha256": list(self.interval_sha256),
-            "family_sha256": self.family_sha256,
+            "family": self.family.to_document(),
             "power_sha256": self.power_sha256,
             "safety_sha256": self.safety_sha256,
             "panel_sha256": self.panel_sha256,
             "cost_revision_sha256": self.cost_revision_sha256,
             "runtime_lock_sha256": self.runtime_lock_sha256,
             "template_sha256": self.template_sha256,
-            "gate_ids": sorted(self.gate_ids),
+            "gate_ids": list(self.gate_ids),
             "claim_decisions": [item.to_document() for item in self.claim_decisions],
-            "release_fitness": self.release_fitness.to_document(),
-            "source_kind": self.source_kind,
+            "claim_scopes": [item.to_document() for item in self.claim_scopes],
+            "non_target_intervals": [
+                _interval_document(item) for item in self.non_target_intervals
+            ],
+            "categorical_policy": self.categorical_policy.to_document(),
+            "categorical_decisions": [item.to_document() for item in self.categorical_decisions],
             "reproduction_status": self.reproduction_status,
-            "sections": {name: list(self.sections[name]) for name in sorted(self.sections)},
+            "sections": {
+                name: [item.to_document() for item in self.sections[name]]
+                for name in _REQUIRED_SECTIONS
+            },
+            "release_fitness": self.release_fitness.to_document(),
         }
 
 
@@ -178,10 +264,13 @@ class EvidenceLinkedReport:
     terminal_status: str
 
     def __post_init__(self) -> None:
-        if self.terminal_status not in {"verified", "draft/unverified"}:
+        if self.terminal_status not in {"verified", "draft/unverified"} or not self.claims:
             raise AnalysisError("report_terminal_status_invalid")
-        if not self.claims:
-            raise AnalysisError("report_claims_missing")
+        if (
+            self.terminal_status == "verified"
+            and self.report_input.release_fitness.status != "pass"
+        ):
+            raise AnalysisError("report_release_fitness_not_passed")
 
     @property
     def report_sha256(self) -> str:
@@ -192,6 +281,9 @@ class EvidenceLinkedReport:
             "schema_version": "1.0.0",
             "artifact_type": "evidence_linked_report",
             "report_input_sha256": self.report_input.input_sha256,
+            "renderer_version": REPORT_RENDERER_VERSION,
+            "runtime_lock_sha256": self.report_input.runtime_lock_sha256,
+            "template_sha256": self.report_input.template_sha256,
             "report_id": self.report_input.report_id,
             "stage": self.report_input.stage,
             "terminal_status": self.terminal_status,
@@ -202,14 +294,15 @@ class EvidenceLinkedReport:
                 "figure_sha256": list(self.report_input.figure_sha256),
                 "estimator_sha256": self.report_input.estimator_sha256,
                 "interval_sha256": list(self.report_input.interval_sha256),
-                "family_sha256": self.report_input.family_sha256,
+                "family_sha256": self.report_input.family.family_sha256,
                 "power_sha256": self.report_input.power_sha256,
                 "safety_sha256": self.report_input.safety_sha256,
                 "panel_sha256": self.report_input.panel_sha256,
                 "cost_revision_sha256": self.report_input.cost_revision_sha256,
             },
             "sections": {
-                name: list(self.report_input.sections[name]) for name in _REQUIRED_SECTIONS
+                name: [item.to_document() for item in self.report_input.sections[name]]
+                for name in _REQUIRED_SECTIONS
             },
             "claims": [item.to_document() for item in self.claims],
             "release_fitness": self.report_input.release_fitness.to_document(),
@@ -217,54 +310,60 @@ class EvidenceLinkedReport:
 
 
 def render_report(report_input: ReportInput) -> EvidenceLinkedReport:
-    """Render immutable evidence without reanalysing data or selecting a favorable view."""
     claims = tuple(
         bound_claim(
             decision,
-            report_input.scope,
-            source_kind=report_input.source_kind,
+            scope,
+            source_kind="completed_reconciled_product",
             reproduction_status=report_input.reproduction_status,
         )
-        for decision in report_input.claim_decisions
+        for decision, scope in zip(
+            report_input.claim_decisions, report_input.claim_scopes, strict=True
+        )
     )
-    status = (
-        "verified"
-        if report_input.source_kind == "completed_reconciled_product"
-        and report_input.reproduction_status == "verified"
-        else "draft/unverified"
-    )
+    status = "verified" if report_input.release_fitness.status == "pass" else "draft/unverified"
     return EvidenceLinkedReport(report_input, claims, status)
 
 
+def build_stage_report_input(dataset: FrozenDataset, sealed_input: ReportInput) -> ReportInput:
+    """Admit a sealed analysis projection only when it names this verified dataset."""
+    if sealed_input.dataset_manifest_sha256 != dataset.manifest_sha256:
+        raise AnalysisError("report_dataset_manifest_conflict")
+    manifest = dataset.manifest
+    if (
+        sealed_input.scope.protocol_sha256 not in manifest["protocol_sha256"]
+        or sealed_input.scope.population_id not in manifest["population_id"]
+        or sealed_input.scope.stratum not in manifest["stratum"]
+        or sealed_input.scope.history_regime not in manifest["history_mode"]
+    ):
+        raise AnalysisError("report_stage_scope_conflict")
+    return sealed_input
+
+
 def publish_report(report: EvidenceLinkedReport, output_root: Path | str) -> Path:
-    """Write one content-addressed local report without replacing prior report bytes."""
     document = report.to_document()
     report_bytes = canonical_bytes(document)
-    report_hash = sha256(report_bytes).hexdigest()
-    markdown = _markdown(report)
-    manifest = canonical_bytes(
-        {
-            "schema_version": "1.0.0",
-            "artifact_type": "report_manifest",
-            "report_id": report.report_input.report_id,
-            "report_sha256": report_hash,
-            "report_input_sha256": report.report_input.input_sha256,
-            "renderer_version": REPORT_RENDERER_VERSION,
-            "runtime_lock_sha256": report.report_input.runtime_lock_sha256,
-            "template_sha256": report.report_input.template_sha256,
-            "terminal_status": report.terminal_status,
-        }
-    )
     target = Path(output_root) / "reports" / report.report_input.report_id
     files = {
         "report.json": report_bytes,
-        "report.md": markdown,
-        "report-manifest.json": manifest,
+        "frozen-report-input.json": canonical_bytes(report.report_input.to_document()),
+        "report-manifest.json": canonical_bytes(
+            {
+                "schema_version": "1.0.0",
+                "artifact_type": "report_manifest",
+                "report_id": report.report_input.report_id,
+                "report_sha256": sha256(report_bytes).hexdigest(),
+                "report_input_sha256": report.report_input.input_sha256,
+                "renderer_version": REPORT_RENDERER_VERSION,
+                "runtime_lock_sha256": report.report_input.runtime_lock_sha256,
+                "template_sha256": report.report_input.template_sha256,
+                "terminal_status": report.terminal_status,
+            }
+        ),
     }
     if target.exists():
         if not target.is_dir() or any(
-            not (target / name).is_file() or (target / name).read_bytes() != data
-            for name, data in files.items()
+            (target / name).read_bytes() != data for name, data in files.items()
         ):
             raise AnalysisError("report_identity_conflict")
         return target
@@ -276,11 +375,6 @@ def publish_report(report: EvidenceLinkedReport, output_root: Path | str) -> Pat
             (temporary / name).write_bytes(data)
         temporary.replace(target)
     except OSError as error:
-        if target.is_dir() and all(
-            (target / name).is_file() and (target / name).read_bytes() == data
-            for name, data in files.items()
-        ):
-            return target
         raise AnalysisError("report_publish_failed") from error
     finally:
         if temporary.exists():
@@ -288,30 +382,18 @@ def publish_report(report: EvidenceLinkedReport, output_root: Path | str) -> Pat
     return target
 
 
-def _markdown(report: EvidenceLinkedReport) -> bytes:
-    scope = report.report_input.scope
-    lines = [
-        f"# Evidence-linked report: {report.report_input.report_id}",
-        "",
-        f"Stage: `{report.report_input.stage}`",
-        f"Terminal status: `{report.terminal_status}`",
-        "",
-        "## Tested scope",
-        "",
-        f"Population: `{scope.population_id}`",
-        f"Model: `{scope.model_id}`",
-        f"Endpoint: `{scope.endpoint_id}`",
-        f"Stratum: `{scope.stratum}`",
-        f"History regime: `{scope.history_regime}`",
-        f"Protocol: `{scope.protocol_sha256}`",
-        "",
-        "## Claims",
-        "",
-    ]
-    lines.extend(f"- **{claim.terminal_status}**: {claim.language}" for claim in report.claims)
-    lines.extend(("", "## Evidence sections", ""))
-    lines.extend(f"- `{name}`" for name in _REQUIRED_SECTIONS)
-    return ("\n".join(lines) + "\n").encode("utf-8")
+def _interval_document(interval: SimultaneousInterval) -> dict[str, object]:
+    return {
+        "endpoint_id": interval.endpoint_id,
+        "point_estimate": interval.point_estimate,
+        "lower": interval.lower,
+        "upper": interval.upper,
+        "confidence_level": interval.confidence_level,
+        "procedure": interval.procedure,
+        "family_sha256": interval.family_sha256,
+        "status": interval.status,
+        "sidedness": interval.sidedness,
+    }
 
 
 def _is_sha256(value: object) -> bool:
