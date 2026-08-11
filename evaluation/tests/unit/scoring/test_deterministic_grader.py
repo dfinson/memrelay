@@ -590,6 +590,7 @@ def test_docker_fallback_blocks_live_host_escapes(
     finally:
         listener.close()
 
+    assert _sandbox_diagnostics(store, result) == []
     assert result.terminal is GraderTerminalKind.PASSED
     docker = shutil.which("docker")
     assert docker is not None
