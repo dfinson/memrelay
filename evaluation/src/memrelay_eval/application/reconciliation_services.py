@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from argparse import Namespace
 from hashlib import sha256
 from pathlib import Path
@@ -99,16 +100,25 @@ def reconcile_stage_command(args: Namespace) -> int:
 
 
 def _write_command_manifest(path: Path, payload: bytes) -> None:
-    """Atomically persist a command result without using a process-global temp directory."""
+    """Persist an idempotent command result without replacing prior evidence."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    staged = path.with_name(f".{path.name}.{os.getpid()}.staged")
+    if path.exists():
+        if path.is_file() and path.read_bytes() == payload:
+            return
+        raise ReconciliationError("reconciliation_command_manifest_conflict")
+    staged = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.staged")
     try:
         with staged.open("xb") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(staged, path)
+        os.link(staged, path)
+    except FileExistsError:
+        if not path.is_file() or path.read_bytes() != payload:
+            raise ReconciliationError("reconciliation_command_manifest_conflict") from None
     finally:
         if staged.exists():
             staged.unlink()
+    if not path.is_file() or path.read_bytes() != payload:
+        raise ReconciliationError("reconciliation_command_manifest_publish_failed")
