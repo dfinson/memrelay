@@ -28,6 +28,7 @@ CONFORMANCE_SCHEMA_VERSION = "2.0.0"
 CONFORMANCE_LABEL = "conformance_not_efficacy_evidence"
 ProofStatus = Literal["passed", "failed", "unavailable", "interrupted"]
 ConformanceMode = Literal["unpaid_ci", "provider_qualification"]
+PYTEST_DIAGNOSTIC_LIMIT = 16 * 1024
 
 # Each identifier has one authority-owned executable probe.  A report cannot
 # substitute a source hash, checkbox, or aggregate percentage for this inventory.
@@ -314,39 +315,64 @@ def pytest_probe(test_target: str) -> ProbeExecutor:
         environment.pop("GITHUB_TOKEN", None)
         environment.pop("OPENAI_API_KEY", None)
         environment["COPILOT_SKIP_CLI_DOWNLOAD"] = "1"
-        completed = subprocess.run(
-            command,
-            cwd=context.evaluation_root,
-            env=environment,
-            capture_output=True,
-            check=False,
-        )
-        output = completed.stdout + b"\n--- stderr ---\n" + completed.stderr
         inputs = {
-            "command": canonical_bytes({"command": command, "target": test_target}),
-            "mode": canonical_bytes({"mode": context.mode}),
+            "pytest_command": canonical_bytes({"command": command, "target": test_target}),
+            "pytest_mode": canonical_bytes({"mode": context.mode}),
         }
+        input_hashes = {name: sha256(value).hexdigest() for name, value in inputs.items()}
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=context.evaluation_root,
+                env=environment,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as error:
+            launch_evidence = canonical_bytes(
+                {
+                    "command_sha256": input_hashes["pytest_command"],
+                    "exception_type": type(error).__name__,
+                    "mode_sha256": input_hashes["pytest_mode"],
+                }
+            )
+            return ProbeResult(
+                status="unavailable",
+                terminal="pytest_execution_unavailable",
+                input_hashes=input_hashes,
+                output_hashes={
+                    "pytest_launch_error": sha256(launch_evidence).hexdigest(),
+                },
+                failure_evidence_sha256=sha256(launch_evidence).hexdigest(),
+            )
+        output = completed.stdout + b"\n--- stderr ---\n" + completed.stderr
+        diagnostic = output[:PYTEST_DIAGNOSTIC_LIMIT]
         outputs = {
+            "pytest_diagnostic": diagnostic,
             "pytest_output": output,
-            "returncode": canonical_bytes({"returncode": completed.returncode}),
+            "pytest_returncode": canonical_bytes({"returncode": completed.returncode}),
         }
+        output_hashes = {name: sha256(value).hexdigest() for name, value in outputs.items()}
         if completed.returncode == 0:
             return ProbeResult(
                 status="passed",
                 terminal="pytest_contract_passed",
-                input_hashes={name: sha256(value).hexdigest() for name, value in inputs.items()},
-                output_hashes={name: sha256(value).hexdigest() for name, value in outputs.items()},
+                input_hashes=input_hashes,
+                output_hashes=output_hashes,
             )
         evidence = {
-            "command_sha256": sha256(inputs["command"]).hexdigest(),
-            "output_sha256": sha256(output).hexdigest(),
+            "command_sha256": input_hashes["pytest_command"],
+            "diagnostic_sha256": output_hashes["pytest_diagnostic"],
+            "diagnostic_truncated": len(diagnostic) < len(output),
+            "mode_sha256": input_hashes["pytest_mode"],
+            "output_sha256": output_hashes["pytest_output"],
             "returncode": completed.returncode,
         }
         return ProbeResult(
             status="failed",
             terminal="pytest_contract_failed",
-            input_hashes=_hash_documents(inputs),
-            output_hashes=_hash_documents(outputs),
+            input_hashes=input_hashes,
+            output_hashes=output_hashes,
             failure_evidence_sha256=sha256(canonical_bytes(evidence)).hexdigest(),
         )
 

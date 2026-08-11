@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from hashlib import sha256
 from pathlib import Path
 
+import memrelay_eval.evidence.conformance as conformance_evidence
 import pytest
+from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.errors import ConformancePauseError, StageControlError
 from memrelay_eval.evidence.conformance import (
+    PYTEST_DIAGNOSTIC_LIMIT,
     REQUIRED_PROOF_IDS,
     REQUIRED_STAGE_LOCKS,
     ConformanceContext,
@@ -17,6 +21,7 @@ from memrelay_eval.evidence.conformance import (
     build_conformance_report,
     failed_probe_result,
     observed_probe_result,
+    pytest_probe,
     report_bytes,
     require_enrollment_conformance,
 )
@@ -117,3 +122,62 @@ def test_noop_probe_cannot_produce_a_receipt() -> None:
     with pytest.raises(ConformancePauseError) as failure:
         _receipts(noop=True)
     assert failure.value.code == "conformance_probe_no_observation"
+
+
+def _context() -> ConformanceContext:
+    return ConformanceContext(
+        mode="unpaid_ci",
+        evaluation_root=Path(__file__).parents[2],
+        run_root=Path(__file__).parent,
+        stage_locks=_locks(),
+        bootstrap_receipt={},
+    )
+
+
+def test_real_pytest_failure_retains_typed_execution_and_bounded_diagnostics(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "test_intentional_failure.py"
+    target.write_text(
+        "def test_intentional_failure():\n"
+        "    print('x' * 20000)\n"
+        "    assert False, 'intentional probe failure'\n",
+        encoding="utf-8",
+    )
+
+    result = pytest_probe(str(target))(_context())
+
+    command = (sys.executable, "-m", "pytest", "-q", str(target))
+    assert result.status == "failed"
+    assert result.terminal == "pytest_contract_failed"
+    assert result.failure_evidence_sha256 is not None
+    assert (
+        result.input_hashes["pytest_command"]
+        == sha256(canonical_bytes({"command": command, "target": str(target)})).hexdigest()
+    )
+    assert (
+        result.input_hashes["pytest_mode"]
+        == sha256(canonical_bytes({"mode": "unpaid_ci"})).hexdigest()
+    )
+    assert (
+        result.output_hashes["pytest_returncode"]
+        == sha256(canonical_bytes({"returncode": 1})).hexdigest()
+    )
+    assert result.output_hashes["pytest_diagnostic"] != result.output_hashes["pytest_output"]
+    assert PYTEST_DIAGNOSTIC_LIMIT == 16 * 1024
+
+
+def test_pytest_launch_exception_is_unavailable_not_a_test_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(*_: object, **__: object) -> object:
+        raise OSError("pytest executable unavailable")
+
+    monkeypatch.setattr(conformance_evidence.subprocess, "run", unavailable)
+
+    result = pytest_probe("tests/unit/catalog/test_validation.py")(_context())
+
+    assert result.status == "unavailable"
+    assert result.terminal == "pytest_execution_unavailable"
+    assert result.failure_evidence_sha256 == result.output_hashes["pytest_launch_error"]
+    assert "pytest_returncode" not in result.output_hashes
