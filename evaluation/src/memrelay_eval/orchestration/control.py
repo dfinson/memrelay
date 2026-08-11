@@ -60,6 +60,10 @@ from memrelay_eval.domain.ports import (
     TelemetryPort,
     TreatmentPort,
 )
+from memrelay_eval.orchestration.limits import (
+    CircuitBreakerAdmissionController,
+    CircuitBreakerReason,
+)
 
 if TYPE_CHECKING:
     from memrelay_eval.orchestration.attempt import AttemptTerminalRecorder, ProductTreatmentAttempt
@@ -71,12 +75,13 @@ def build_product_treatment_attempt(
     treatment: TreatmentPort,
     terminal_recorder: AttemptTerminalRecorder,
     telemetry: TelemetryPort,
+    circuit_breaker: CircuitBreakerAdmissionController | None = None,
 ) -> ProductTreatmentAttempt:
     """Compose the product boundary without replacing Inspect or lifecycle authority."""
 
     from memrelay_eval.orchestration.attempt import ProductTreatmentAttempt
 
-    return ProductTreatmentAttempt(treatment, terminal_recorder, telemetry)
+    return ProductTreatmentAttempt(treatment, terminal_recorder, telemetry, circuit_breaker)
 
 
 class DirectEngineGraphClaimRegistry:
@@ -115,10 +120,12 @@ class CrossRepositoryAdmissionController:
         *,
         authority: RepositoryAuthorizationPort | None = None,
         evidence_sink: DenialEvidencePort | None = None,
+        circuit_breaker: CircuitBreakerAdmissionController | None = None,
     ) -> None:
         self._deny_by_default = DenyByDefaultRepositoryAuthorization()
         self._authority = authority
         self._evidence_sink = evidence_sink or InMemoryDenialEvidenceSink()
+        self._circuit_breaker = circuit_breaker
         self._admission_lock = Lock()
 
     def authorize_at_entry(self, request: RepositoryAccessRequest, now: datetime) -> None:
@@ -134,12 +141,14 @@ class CrossRepositoryAdmissionController:
 
         self._authorize_local_policy(request, now)
         if self._authority is not None:
-            result, operation_result = self._admit_and_start(request, now, operation)
+            result, operation_result = self._admit_and_start(
+                request, now, lambda: self._start_with_breaker(operation)
+            )
             self._deny_if_needed(request, result)
             return cast(_Result, operation_result)
         with self._admission_lock:
             self._authorize_local_policy(request, now)
-            return operation()
+            return cast(_Result, self._start_with_breaker(operation))
 
     async def start_repository_operation_async(
         self,
@@ -151,10 +160,12 @@ class CrossRepositoryAdmissionController:
 
         self._authorize_local_policy(request, now)
         if self._authority is not None:
-            result, operation_result = await self._admit_and_start_async(request, now, operation)
+            result, operation_result = await self._admit_and_start_async(
+                request, now, lambda: self._start_with_breaker_async(operation)
+            )
             self._deny_if_needed(request, result)
             return cast(_Result, operation_result)
-        return await operation()
+        return await self._start_with_breaker_async(operation)
 
     def _authorize(self, request: RepositoryAccessRequest, now: datetime) -> None:
         self._authorize_local_policy(request, now)
@@ -235,7 +246,28 @@ class CrossRepositoryAdmissionController:
     def _deny(self, request: RepositoryAccessRequest, result: AuthorizationResult) -> None:
         evidence = DenialEvidence.from_result(request, result)
         self._evidence_sink.append_denial(evidence)
+        if (
+            self._circuit_breaker is not None
+            and result.reason is GovernanceDenialReason.AUTHORIZATION_REVOKED
+        ):
+            self._circuit_breaker.trip(CircuitBreakerReason.GOVERNANCE_REVOKED)
         raise CrossRepositoryDeniedError(result.reason)
+
+    def _start_with_breaker(self, operation: Callable[[], _Result]) -> _Result:
+        if self._circuit_breaker is not None:
+            return cast(_Result, self._circuit_breaker.start_external_operation(operation))
+        return operation()
+
+    async def _start_with_breaker_async(
+        self, operation: Callable[[], Awaitable[_Result]]
+    ) -> _Result:
+        if self._circuit_breaker is None:
+            return await operation()
+        claim_id = self._circuit_breaker.claim_external_start()
+        try:
+            return await operation()
+        finally:
+            self._circuit_breaker.complete_external_start(claim_id)
 
 
 class LockRepository:

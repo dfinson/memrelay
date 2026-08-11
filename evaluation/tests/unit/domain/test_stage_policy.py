@@ -290,3 +290,56 @@ def test_headroom_rejects_boolean_value_with_typed_error() -> None:
     with pytest.raises(StageControlError) as failure:
         stage_headroom_status({"usd": True}, {"usd": 20})
     assert failure.value.code == "stage_headroom_value_not_numeric"
+
+
+@pytest.mark.parametrize("value", (float("nan"), float("inf"), float("-inf")))
+def test_headroom_rejects_nonfinite_value_with_typed_error(value: float) -> None:
+    with pytest.raises(StageControlError) as failure:
+        stage_headroom_status({"usd": value}, {"usd": 20})
+    assert failure.value.code == "stage_headroom_value_not_numeric"
+
+
+def test_paid_execution_is_required_for_stage_admission() -> None:
+    stage_id = StageId.new()
+    protocol_id = ProtocolId.new()
+    predecessor = StageExitBundle(
+        stage_id=StageId.new(),
+        stage_kind=StageKind.CONFORMANCE,
+        protocol_id=ProtocolId.new(),
+        entry_bundle_sha256=HASH_A,
+        preceding_exit_sha256=HASH_B,
+        status=StageState.ACCEPTED,
+        reconciliation_sha256=HASH_A,
+        inclusion_decision_sha256=HASH_B,
+        authorization_id=StageAuthorizationId.new(),
+    )
+    entry = _entry_bundle(
+        stage_id=stage_id,
+        protocol_id=protocol_id,
+        preceding=predecessor.digest,
+    )
+    authorization = StageAuthorization(
+        authorization_id=StageAuthorizationId.new(),
+        stage_id=stage_id,
+        stage_kind=StageKind.INTEGRATION,
+        protocol_id=protocol_id,
+        entry_bundle_sha256=entry.digest,
+        envelope_sha256=entry.envelope_sha256,
+        authorizer_id="operator-1",
+        authorizer_role="operator",
+        valid_from=NOW - timedelta(hours=1),
+        valid_until=NOW + timedelta(hours=1),
+        paid_execution=False,
+    )
+
+    from memrelay_eval.orchestration.stages import authorize_stage_entry
+
+    with pytest.raises(StageAuthorizationError) as failure:
+        authorize_stage_entry(
+            stage_kind=StageKind.INTEGRATION,
+            entry_bundle=entry,
+            predecessor_exit=predecessor,
+            authorization=authorization,
+            now=NOW,
+        )
+    assert failure.value.code == "paid_execution_required"

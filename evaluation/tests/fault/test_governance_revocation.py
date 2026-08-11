@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from threading import Lock
+from threading import Event, Lock, Thread
 
 import pytest
-from memrelay_eval.domain.errors import CrossRepositoryDeniedError
+from memrelay_eval.domain.errors import CrossRepositoryDeniedError, StageControlError
 from memrelay_eval.domain.governance import (
     AuthorizationDecision,
     AuthorizationResult,
@@ -24,8 +24,14 @@ from memrelay_eval.domain.ids import (
     PurposeId,
     PurposeVersionId,
     RepositoryId,
+    RunId,
 )
 from memrelay_eval.orchestration.control import CrossRepositoryAdmissionController
+from memrelay_eval.orchestration.limits import (
+    CircuitBreakerAdmissionController,
+    CircuitBreakerReason,
+    FrozenLimitEnvelope,
+)
 
 
 class RevocableAuthority:
@@ -181,3 +187,86 @@ def test_revocation_before_async_start_prevents_repository_operation() -> None:
 
     assert failure.value.reason is GovernanceDenialReason.AUTHORIZATION_REVOKED
     assert operations_started == []
+
+
+def test_revoked_circuit_breaker_prevents_later_repository_admission() -> None:
+    run_id = RunId.new()
+    breaker = CircuitBreakerAdmissionController(
+        stage_id="stage-1",
+        stage_envelope=FrozenLimitEnvelope(
+            scope="stage",
+            source_sha256="a" * 64,
+            limits={"copilot_tokens": 10},
+        ),
+        run_envelopes={
+            run_id: FrozenLimitEnvelope(
+                scope="run",
+                source_sha256="b" * 64,
+                limits={"copilot_tokens": 10},
+            )
+        },
+    )
+    breaker.trip(CircuitBreakerReason.GOVERNANCE_REVOKED)
+    controller = CrossRepositoryAdmissionController(
+        authority=RevocableAuthority(),
+        circuit_breaker=breaker,
+    )
+    operations_started: list[str] = []
+
+    with pytest.raises(StageControlError) as failure:
+        controller.start_repository_operation(
+            ordinary_request(),
+            datetime(2026, 8, 5, tzinfo=UTC),
+            lambda: operations_started.append("started"),
+        )
+
+    assert failure.value.code == "circuit_breaker_new_attempts_stopped"
+    assert operations_started == []
+
+
+def test_trip_after_external_start_claim_drains_existing_operation() -> None:
+    run_id = RunId.new()
+    breaker = CircuitBreakerAdmissionController(
+        stage_id="stage-1",
+        stage_envelope=FrozenLimitEnvelope(
+            scope="stage",
+            source_sha256="a" * 64,
+            limits={"copilot_tokens": 10},
+        ),
+        run_envelopes={
+            run_id: FrozenLimitEnvelope(
+                scope="run",
+                source_sha256="b" * 64,
+                limits={"copilot_tokens": 10},
+            )
+        },
+    )
+    controller = CrossRepositoryAdmissionController(circuit_breaker=breaker)
+    body_entered = Event()
+    allow_completion = Event()
+    operations_started: list[str] = []
+
+    def operation() -> None:
+        operations_started.append("started")
+        body_entered.set()
+        assert allow_completion.wait(timeout=5)
+
+    worker = Thread(
+        target=lambda: controller.start_repository_operation(
+            ordinary_request(),
+            datetime(2026, 8, 5, tzinfo=UTC),
+            operation,
+        )
+    )
+    worker.start()
+    assert body_entered.wait(timeout=5)
+
+    breaker.trip(CircuitBreakerReason.GOVERNANCE_REVOKED)
+
+    assert breaker.state.value == "draining"
+    assert breaker.status_projection()["active_external_operations"] == 1
+    allow_completion.set()
+    worker.join(timeout=5)
+    assert worker.is_alive() is False
+    assert operations_started == ["started"]
+    assert breaker.state.value == "closed"

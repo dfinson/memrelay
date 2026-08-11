@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 from memrelay_eval.domain.engine import FrameworkConfiguration, StratumAuthority
 from memrelay_eval.domain.entities import (
@@ -16,6 +17,7 @@ from memrelay_eval.domain.errors import (
     AttemptExecutionClaimDeniedError,
     AttemptTerminalAlreadyRecordedError,
     InternalRetryLimitExceededError,
+    StageControlError,
 )
 from memrelay_eval.domain.ids import AttemptId, RunId
 from memrelay_eval.domain.intents import IntentAck, IntentRejection, LedgerIntentType
@@ -24,6 +26,11 @@ from memrelay_eval.domain.states import AttemptTerminalKind, InternalRetrySubsys
 
 from .stages import verify_direct_engine_stage
 from .worker import WorkerIntentEmitter
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from .limits import CircuitBreakerAdmissionController
 
 
 def controlled_restore_failure_terminal(
@@ -184,15 +191,34 @@ class ProductTreatmentAttempt:
         treatment: TreatmentPort,
         terminal_recorder: AttemptTerminalRecorder,
         telemetry: TelemetryPort,
+        circuit_breaker: CircuitBreakerAdmissionController | None = None,
     ) -> None:
         self._treatment = treatment
         self._terminal_recorder = terminal_recorder
         self._telemetry = telemetry
+        self._circuit_breaker = circuit_breaker
 
-    async def provision(self, request: object, *, attempt_id: AttemptId, run_id: RunId) -> object:
+    async def provision(
+        self,
+        request: object,
+        *,
+        attempt_id: AttemptId,
+        run_id: RunId,
+        reserved_usage: Mapping[str, int | float] | None = None,
+    ) -> object:
         """Claim before any daemon process or MCP boundary can be exposed."""
 
-        self._terminal_recorder.claim_execution(attempt_id, run_id)
+        if self._circuit_breaker is None:
+            self._terminal_recorder.claim_execution(attempt_id, run_id)
+        else:
+            if reserved_usage is None:
+                raise StageControlError("circuit_breaker_reservation_required")
+            self._circuit_breaker.admit_and_claim(
+                attempt_id,
+                run_id,
+                reserved_usage,
+                lambda: self._terminal_recorder.claim_execution(attempt_id, run_id),
+            )
         self._telemetry.start_attempt({"attempt_id": str(attempt_id)})
         return await self._treatment.provision(request)
 
