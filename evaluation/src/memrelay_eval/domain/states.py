@@ -116,3 +116,4 @@ class LedgerIntentKind(StrEnum):
     INCLUSION_DECISION = "inclusion_decision"
     AUTHORITY_CONFLICT = "authority_conflict"
     COST_LEDGER = "cost_ledger"
+    MONETARY_VIEW = "monetary_view"

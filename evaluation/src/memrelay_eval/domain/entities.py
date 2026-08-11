@@ -384,6 +384,18 @@ class CostLedgerLink:
 
 
 @dataclass(frozen=True, slots=True)
+class MonetaryViewLink:
+    """Thin query projection for one immutable derived monetary-view artifact."""
+
+    monetary_view_id: str
+    run_id: RunId
+    attempt_id: AttemptId
+    category: str
+    artifact_ref: ArtifactRef
+    price_table_ref: ArtifactRef
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactRef:
     """Immutable content-addressed bytes."""
 

@@ -28,6 +28,7 @@ from memrelay_eval.domain.entities import (
     CostLedgerLink,
     InclusionDecision,
     InternalRetryRecord,
+    MonetaryViewLink,
     RetryAuthorization,
     RunTransition,
 )
@@ -62,6 +63,7 @@ from memrelay_eval.domain.intents import (
     LedgerEvent,
     LedgerIntent,
     LedgerIntentType,
+    MonetaryViewIntent,
     RejectedIntentEvidence,
     RetryLineageIntent,
     RunTransitionIntent,
@@ -394,6 +396,42 @@ class SqliteLedger:
             for row in rows
         )
 
+    def monetary_views_for(self, attempt_id: AttemptId) -> tuple[MonetaryViewLink, ...]:
+        """Return append-only repricing views without choosing a mutable latest revision."""
+
+        self._ensure_open()
+        with self.__lock:
+            rows = self.__connection.execute(
+                """
+                SELECT monetary_view_id, run_id, attempt_id, category,
+                       artifact_id, artifact_sha256, size_bytes,
+                       price_table_artifact_id, price_table_sha256, price_table_size_bytes
+                FROM monetary_views
+                WHERE attempt_id = ?
+                ORDER BY sequence
+                """,
+                (str(attempt_id),),
+            ).fetchall()
+        return tuple(
+            MonetaryViewLink(
+                row["monetary_view_id"],
+                RunId(row["run_id"]),
+                AttemptId(row["attempt_id"]),
+                row["category"],
+                ArtifactRef(
+                    ArtifactId(row["artifact_id"]),
+                    row["artifact_sha256"],
+                    row["size_bytes"],
+                ),
+                ArtifactRef(
+                    ArtifactId(row["price_table_artifact_id"]),
+                    row["price_table_sha256"],
+                    row["price_table_size_bytes"],
+                ),
+            )
+            for row in rows
+        )
+
     def _persist_rejection(
         self, intent: LedgerIntent, digest: str, reason_code: str, occurred_at: str
     ) -> IntentRejection:
@@ -579,6 +617,48 @@ class SqliteLedger:
                     str(intent.artifact_ref.artifact_id),
                     intent.artifact_ref.sha256,
                     intent.artifact_ref.size_bytes,
+                    occurred_at,
+                ),
+            )
+            return
+        if isinstance(intent, MonetaryViewIntent):
+            self._require_attempt_for_run(intent.attempt_id, intent.run_id)
+            self._require_source_attempt_for_run(intent.metadata.source_attempt_id, intent.run_id)
+            if intent.metadata.source_attempt_id != intent.attempt_id:
+                raise _RejectIntent("monetary_view_attempt_source_mismatch")
+            if any(
+                reference not in intent.metadata.evidence_refs
+                for reference in (
+                    intent.artifact_ref,
+                    intent.price_table_ref,
+                    intent.quantity_artifact_ref,
+                )
+            ):
+                raise _RejectIntent("monetary_view_artifact_not_evidence")
+            self.__connection.execute(
+                """
+                INSERT INTO monetary_views (
+                    intent_id, monetary_view_id, run_id, attempt_id, category,
+                    artifact_id, artifact_sha256, size_bytes,
+                    price_table_artifact_id, price_table_sha256, price_table_size_bytes,
+                    quantity_artifact_id, quantity_sha256, quantity_size_bytes, occurred_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(intent.intent_id),
+                    str(intent.monetary_view_id),
+                    str(intent.run_id),
+                    str(intent.attempt_id),
+                    intent.category,
+                    str(intent.artifact_ref.artifact_id),
+                    intent.artifact_ref.sha256,
+                    intent.artifact_ref.size_bytes,
+                    str(intent.price_table_ref.artifact_id),
+                    intent.price_table_ref.sha256,
+                    intent.price_table_ref.size_bytes,
+                    str(intent.quantity_artifact_ref.artifact_id),
+                    intent.quantity_artifact_ref.sha256,
+                    intent.quantity_artifact_ref.size_bytes,
                     occurred_at,
                 ),
             )

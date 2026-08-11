@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/price-table-1.0.0.json",
+  "title": "Frozen Price Table",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "version", "provider", "product", "model", "effective_from", "effective_to", "billing_region", "currency", "unit", "scale", "tax_discount_credit_treatment", "source_authority", "source_ref", "source_sha256", "retrieved_at", "conversion_table_version", "conversion_table_sha256", "conversion_table_ref", "rates"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "version": {"pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "provider": {"const": "openai"},
+    "product": {"const": "framework_openai_api"},
+    "model": {"pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "effective_from": {"format": "date-time"},
+    "effective_to": {"format": "date-time"},
+    "billing_region": {"pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "currency": {"const": "USD"},
+    "unit": {"const": "token"},
+    "scale": {"const": 1000000},
+    "tax_discount_credit_treatment": {"pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "source_authority": {"enum": ["published_price_table", "native_invoice"]},
+    "source_ref": {"pattern": "^[a-z][a-z0-9_.:-]{0,127}$"},
+    "source_sha256": {"pattern": "^[a-f0-9]{64}$"},
+    "retrieved_at": {"format": "date-time"},
+    "conversion_table_version": {"const": "not_applicable"},
+    "conversion_table_sha256": {"const": "not_applicable"},
+    "conversion_table_ref": {"const": "not_applicable"},
+    "rates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["unit", "rate_per_scale"],
+        "properties": {
+          "unit": {"enum": ["input_token", "cached_input_token", "output_token"]},
+          "rate_per_scale": {"pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"}
+        }
+      }
+    }
+  }
+}

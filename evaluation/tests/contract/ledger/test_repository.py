@@ -290,7 +290,7 @@ def test_sqlite_ledger_records_normalized_append_only_lifecycle_and_refs(tmp_pat
     ]
     assert ledger.sqlite_settings() == {"journal_mode": "wal", "foreign_keys": True}
     assert ledger.integrity_check() == "ok"
-    assert ledger.schema_version == 5
+    assert ledger.schema_version == 6
     assert ledger.migration_journal == tuple(
         (migration.version, migration.digest) for migration in MIGRATIONS
     )

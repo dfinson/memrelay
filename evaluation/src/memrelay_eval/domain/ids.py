@@ -117,6 +117,12 @@ class CostEntryId(OpaqueId):
     prefix = "cost"
 
 
+class MonetaryViewId(OpaqueId):
+    """Opaque identity of one immutable derived monetary view."""
+
+    prefix = "money"
+
+
 class RuntimeId(OpaqueId):
     prefix = "runtime"
 
