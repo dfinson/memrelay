@@ -8,12 +8,13 @@ import fnmatch
 import functools
 import json
 import math
-import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import unicodedata
+import uuid
 from collections.abc import Mapping
 from hashlib import sha256
 from pathlib import Path
@@ -39,6 +40,13 @@ from memrelay_eval.domain.errors import (
 from memrelay_eval.domain.ports import ArtifactStorePort
 from memrelay_eval.domain.states import GraderTerminalKind
 from memrelay_eval.evidence.secret_scan import scan_secret_boundaries
+
+_DOCKER_PYTHON_IMAGE = (
+    "docker.io/library/python:3.13.15-slim-bookworm"
+    "@sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48"
+)
+_DOCKER_PYTHON_DIGEST = "sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48"
+_DOCKER_CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
 
 
 class CredentialFreeExecutableGrader:
@@ -603,6 +611,167 @@ def _network_sandbox_command(
     raise NetworkSandboxUnavailableError()
 
 
+def _docker_sandbox_create_command(
+    command: tuple[str, ...],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    container_name: str,
+) -> tuple[str, ...]:
+    """Build the one pinned Docker profile used for both probe and candidate."""
+    docker = shutil.which("docker")
+    if docker is None:
+        raise NetworkSandboxUnavailableError()
+    input_root = cwd.parent.resolve()
+    container_command = _remap_docker_command(command, input_root)
+    environment_args = tuple(
+        option
+        for name, value in sorted(environment.items())
+        for option in ("--env", f"{name}={value}")
+    )
+    return (
+        docker,
+        "create",
+        "--name",
+        container_name,
+        "--network",
+        "none",
+        "--user",
+        "65534:65534",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--read-only",
+        "--pids-limit",
+        "64",
+        "--tmpfs",
+        "/tmp:rw,noexec,nosuid,nodev,size=16m",
+        "--tmpfs",
+        "/work:rw,noexec,nosuid,nodev,size=16m",
+        "--mount",
+        f"type=bind,src={input_root},dst=/inputs,readonly",
+        "--workdir",
+        f"/inputs/{cwd.name}",
+        *environment_args,
+        _DOCKER_PYTHON_IMAGE,
+        *container_command,
+    )
+
+
+def _remap_docker_command(command: tuple[str, ...], input_root: Path) -> tuple[str, ...]:
+    remapped: list[str] = []
+    for value in command:
+        path = Path(value)
+        if path.is_absolute():
+            try:
+                remapped.append(str(Path("/inputs") / path.resolve().relative_to(input_root)))
+                continue
+            except ValueError:
+                if path.resolve() == Path(sys.executable).resolve():
+                    remapped.append("/usr/local/bin/python3.13")
+                    continue
+        remapped.append(value)
+    return tuple(remapped)
+
+
+@functools.lru_cache(maxsize=1)
+def _require_pinned_docker_image() -> None:
+    """Pull and verify the immutable Python runtime before container creation."""
+    docker = shutil.which("docker")
+    if docker is None:
+        raise NetworkSandboxUnavailableError()
+    try:
+        pulled = subprocess.run(
+            (docker, "pull", _DOCKER_PYTHON_IMAGE),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        inspected = subprocess.run(
+            (docker, "image", "inspect", "--format", "{{json .RepoDigests}}", _DOCKER_PYTHON_IMAGE),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        if pulled.returncode != 0 or inspected.returncode != 0:
+            raise NetworkSandboxUnavailableError()
+        digests = json.loads(inspected.stdout)
+        if not isinstance(digests, list) or not any(
+            isinstance(item, str) and item.endswith(f"@{_DOCKER_PYTHON_DIGEST}") for item in digests
+        ):
+            raise NetworkSandboxUnavailableError()
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        raise NetworkSandboxUnavailableError() from error
+
+
+def _run_docker_sandbox(
+    command: tuple[str, ...],
+    *,
+    cwd: Path,
+    environment: Mapping[str, str],
+    timeout_seconds: float,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run the shared Docker profile and force-remove its exact created container."""
+    try:
+        _require_pinned_docker_image()
+        docker = shutil.which("docker")
+        if docker is None:
+            raise NetworkSandboxUnavailableError()
+        container_name = f"memrelay-grader-{uuid.uuid4().hex}"
+        created = subprocess.run(
+            _docker_sandbox_create_command(
+                command,
+                cwd=cwd,
+                environment=environment,
+                container_name=container_name,
+            ),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise NetworkSandboxUnavailableError() from error
+    container_id = created.stdout.decode("ascii", errors="ignore").strip()
+    if created.returncode != 0 or not _DOCKER_CONTAINER_ID.fullmatch(container_id):
+        raise NetworkSandboxUnavailableError()
+    try:
+        return subprocess.run(
+            (docker, "start", "--attach", container_id),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        subprocess.run(
+            (docker, "kill", container_id),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        return subprocess.CompletedProcess(
+            (docker, "start", "--attach", container_id),
+            returncode=124,
+            stdout=error.stdout or b"",
+            stderr=(error.stderr or b"") + b"\ngraded process timed out",
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise NetworkSandboxUnavailableError() from error
+    finally:
+        subprocess.run(
+            (docker, "rm", "--force", container_id),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+
+
 def _run_python_in_network_sandbox(
     command: tuple[str, ...],
     *,
@@ -611,6 +780,13 @@ def _run_python_in_network_sandbox(
     timeout_seconds: float,
     kind: str,
 ) -> subprocess.CompletedProcess[bytes]:
+    if kind == "docker":
+        return _run_docker_sandbox(
+            command,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=timeout_seconds,
+        )
     sandboxed = _network_sandbox_command(command, cwd=cwd, kind=kind)
     try:
         return subprocess.run(
@@ -638,7 +814,7 @@ def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
     if sys.platform != "linux":
         raise NetworkSandboxUnavailableError()
     probe = (str(Path(sys.executable).resolve()), "-c", "pass")
-    for kind in ("bubblewrap", "sudo_bubblewrap", "unshare"):
+    for kind in ("bubblewrap", "sudo_bubblewrap"):
         try:
             completed = subprocess.run(
                 _network_sandbox_command(probe, cwd=cwd, kind=kind),
@@ -653,6 +829,18 @@ def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
             continue
         if completed.returncode == 0:
             return kind
+    try:
+        completed = _run_docker_sandbox(
+            probe,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=5,
+        )
+    except NetworkSandboxUnavailableError:
+        pass
+    else:
+        if completed.returncode == 0:
+            return "docker"
     raise NetworkSandboxUnavailableError()
 
 
@@ -783,10 +971,8 @@ def _resolve_command(
 
 
 def _minimal_grader_environment(root: Path) -> dict[str, str]:
-    runtime = {"PATH": os.defpath, "TEMP": str(root), "TMP": str(root)}
-    if os.name == "nt":
-        runtime["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")
-        runtime["COMSPEC"] = os.environ.get("COMSPEC", r"C:\Windows\System32\cmd.exe")
+    del root
+    runtime = {"PATH": "/usr/local/bin:/usr/bin:/bin", "TEMP": "/tmp", "TMP": "/tmp"}
     environment = build_process_environment(ProcessRole.GRADER, runtime_environment=runtime)
     environment.update(
         {

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import inspect
 import json
+import shutil
 import socket
 import subprocess
 import sys
@@ -395,7 +396,7 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
     host_sentinel = tmp_path / "host-sentinel.txt"
     host_sentinel.write_text("must not be readable", encoding="utf-8")
     script = (
-        "import json, os, pathlib, socket, subprocess, sys\n"
+        "import json, os, pathlib, shutil, socket, subprocess, sys\n"
         f"port={port}\n"
         f"host_sentinel={str(host_sentinel)!r}\n"
         "def denied(operation):\n"
@@ -414,17 +415,19 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "ipv6=denied(lambda: socket.create_connection(('::1', port), timeout=0.2)) "
         "if socket.has_ipv6 else True\n"
         "dns=denied(lambda: socket.getaddrinfo('example.invalid', port))\n"
-        "sudo=subprocess.run(['sudo','-n','true'], stdout=subprocess.DEVNULL, "
-        "stderr=subprocess.DEVNULL).returncode != 0\n"
-        "nsenter=subprocess.run(['nsenter','--net=/proc/1/ns/net','true'], "
+        "sudo=not shutil.which('sudo') or subprocess.run(['sudo','-n','true'], "
         "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0\n"
+        "nsenter=not shutil.which('nsenter') or subprocess.run(['nsenter','--net=/proc/1/ns/net',"
+        "'true'], "
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode != 0\n"
+        "docker=not os.path.exists('/var/run/docker.sock')\n"
         "host_file=not os.path.exists(host_sentinel)\n"
         "input_readable=pathlib.Path(sys.argv[2], 'app.py').read_text() == 'answer = 2\\n'\n"
         "input_immutable=not os.access(sys.argv[2], os.W_OK)\n"
         "unprivileged=os.geteuid() == 65534\n"
         "checks={'direct':direct,'connect_ex':connect_ex,'child':child,'ipv6':ipv6,'dns':dns,"
         "'sudo':sudo,'nsenter':nsenter,'host_file':host_file,'input_readable':input_readable,"
-        "'input_immutable':input_immutable,'unprivileged':unprivileged}\n"
+        "'input_immutable':input_immutable,'unprivileged':unprivileged,'docker':docker}\n"
         "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
         "'hidden_tests':True,'continuous_score':1.0,'objective_components':"
         "{name:float(value) for name,value in checks.items()}},"
@@ -443,6 +446,7 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "child": 1.0,
         "connect_ex": 1.0,
         "direct": 1.0,
+        "docker": 1.0,
         "dns": 1.0,
         "host_file": 1.0,
         "input_immutable": 1.0,
@@ -453,6 +457,149 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         "unprivileged": 1.0,
     }
     assert accepted == []
+
+
+def test_docker_profile_is_pinned_and_restricted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        executable.shutil, "which", lambda tool: "/usr/bin/docker" if tool == "docker" else None
+    )
+
+    command = executable._docker_sandbox_create_command(
+        (str(Path(sys.executable).resolve()), str(tmp_path / "native_tests.py")),
+        cwd=tmp_path / "snapshot",
+        environment={"HOME": "/tmp", "PATH": "/usr/local/bin:/usr/bin:/bin"},
+        container_name="memrelay-grader-fixture",
+    )
+
+    assert executable._DOCKER_PYTHON_IMAGE in command
+    assert "@sha256:" in executable._DOCKER_PYTHON_IMAGE
+    assert command[command.index("--network") : command.index("--network") + 2] == (
+        "--network",
+        "none",
+    )
+    assert command[command.index("--user") : command.index("--user") + 2] == (
+        "--user",
+        "65534:65534",
+    )
+    assert command[command.index("--cap-drop") : command.index("--cap-drop") + 2] == (
+        "--cap-drop",
+        "ALL",
+    )
+    assert command[command.index("--security-opt") : command.index("--security-opt") + 2] == (
+        "--security-opt",
+        "no-new-privileges:true",
+    )
+    assert "--read-only" in command
+    assert command[command.index("--pids-limit") : command.index("--pids-limit") + 2] == (
+        "--pids-limit",
+        "64",
+    )
+    assert "/var/run/docker.sock" not in command
+    assert str(Path.home()) not in command
+    assert str(Path("/")) not in command
+    assert command.count("--mount") == 1
+    assert command.count("--tmpfs") == 2
+
+
+def test_docker_timeout_removes_exact_created_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    container_id = "a" * 64
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(executable, "_require_pinned_docker_image", lambda: None)
+    monkeypatch.setattr(
+        executable.shutil, "which", lambda tool: "/usr/bin/docker" if tool == "docker" else None
+    )
+
+    def run(command: tuple[str, ...], **_: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append(command)
+        if command[1] == "create":
+            return subprocess.CompletedProcess(command, 0, stdout=f"{container_id}\n".encode())
+        if command[1] == "start":
+            raise subprocess.TimeoutExpired(command, 1, output=b"partial", stderr=b"late")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(executable.subprocess, "run", run)
+
+    completed = executable._run_docker_sandbox(
+        (str(Path(sys.executable).resolve()), "-c", "pass"),
+        cwd=tmp_path,
+        environment={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+        timeout_seconds=1,
+    )
+
+    assert completed.returncode == 124
+    assert ("/usr/bin/docker", "kill", container_id) in calls
+    assert ("/usr/bin/docker", "rm", "--force", container_id) in calls
+
+
+@pytest.mark.skipif(shutil.which("docker") is None, reason="Docker sandbox unavailable")
+def test_docker_fallback_blocks_live_host_escapes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    listener.settimeout(1.0)
+    port = listener.getsockname()[1]
+    host_sentinel = tmp_path / "host-sentinel.txt"
+    host_sentinel.write_text("must not be readable", encoding="utf-8")
+    script = (
+        "import json, os, pathlib, shutil, socket, subprocess, sys\n"
+        f"port={port}\n"
+        f"host_sentinel={str(host_sentinel)!r}\n"
+        "def denied(operation):\n"
+        "    try:\n"
+        "        operation()\n"
+        "    except OSError:\n"
+        "        return True\n"
+        "    return False\n"
+        "direct=denied(lambda: socket.create_connection(('127.0.0.1',port),timeout=0.2))\n"
+        "probe=socket.socket(socket.AF_INET,socket.SOCK_STREAM)\n"
+        "connect_ex=probe.connect_ex(('127.0.0.1',port)) != 0\n"
+        "probe.close()\n"
+        "child=subprocess.run([sys.executable,'-c',"
+        '\'import socket,sys;sys.exit(0 if socket.socket().connect_ex(("127.0.0.1",'
+        "+str(port)+')) else 1)']).returncode == 0\n"
+        "ipv6=denied(lambda:socket.create_connection(('::1',port),timeout=0.2)) "
+        "if socket.has_ipv6 else True\n"
+        "dns=denied(lambda:socket.getaddrinfo('example.invalid',port))\n"
+        "docker=not shutil.which('docker') and not os.path.exists('/var/run/docker.sock')\n"
+        "sudo=not shutil.which('sudo')\n"
+        "nsenter=not shutil.which('nsenter')\n"
+        "host_file=not os.path.exists(host_sentinel)\n"
+        "input=pathlib.Path(sys.argv[2],'app.py')\n"
+        "input_readable=input.read_text() == 'answer = 2\\n'\n"
+        "input_immutable=not os.access(input,os.W_OK)\n"
+        "checks={'direct':direct,'connect_ex':connect_ex,'child':child,'ipv6':ipv6,'dns':dns,"
+        "'docker':docker,'sudo':sudo,'nsenter':nsenter,'host_file':host_file,"
+        "'input_readable':input_readable,'input_immutable':input_immutable,"
+        "'unprivileged':os.geteuid()==65534}\n"
+        "assert all(checks.values())\n"
+        "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
+        "'hidden_tests':True,'continuous_score':1.0,'objective_components':"
+        "{name:float(value) for name,value in checks.items()}},"
+        "sort_keys=True,separators=(',',':')))\n"
+    )
+    monkeypatch.setattr(executable, "_require_network_sandbox", lambda *_: "docker")
+    store = InMemoryArtifactStore()
+    try:
+        result = _grade(store, _snapshot(store), script, 10.0)
+    finally:
+        listener.close()
+
+    assert result.terminal is GraderTerminalKind.PASSED
+    docker = shutil.which("docker")
+    assert docker is not None
+    containers = subprocess.run(
+        (docker, "ps", "--all", "--format", "{{.Names}}"),
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.splitlines()
+    assert not any(name.startswith("memrelay-grader-") for name in containers)
 
 
 def test_secret_output_blocks_without_persisting_secret_bytes() -> None:
