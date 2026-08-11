@@ -1130,6 +1130,7 @@ dependencies = [
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
     { name = "opentelemetry-sdk" },
+    { name = "pyarrow" },
     { name = "pyyaml" },
     { name = "rfc8785" },
 ]
@@ -1141,7 +1142,6 @@ dev = [
 future-adapters = [
     { name = "duckdb" },
     { name = "openinference-instrumentation-openai" },
-    { name = "pyarrow" },
 ]
 
 [package.metadata]
@@ -1156,7 +1156,7 @@ requires-dist = [
     { name = "opentelemetry-api", specifier = "==1.44.0" },
     { name = "opentelemetry-exporter-otlp", specifier = "==1.44.0" },
     { name = "opentelemetry-sdk", specifier = "==1.44.0" },
-    { name = "pyarrow", marker = "extra == 'future-adapters'", specifier = "==25.0.0" },
+    { name = "pyarrow", specifier = "==25.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8,<10" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "rfc8785", specifier = "==0.1.4" },

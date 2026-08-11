@@ -1,6 +1,6 @@
 # Story 5.1: Materialize Reconciled Terminal Parquet
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -32,25 +32,25 @@ So that confirmatory analysis has a typed immutable input boundary.
 
 ## Tasks / Subtasks
 
-- [ ] Define versioned Arrow schemas and canonical dataset keys (AC: 1, 2)
-  - [ ] Preserve opaque experiment/run/attempt/assignment/task/history/sequence/repository/model/environment IDs and explicit assignment, experimental, resampling, clustering, observation, and analysis units.
-  - [ ] Represent `zero`, `null`, and typed `unavailable` distinctly; retain failures, timeouts, attrition, exposure state, contamination flags, inclusion status/reason, and all assigned-unit denominator fields.
-  - [ ] Pin field names, Arrow types, units, dictionaries/categories, nullability, ordering keys, schema version, and schema SHA-256.
-- [ ] Build the reconciled-input resolver (AC: 1)
-  - [ ] Accept only terminal Story 4.5 decisions and verified immutable source manifests; materialize an assigned-unit table containing every reconciled included/excluded decision and an eligible-outcome table containing only measurements authorized for confirmatory use.
-  - [ ] Require downstream ITT construction to left-join eligible outcomes onto the complete assigned-unit denominator. Excluded outcomes never become valid endpoint measurements, but excluded assignments remain present as missing/excluded rows for attrition, missingness, bounds, and categorical decisions.
-  - [ ] Reject absent/ambiguous reconciliation, authority conflict, corrupt hash, mutable path-only identity, or incomplete assignment lineage.
-  - [ ] Freeze the exact ordered input-manifest set before writing and retain its canonical hash.
-- [ ] Implement deterministic atomic Parquet materialization with PyArrow `25.0.0` (AC: 1-3)
-  - [ ] Normalize timestamps, decimals, dictionary ordering, row groups, metadata, and row order without changing source meaning.
-  - [ ] Write to a new staged dataset version, verify it with two independent readers, then atomically publish; never overwrite a published version.
-  - [ ] Store dataset files and lineage manifests through the CAS/artifact authority.
-- [ ] Emit immutable dataset and derivation manifests (AC: 2, 3)
-  - [ ] Bind source hashes, schema hash, protocol, population, endpoint, stratum, history mode, environment/model strata, materializer/runtime lock, output hashes, units, and ordering contract.
-  - [ ] Record typed success/failure and decision records for rejected rows or datasets; do not silently filter.
-- [ ] Add schema, round-trip, determinism, corruption, and fail-closed tests (AC: 1-3)
-  - [ ] Cover included/excluded, exposed/unexposed, retry lineage, failures, attrition, zero cost, unavailable usage, nulls, extreme numeric values, and changed input versioning.
-  - [ ] Assert exact category/count equality and the required numeric tolerances.
+- [x] Define versioned Arrow schemas and canonical dataset keys (AC: 1, 2)
+  - [x] Preserve opaque experiment/run/attempt/assignment/task/history/sequence/repository/model/environment IDs and explicit assignment, experimental, resampling, clustering, observation, and analysis units.
+  - [x] Represent `zero`, `null`, and typed `unavailable` distinctly; retain failures, timeouts, attrition, exposure state, contamination flags, inclusion status/reason, and all assigned-unit denominator fields.
+  - [x] Pin field names, Arrow types, units, dictionaries/categories, nullability, ordering keys, schema version, and schema SHA-256.
+- [x] Build the reconciled-input resolver (AC: 1)
+  - [x] Accept only terminal Story 4.5 decisions and verified immutable source manifests; materialize an assigned-unit table containing every reconciled included/excluded decision and an eligible-outcome table containing only measurements authorized for confirmatory use.
+  - [x] Require downstream ITT construction to left-join eligible outcomes onto the complete assigned-unit denominator. Excluded outcomes never become valid endpoint measurements, but excluded assignments remain present as missing/excluded rows for attrition, missingness, bounds, and categorical decisions.
+  - [x] Reject absent/ambiguous reconciliation, authority conflict, corrupt hash, mutable path-only identity, or incomplete assignment lineage.
+  - [x] Freeze the exact ordered input-manifest set before writing and retain its canonical hash.
+- [x] Implement deterministic atomic Parquet materialization with PyArrow `25.0.0` (AC: 1-3)
+  - [x] Normalize timestamps, decimals, dictionary ordering, row groups, metadata, and row order without changing source meaning.
+  - [x] Write to a new staged dataset version, verify it with two independent readers, then atomically publish; never overwrite a published version.
+  - [x] Store dataset files and lineage manifests through the CAS/artifact authority.
+- [x] Emit immutable dataset and derivation manifests (AC: 2, 3)
+  - [x] Bind source hashes, schema hash, protocol, population, endpoint, stratum, history mode, environment/model strata, materializer/runtime lock, output hashes, units, and ordering contract.
+  - [x] Record typed success/failure and decision records for rejected rows or datasets; do not silently filter.
+- [x] Add schema, round-trip, determinism, corruption, and fail-closed tests (AC: 1-3)
+  - [x] Cover included/excluded, exposed/unexposed, retry lineage, failures, attrition, zero cost, unavailable usage, nulls, extreme numeric values, and changed input versioning.
+  - [x] Assert exact category/count equality and the required numeric tolerances.
 
 ## Developer Context
 
@@ -105,12 +105,33 @@ This story creates the only typed boundary that confirmatory analysis may consum
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra
 
 ### Debug Log References
 
+- `py -3.13 -m pytest evaluation\tests -q` — 1218 passed, 46 skipped; one
+  catalog attestation retry passed after its initial transient command failure.
+- Focused reconciliation and Parquet boundary coverage — 13 passed.
+- `uv lock --locked` and targeted Ruff checks/format checks — passed.
+
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added pinned PyArrow 25.0.0 Arrow schemas, deterministic versioned Parquet publication,
+  immutable dataset/derivation manifests, and two-reader verification.
+- Materialization consumes only sealed Story 4.5 reconciliation and inclusion-decision
+  authorities, retains excluded assigned units, and permits eligible outcomes only when
+  their value-binding authority and source evidence are verified.
+- Added contract, integration, fault, golden, and architecture coverage for deterministic
+  ordering, changed-input versioning, lineage corruption, schema drift, partial publication,
+  and the read-only evaluator boundary.
+- Hardened concurrent immutable publication for Windows destination-exists collisions:
+  byte-identical callers reuse only a fully verified published version; corrupt collision
+  destinations fail closed.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/{5-1-materialize-reconciled-terminal-parquet.md,sprint-status.yaml}`
+- `evaluation/{pyproject.toml,uv.lock,schemas/{eligible-outcome-authority,parquet-assigned-units,parquet-dataset-manifest,parquet-eligible-outcomes}.schema.json}`
+- `evaluation/src/memrelay_eval/{analysis/{__init__,schemas}.py,domain/errors.py,evidence/{parquet,reconcile}.py}`
+- `evaluation/tests/{architecture/test_parquet_boundary.py,contract/analysis/test_parquet_schemas.py}`
+- `evaluation/tests/{integration, fault, golden}/analysis/` Parquet coverage

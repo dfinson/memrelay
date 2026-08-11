@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/parquet-assigned-units.schema.json",
+  "title": "Memrelay reconciled assigned-unit Parquet row",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "dataset_version",
+    "experiment_id",
+    "assignment_id",
+    "analysis_unit_id",
+    "run_id",
+    "attempt_id",
+    "stratum",
+    "history_mode",
+    "inclusion_status",
+    "reconciliation_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "dataset_version": { "type": "string", "minLength": 1 },
+    "experiment_id": { "type": "string", "minLength": 1 },
+    "assignment_id": { "type": "string", "minLength": 1 },
+    "analysis_unit_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "attempt_id": { "type": "string", "minLength": 1 },
+    "stratum": { "enum": ["product", "direct_engine"] },
+    "history_mode": { "enum": ["controlled", "dynamic"] },
+    "inclusion_status": { "enum": ["included", "excluded"] },
+    "reconciliation_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

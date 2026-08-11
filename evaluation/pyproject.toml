@@ -13,6 +13,7 @@ dependencies = [
     "opentelemetry-api==1.44.0",
     "opentelemetry-exporter-otlp==1.44.0",
     "opentelemetry-sdk==1.44.0",
+    "pyarrow==25.0.0",
     "PyYAML==6.0.3",
     "rfc8785==0.1.4",
 ]
@@ -22,7 +23,6 @@ dev = ["pytest>=8,<10"]
 future-adapters = [
     "duckdb==1.5.5",
     "openinference-instrumentation-openai==0.1.53",
-    "pyarrow==25.0.0",
 ]
 
 [project.scripts]

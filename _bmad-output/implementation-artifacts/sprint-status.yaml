@@ -93,7 +93,7 @@ development_status:
   epic-4-retrospective: optional
 
   epic-5: in-progress
-  5-1-materialize-reconciled-terminal-parquet: ready-for-dev
+  5-1-materialize-reconciled-terminal-parquet: review
   5-2-expose-read-only-duckdb-analysis-and-derivation-lineage: ready-for-dev
   5-3-estimate-assignment-aligned-itt-effects: ready-for-dev
   5-4-enforce-multiplicity-power-and-claim-thresholds: ready-for-dev

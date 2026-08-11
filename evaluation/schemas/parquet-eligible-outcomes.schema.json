@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/parquet-eligible-outcomes.schema.json",
+  "title": "Memrelay confirmatory-eligible Parquet outcome row",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "dataset_version",
+    "assignment_id",
+    "analysis_unit_id",
+    "run_id",
+    "attempt_id",
+    "endpoint_id",
+    "outcome_id",
+    "outcome_kind",
+    "unit",
+    "reconciliation_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "dataset_version": { "type": "string", "minLength": 1 },
+    "assignment_id": { "type": "string", "minLength": 1 },
+    "analysis_unit_id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "attempt_id": { "type": "string", "minLength": 1 },
+    "endpoint_id": { "type": "string", "minLength": 1 },
+    "outcome_id": { "type": "string", "minLength": 1 },
+    "outcome_kind": { "enum": ["numeric", "categorical"] },
+    "unit": { "type": "string", "minLength": 1 },
+    "reconciliation_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}
