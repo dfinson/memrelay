@@ -5,11 +5,11 @@ from __future__ import annotations
 import json
 import math
 import os
-import runpy
-import socket
-import subprocess
-from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+import shutil
+import stat
+import sys
+import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -24,22 +24,13 @@ ANALYSIS_ABSOLUTE_TOLERANCE: Final = 1e-10
 ANALYSIS_RELATIVE_TOLERANCE: Final = 1e-8
 GRADER_CONTINUOUS_TOLERANCE: Final = 1e-6
 _SHA256_LENGTH: Final = 64
-_CREDENTIAL_FRAGMENTS: Final = ("token", "secret", "password", "api_key", "credential")
-_MINIMAL_ENVIRONMENT_NAMES: Final = (
-    "COMSPEC",
-    "HOME",
-    "LANG",
-    "LC_ALL",
-    "PATH",
-    "PATHEXT",
-    "SYSTEMROOT",
-    "TEMP",
-    "TMP",
+_AUTHORITY_REPLAY_RUNNER_PATH: Final = "inputs/replay-runner.py"
+_AUTHORITY_REPLAY_RUNNER: Final = (
+    b"from memrelay_eval.analysis.replay import rebuild_retained_outputs\n"
+    b"def rebuild(bundle, roots):\n"
+    b"    return rebuild_retained_outputs(bundle, roots)\n"
 )
-
-
-class NetworkAccessDenied(RuntimeError):
-    """Raised by the in-process replay guard before a DNS or socket operation."""
+_AUTHORITY_REPLAY_RUNNER_SHA256: Final = sha256(_AUTHORITY_REPLAY_RUNNER).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +97,7 @@ class ReproductionBundle:
     """Canonical authority for one deterministic, network-off reproduction."""
 
     bundle_id: str
+    protocol_sha256: str
     runtime: Mapping[str, str]
     inputs: tuple[BundleInput, ...]
     normalization: Mapping[str, str]
@@ -123,6 +115,7 @@ class ReproductionBundle:
                 "expected",
                 "inputs",
                 "normalization",
+                "protocol_sha256",
                 "runner_path",
                 "runtime",
                 "schema_version",
@@ -139,6 +132,7 @@ class ReproductionBundle:
             {key: value for key, value in document.items() if key != "bundle_id"}
         ):
             raise ReproductionError("reproduction_bundle_identity_mismatch")
+        protocol_sha256 = _hash(document["protocol_sha256"], "protocol_sha256")
         runtime = _string_mapping(document["runtime"], "runtime")
         if (
             runtime.get("python") != "3.13"
@@ -158,13 +152,34 @@ class ReproductionBundle:
         inputs = tuple(_parse_input(value) for value in raw_inputs)
         if len({(item.root, item.path) for item in inputs}) != len(inputs):
             raise ReproductionError("reproduction_input_duplicated")
+        required_roles = {
+            "analysis_source",
+            "evidence_source",
+            "grader_contract",
+            "replay_runner",
+        }
+        roles = tuple(item.role for item in inputs)
+        if any(roles.count(role) != 1 for role in required_roles):
+            raise ReproductionError("reproduction_input_role_authority_conflict")
         runner_path = document["runner_path"]
         if not isinstance(runner_path, str) or not _safe_relative_path(runner_path):
             raise ReproductionError("reproduction_runner_reference_invalid")
-        if not any(item.role == "replay_runner" and item.path == runner_path for item in inputs):
+        runner_inputs = tuple(
+            item for item in inputs if item.role == "replay_runner" and item.path == runner_path
+        )
+        if len(runner_inputs) != 1:
             raise ReproductionError("reproduction_runner_not_sealed")
+        runner = runner_inputs[0]
+        if (
+            runner_path != _AUTHORITY_REPLAY_RUNNER_PATH
+            or runner.sha256 != _AUTHORITY_REPLAY_RUNNER_SHA256
+            or runner.source_sha256 != _AUTHORITY_REPLAY_RUNNER_SHA256
+            or runner.derivation_sha256 != _AUTHORITY_REPLAY_RUNNER_SHA256
+        ):
+            raise ReproductionError("reproduction_runner_not_authority_owned")
         return cls(
             bundle_id=bundle_id,
+            protocol_sha256=protocol_sha256,
             runtime=runtime,
             inputs=inputs,
             normalization=normalization,
@@ -177,6 +192,7 @@ class ReproductionBundle:
             {
                 "artifact_type": "reproduction_bundle",
                 "bundle_id": self.bundle_id,
+                "protocol_sha256": self.protocol_sha256,
                 "expected": self.expected.document(),
                 "inputs": [
                     {
@@ -288,10 +304,10 @@ def verify_bundle_inputs(
         root = roots.get(item.root)
         if root is None or not root.is_dir():
             raise ReproductionError("reproduction_input_root_unavailable")
-        candidate = (root / item.path).resolve()
-        if not candidate.is_relative_to(root) or not candidate.is_file() or candidate.is_symlink():
+        candidate = root / item.path
+        if not candidate.is_relative_to(root):
             raise ReproductionError("reproduction_input_path_invalid")
-        actual = sha256(candidate.read_bytes()).hexdigest()
+        _, actual = _read_verified_regular_file(candidate)
         if actual != item.sha256:
             raise ReproductionError(
                 "reproduction_source_hash_mismatch",
@@ -321,15 +337,6 @@ def _verified_roots(
     return roots
 
 
-def _path_for_bundle_input(
-    bundle: ReproductionBundle, roots: Mapping[str, Path], path: str
-) -> Path:
-    for item in bundle.inputs:
-        if item.path == path:
-            return (roots[item.root] / item.path).resolve()
-    raise ReproductionError("reproduction_runner_not_sealed")
-
-
 def replay_offline(
     bundle: ReproductionBundle,
     *,
@@ -337,13 +344,9 @@ def replay_offline(
     rebuilder: Callable[[ReproductionBundle], ReplayOutputs],
     backup_root: Path | str | None = None,
 ) -> ReplayComparison:
-    """Run the supplied deterministic rebuilder with credentials and network unavailable."""
+    """Compare a supplied deterministic rebuild; production uses ``execute_sealed_replay``."""
     verify_bundle_inputs(bundle, cas_root=cas_root, backup_root=backup_root)
-    try:
-        with network_off():
-            actual = rebuilder(bundle)
-    except NetworkAccessDenied as error:
-        raise ReproductionError("reproduction_network_access_denied") from error
+    actual = rebuilder(bundle)
     if not isinstance(actual, ReplayOutputs):
         raise ReproductionError("reproduction_rebuilder_output_invalid")
     verify_bundle_inputs(bundle, cas_root=cas_root, backup_root=backup_root)
@@ -355,27 +358,469 @@ def execute_sealed_replay(
     *,
     cas_root: Path | str,
     backup_root: Path | str | None = None,
+    sandbox_runner: Callable[[ReproductionBundle, Mapping[str, Path]], Mapping[str, object]]
+    | None = None,
 ) -> ReplayComparison:
-    """Execute only the hash-verified bundle runner in the offline process boundary."""
+    """Execute the hash-verified runner in a proven OS network sandbox."""
     roots = _verified_roots(bundle, cas_root=cas_root, backup_root=backup_root)
-    runner = _path_for_bundle_input(bundle, roots, bundle.runner_path)
+    document = (sandbox_runner or _run_runner_in_os_sandbox)(bundle, roots)
+    actual = ReplayOutputs.from_document(document)
+    verify_bundle_inputs(bundle, cas_root=cas_root, backup_root=backup_root)
+    return compare_replay_outputs(bundle, actual)
 
-    def rebuild(_: ReproductionBundle) -> ReplayOutputs:
-        namespace = runpy.run_path(str(runner))
-        function = namespace.get("rebuild")
-        if not callable(function):
-            raise ReproductionError("reproduction_runner_entrypoint_missing")
-        document = function(bundle.bytes(), {name: str(root) for name, root in roots.items()})
-        if not isinstance(document, Mapping):
-            raise ReproductionError("reproduction_runner_output_invalid")
-        return ReplayOutputs.from_document(document)
 
-    return replay_offline(
-        bundle,
-        cas_root=cas_root,
-        backup_root=backup_root,
-        rebuilder=rebuild,
+def _run_runner_in_os_sandbox(
+    bundle: ReproductionBundle, roots: Mapping[str, Path]
+) -> Mapping[str, object]:
+    """Run the sealed runner in the grader's established namespace/container authority."""
+    from memrelay_eval.adapters.grader.executable import (
+        _minimal_grader_environment,
+        run_in_network_sandbox,
     )
+    from memrelay_eval.domain.errors import NetworkSandboxUnavailableError
+
+    with tempfile.TemporaryDirectory(prefix="memrelay-reproduction-") as temporary:
+        root = Path(temporary)
+        workspace = root / "runtime"
+        data_root = root / "data"
+        workspace.mkdir()
+        shutil.copytree(Path(__file__).parents[1], workspace / "memrelay_eval")
+        for item in bundle.inputs:
+            source = roots[item.root] / item.path
+            destination = data_root / item.root / item.path
+            _copy_verified_regular_file(source, destination, item.sha256)
+        bundle_path = root / "bundle.json"
+        bundle_path.write_bytes(bundle.bytes())
+        runner = data_root / "cas" / bundle.runner_path
+        if not runner.is_file():
+            for item in bundle.inputs:
+                if item.path == bundle.runner_path:
+                    runner = data_root / item.root / item.path
+                    break
+        launcher = workspace / "run_replay.py"
+        launcher.write_text(
+            (
+                "import json, runpy, sys\n"
+                "from pathlib import Path\n"
+                "sys.path.insert(0, str(Path(__file__).parent))\n"
+                "bundle = Path(sys.argv[1]).read_bytes()\n"
+                "roots = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))\n"
+                "namespace = runpy.run_path(sys.argv[3])\n"
+                "result = namespace['rebuild'](bundle, roots)\n"
+                "print(json.dumps(result, sort_keys=True, separators=(',', ':')))\n"
+            ),
+            encoding="utf-8",
+        )
+        environment = _minimal_grader_environment(workspace)
+        root_paths = {name: str(data_root / name) for name in roots}
+        command = (
+            str(Path(sys.executable).resolve()),
+            str(launcher),
+            str(bundle_path),
+            str(root / "roots.json"),
+            str(runner),
+        )
+        (root / "roots.json").write_bytes(canonical_bytes(root_paths))
+        try:
+            completed = run_in_network_sandbox(
+                command,
+                cwd=workspace,
+                environment=environment,
+                timeout_seconds=60,
+            )
+        except NetworkSandboxUnavailableError as error:
+            raise ReproductionError("reproduction_network_sandbox_unavailable") from error
+        if completed.returncode != 0:
+            raise ReproductionError("reproduction_sandboxed_runner_failed")
+        return _canonical_document(completed.stdout, "reproduction_runner_output_not_canonical")
+
+
+def _read_verified_regular_file(path: Path) -> tuple[bytes, str]:
+    """Read one file while rejecting symlinks and path swaps before authority use."""
+    try:
+        before = path.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            raise ReproductionError("reproduction_input_path_invalid")
+        with path.open("rb") as stream:
+            data = stream.read()
+            after = os.fstat(stream.fileno())
+    except OSError as error:
+        raise ReproductionError("reproduction_input_path_invalid") from error
+    if (
+        before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+    ):
+        raise ReproductionError("reproduction_input_toctou_detected")
+    return data, sha256(data).hexdigest()
+
+
+def _copy_verified_regular_file(source: Path, destination: Path, expected_sha256: str) -> None:
+    data, actual = _read_verified_regular_file(source)
+    if actual != expected_sha256:
+        raise ReproductionError("reproduction_source_hash_mismatch")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(data)
+    copied, copied_hash = _read_verified_regular_file(destination)
+    if copied != data or copied_hash != expected_sha256:
+        raise ReproductionError("reproduction_snapshot_copy_mismatch")
+
+
+def seal_reproduction_bundle(
+    *,
+    dataset_root: Path | str,
+    dataset_version: str,
+    queries: tuple[Mapping[str, object], ...],
+    grader_result: Mapping[str, object],
+    normalized_evidence: Mapping[str, object],
+    protocol_sha256: str,
+    runtime_lock: Path | str,
+    output_root: Path | str,
+    backup_receipt: Path | str | None = None,
+) -> ReproductionBundle:
+    """Copy and bind retained authorities into one immutable, executable replay bundle."""
+    protocol_sha256 = _hash(protocol_sha256, "protocol_sha256")
+    source_root = Path(dataset_root).expanduser().resolve()
+    source_directory = source_root / dataset_version
+    if source_directory.is_symlink() or not source_directory.is_dir():
+        raise ReproductionError("reproduction_dataset_not_retained")
+    root = Path(output_root).expanduser().resolve()
+    if root.exists():
+        raise ReproductionError("reproduction_bundle_output_exists")
+    root.mkdir(parents=True)
+    copied_inputs: list[BundleInput] = []
+    dataset_target = root / "inputs" / "dataset" / dataset_version
+    for source in sorted(source_directory.rglob("*")):
+        if source.is_symlink():
+            raise ReproductionError("reproduction_input_path_invalid")
+        if source.is_dir():
+            continue
+        relative = source.relative_to(source_directory)
+        target = dataset_target / relative
+        data, digest = _read_verified_regular_file(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        copied_inputs.append(
+            BundleInput(
+                root="cas",
+                path=(Path("inputs") / "dataset" / dataset_version / relative).as_posix(),
+                role="analysis_data",
+                sha256=digest,
+                source_sha256=digest,
+                derivation_sha256=None,
+            )
+        )
+    plan = {
+        "artifact_type": "analysis_replay_plan",
+        "dataset_root": "inputs/dataset",
+        "dataset_version": dataset_version,
+        "protocol_sha256": protocol_sha256,
+        "queries": [dict(item) for item in queries],
+        "schema_version": REPRODUCTION_SCHEMA_VERSION,
+    }
+    plan_path = root / "inputs" / "analysis-plan.json"
+    plan_bytes = canonical_bytes(plan)
+    plan_path.write_bytes(plan_bytes)
+    copied_inputs.append(
+        BundleInput(
+            root="cas",
+            path="inputs/analysis-plan.json",
+            role="analysis_source",
+            sha256=sha256(plan_bytes).hexdigest(),
+            source_sha256=sha256(plan_bytes).hexdigest(),
+            derivation_sha256=canonical_digest(plan),
+        )
+    )
+    grader_path = root / "inputs" / "grader-result.json"
+    grader_bytes = canonical_bytes(dict(grader_result))
+    grader_path.write_bytes(grader_bytes)
+    copied_inputs.append(
+        BundleInput(
+            root="cas",
+            path="inputs/grader-result.json",
+            role="grader_contract",
+            sha256=sha256(grader_bytes).hexdigest(),
+            source_sha256=sha256(grader_bytes).hexdigest(),
+            derivation_sha256=canonical_digest(grader_result),
+        )
+    )
+    evidence_path = root / "inputs" / "normalized-evidence.json"
+    evidence_bytes = canonical_bytes(dict(normalized_evidence))
+    evidence_path.write_bytes(evidence_bytes)
+    copied_inputs.append(
+        BundleInput(
+            root="cas",
+            path="inputs/normalized-evidence.json",
+            role="evidence_source",
+            sha256=sha256(evidence_bytes).hexdigest(),
+            source_sha256=sha256(evidence_bytes).hexdigest(),
+            derivation_sha256=canonical_digest(normalized_evidence),
+        )
+    )
+    lock_data, lock_digest = _read_verified_regular_file(Path(runtime_lock).expanduser().resolve())
+    lock_path = root / "inputs" / "runtime.lock"
+    lock_path.write_bytes(lock_data)
+    copied_inputs.append(
+        BundleInput(
+            root="cas",
+            path="inputs/runtime.lock",
+            role="runtime_lock",
+            sha256=lock_digest,
+            source_sha256=lock_digest,
+            derivation_sha256=None,
+        )
+    )
+    if backup_receipt is not None:
+        receipt_source = Path(backup_receipt).expanduser().resolve()
+        if (
+            receipt_source.name != "backup-receipt.json"
+            or receipt_source.parent.parent.name != "generations"
+        ):
+            raise ReproductionError("reproduction_backup_receipt_location_invalid")
+        from memrelay_eval.domain.errors import BackupConformanceError
+        from memrelay_eval.evidence.backup import verify_backup_generation
+
+        try:
+            receipt = verify_backup_generation(
+                backup_root=receipt_source.parent.parent.parent,
+                generation_id=receipt_source.parent.name,
+            )
+        except OSError as error:
+            raise ReproductionError("reproduction_backup_receipt_unavailable") from error
+        except BackupConformanceError as error:
+            raise ReproductionError("reproduction_backup_receipt_invalid") from error
+        receipt_data, receipt_digest = _read_verified_regular_file(receipt_source)
+        if receipt_data != receipt.bytes():
+            raise ReproductionError("reproduction_backup_receipt_invalid")
+        receipt_path = root / "inputs" / "backup-receipt.json"
+        receipt_path.write_bytes(receipt_data)
+        copied_inputs.append(
+            BundleInput(
+                root="cas",
+                path="inputs/backup-receipt.json",
+                role="backup_receipt",
+                sha256=receipt_digest,
+                source_sha256=receipt_digest,
+                derivation_sha256=None,
+            )
+        )
+    runner_path = root / _AUTHORITY_REPLAY_RUNNER_PATH
+    runner_bytes = _AUTHORITY_REPLAY_RUNNER
+    runner_path.write_bytes(runner_bytes)
+    copied_inputs.append(
+        BundleInput(
+            root="cas",
+            path=_AUTHORITY_REPLAY_RUNNER_PATH,
+            role="replay_runner",
+            sha256=sha256(runner_bytes).hexdigest(),
+            source_sha256=sha256(runner_bytes).hexdigest(),
+            derivation_sha256=_AUTHORITY_REPLAY_RUNNER_SHA256,
+        )
+    )
+    roots = {"cas": root}
+    expected = _supplement_replay_outputs(
+        _rebuild_retained_plan(plan, roots, protocol_sha256), tuple(copied_inputs), roots
+    )
+    document = {
+        "artifact_type": "reproduction_bundle",
+        "expected": expected.document(),
+        "inputs": [_input_document(item) for item in copied_inputs],
+        "normalization": {"paths": "relative_posix", "timestamps": "omitted"},
+        "protocol_sha256": protocol_sha256,
+        "runner_path": _AUTHORITY_REPLAY_RUNNER_PATH,
+        "runtime": {
+            "duckdb": "1.5.5",
+            "lock_sha256": lock_digest,
+            "pyarrow": "25.0.0",
+            "python": "3.13",
+        },
+        "schema_version": REPRODUCTION_SCHEMA_VERSION,
+    }
+    document["bundle_id"] = canonical_digest(document)
+    payload = canonical_bytes(document)
+    bundle_path = root / "reproduction-bundle.json"
+    _write_immutable(bundle_path, payload, "reproduction_bundle_publish_conflict")
+    return ReproductionBundle.parse(payload)
+
+
+def rebuild_retained_outputs(bundle_bytes: bytes, roots: Mapping[str, str]) -> dict[str, object]:
+    """Rebuild standard analysis, grader, and normalized-evidence outputs from sealed files."""
+    bundle = ReproductionBundle.parse(bundle_bytes)
+    root_paths = {name: Path(path).resolve() for name, path in roots.items()}
+    for item in bundle.inputs:
+        path = root_paths[item.root] / item.path
+        _, digest = _read_verified_regular_file(path)
+        if digest != item.sha256:
+            raise ReproductionError("reproduction_source_hash_mismatch")
+    plan_item = bundle.input_for("analysis_source")
+    plan = _canonical_document(
+        (root_paths[plan_item.root] / plan_item.path).read_bytes(),
+        "reproduction_plan_not_canonical",
+    )
+    outputs = _supplement_replay_outputs(
+        _rebuild_retained_plan(plan, root_paths, bundle.protocol_sha256), bundle.inputs, root_paths
+    )
+    return outputs.document()
+
+
+def _rebuild_retained_plan(
+    plan: Mapping[str, object], roots: Mapping[str, Path], protocol_sha256: str
+) -> ReplayOutputs:
+    from memrelay_eval.analysis.queries import (
+        AnalysisQuery,
+        ReadOnlyDuckDbAnalysis,
+        deterministic_figure_svg,
+    )
+
+    _require_exact_keys(
+        plan,
+        {
+            "artifact_type",
+            "dataset_root",
+            "dataset_version",
+            "protocol_sha256",
+            "queries",
+            "schema_version",
+        },
+        "analysis replay plan",
+    )
+    if (
+        plan["artifact_type"] != "analysis_replay_plan"
+        or plan["schema_version"] != REPRODUCTION_SCHEMA_VERSION
+        or plan["protocol_sha256"] != protocol_sha256
+    ):
+        raise ReproductionError("reproduction_analysis_plan_authority_conflict")
+    dataset_root = plan["dataset_root"]
+    dataset_version = plan["dataset_version"]
+    if not isinstance(dataset_root, str) or not isinstance(dataset_version, str):
+        raise ReproductionError("reproduction_analysis_plan_invalid")
+    cas = roots.get("cas")
+    if cas is None:
+        raise ReproductionError("reproduction_input_root_unavailable")
+    query_documents = _list(plan["queries"], "queries")
+    categories: dict[str, int] = {}
+    numeric: dict[str, float] = {}
+    figures: dict[str, str] = {}
+    with ReadOnlyDuckDbAnalysis.open(cas / dataset_root, dataset_version) as analysis:
+        if protocol_sha256 not in analysis.dataset.manifest["protocol_sha256"]:
+            raise ReproductionError("reproduction_dataset_protocol_conflict")
+        for value in query_documents:
+            query = _mapping(value, "query")
+            _require_exact_keys(
+                query,
+                {"columns", "equals", "figure_columns", "name", "numeric_column", "table"},
+                "query",
+            )
+            name = query["name"]
+            if not isinstance(name, str) or not name:
+                raise ReproductionError("reproduction_analysis_plan_invalid")
+            columns = tuple(_string_list(query["columns"], "query.columns"))
+            if len(set(columns)) != len(columns):
+                raise ReproductionError("reproduction_analysis_plan_invalid")
+            equals: list[tuple[str, str]] = []
+            for raw_equals in _list(query["equals"], "query.equals"):
+                equals_item = _mapping(raw_equals, "query.equals")
+                _require_exact_keys(equals_item, {"column", "value"}, "query.equals")
+                column, value = equals_item["column"], equals_item["value"]
+                if not isinstance(column, str) or not column or not isinstance(value, str):
+                    raise ReproductionError("reproduction_analysis_plan_invalid")
+                equals.append((column, value))
+            table_name = query["table"]
+            if not isinstance(table_name, str) or not table_name:
+                raise ReproductionError("reproduction_analysis_plan_invalid")
+            table = analysis.read(AnalysisQuery(table_name, columns, tuple(equals)))
+            categories[name] = table.num_rows
+            numeric_column = query["numeric_column"]
+            if not isinstance(numeric_column, str) or numeric_column not in table.column_names:
+                raise ReproductionError("reproduction_numeric_column_invalid")
+            numeric[name] = sum(
+                float(value) for value in table[numeric_column].to_pylist() if value is not None
+            )
+            figure_columns = tuple(_string_list(query["figure_columns"], "query.figure_columns"))
+            figures[name] = sha256(deterministic_figure_svg(table, figure_columns)).hexdigest()
+    return ReplayOutputs(
+        categories=categories,
+        numeric=numeric,
+        figures=figures,
+        grader_binary={},
+        grader_tests={},
+        grader_continuous={},
+        normalized_evidence={},
+    )
+
+
+def _supplement_replay_outputs(
+    analysis: ReplayOutputs, inputs: tuple[BundleInput, ...], roots: Mapping[str, Path]
+) -> ReplayOutputs:
+    by_role: dict[str, BundleInput] = {}
+    for item in inputs:
+        if item.role in {"grader_contract", "evidence_source"}:
+            if item.role in by_role:
+                raise ReproductionError("reproduction_input_role_authority_conflict")
+            by_role[item.role] = item
+    try:
+        grader_input = by_role["grader_contract"]
+        evidence_input = by_role["evidence_source"]
+    except KeyError as error:
+        raise ReproductionError("reproduction_input_role_authority_conflict") from error
+    grader = _canonical_document(
+        (roots[grader_input.root] / grader_input.path).read_bytes(),
+        "reproduction_grader_result_not_canonical",
+    )
+    _require_exact_keys(grader, {"binary", "continuous", "tests"}, "grader result")
+    evidence = _canonical_document(
+        (roots[evidence_input.root] / evidence_input.path).read_bytes(),
+        "reproduction_evidence_not_canonical",
+    )
+    return ReplayOutputs(
+        categories=analysis.categories,
+        numeric=analysis.numeric,
+        figures=analysis.figures,
+        grader_binary=_string_boolean_mapping(grader["binary"], "grader.binary"),
+        grader_tests=_string_json_mapping(grader["tests"], "grader.tests"),
+        grader_continuous=_string_number_mapping(grader["continuous"], "grader.continuous"),
+        normalized_evidence={
+            "evidence": sha256(canonical_bytes(_normalize_evidence(evidence))).hexdigest()
+        },
+    )
+
+
+def _normalize_evidence(value: object) -> object:
+    """Normalize only path spellings and timestamps; retain every substantive field."""
+    if isinstance(value, list):
+        return [_normalize_evidence(item) for item in value]
+    if not isinstance(value, Mapping):
+        return value
+    normalized: dict[str, object] = {}
+    for key, item in value.items():
+        if key.endswith("_at") or key in {"timestamp", "timestamps"}:
+            continue
+        if key.endswith("_path") and isinstance(item, str):
+            path = item.replace("\\", "/")
+            if path.startswith("/") or ":" in path or ".." in Path(path).parts:
+                raise ReproductionError("reproduction_evidence_path_not_relative")
+            normalized[key] = path
+        else:
+            normalized[key] = _normalize_evidence(item)
+    return normalized
+
+
+def _string_list(value: object, name: str) -> list[str]:
+    values = _list(value, name)
+    if any(not isinstance(item, str) or not item for item in values):
+        raise ReproductionError(f"{name.replace('.', '_')}_invalid")
+    return values
+
+
+def _input_document(item: BundleInput) -> dict[str, object]:
+    return {
+        "derivation_sha256": item.derivation_sha256,
+        "path": item.path,
+        "role": item.role,
+        "root": item.root,
+        "sha256": item.sha256,
+        "source_sha256": item.source_sha256,
+    }
 
 
 def compare_replay_outputs(bundle: ReproductionBundle, actual: ReplayOutputs) -> ReplayComparison:
@@ -518,65 +963,6 @@ def allocate_stochastic_rerun(
     return identity
 
 
-@contextmanager
-def network_off() -> Iterator[None]:
-    """Deny DNS/socket access and expose a minimal credential-free environment."""
-    saved_environment = dict(os.environ)
-    environment = {
-        name: value
-        for name, value in saved_environment.items()
-        if name in _MINIMAL_ENVIRONMENT_NAMES and not _looks_like_credential(name)
-    }
-    original = (
-        socket.create_connection,
-        socket.getaddrinfo,
-        socket.gethostbyname,
-        socket.gethostbyname_ex,
-        socket.socket.connect,
-        socket.socket.connect_ex,
-        socket.socket.sendto,
-        subprocess.Popen,
-    )
-    os_process_entrypoints = {
-        name: getattr(os, name)
-        for name in dir(os)
-        if name == "system" or name.startswith(("exec", "posix_spawn", "spawn")) or name == "popen"
-    }
-
-    def denied(*_: object, **__: object) -> object:
-        raise NetworkAccessDenied("network access is denied during offline reproduction")
-
-    os.environ.clear()
-    os.environ.update(environment)
-    socket.create_connection = denied  # type: ignore[assignment]
-    socket.getaddrinfo = denied  # type: ignore[assignment]
-    socket.gethostbyname = denied  # type: ignore[assignment]
-    socket.gethostbyname_ex = denied  # type: ignore[assignment]
-    socket.socket.connect = denied  # type: ignore[method-assign]
-    socket.socket.connect_ex = denied  # type: ignore[method-assign]
-    socket.socket.sendto = denied  # type: ignore[method-assign]
-    subprocess.Popen = denied  # type: ignore[assignment]
-    for name in os_process_entrypoints:
-        setattr(os, name, denied)
-    try:
-        yield
-    finally:
-        (
-            socket.create_connection,
-            socket.getaddrinfo,
-            socket.gethostbyname,
-            socket.gethostbyname_ex,
-            socket.socket.connect,
-            socket.socket.connect_ex,
-            socket.socket.sendto,
-            subprocess.Popen,
-        ) = original
-        for name, function in os_process_entrypoints.items():
-            setattr(os, name, function)
-        os.environ.clear()
-        os.environ.update(saved_environment)
-
-
 def _parse_input(value: object) -> BundleInput:
     document = _mapping(value, "input")
     _require_exact_keys(
@@ -587,7 +973,16 @@ def _parse_input(value: object) -> BundleInput:
     role = document["role"]
     if (
         root not in {"cas", "backup"}
-        or role not in {"analysis_source", "evidence_source", "grader_contract", "replay_runner"}
+        or role
+        not in {
+            "analysis_data",
+            "analysis_source",
+            "backup_receipt",
+            "evidence_source",
+            "grader_contract",
+            "replay_runner",
+            "runtime_lock",
+        }
         or not isinstance(path, str)
         or not _safe_relative_path(path)
     ):
@@ -820,10 +1215,3 @@ def _json_safe(value: object) -> bool:
     if isinstance(value, Mapping):
         return all(isinstance(key, str) and _json_safe(item) for key, item in value.items())
     return False
-
-
-def _looks_like_credential(name: str) -> bool:
-    lowered = name.casefold()
-    return lowered in {"gh_token", "github_token"} or any(
-        fragment in lowered for fragment in _CREDENTIAL_FRAGMENTS
-    )

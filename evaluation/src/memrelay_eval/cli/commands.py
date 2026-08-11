@@ -22,6 +22,7 @@ from memrelay_eval.analysis.replay import (
     allocate_stochastic_rerun,
     execute_sealed_replay,
     publish_comparison,
+    seal_reproduction_bundle,
 )
 from memrelay_eval.application.copilot_services import (
     CopilotSdkClient,
@@ -376,6 +377,34 @@ def reproduce_offline(args: Namespace) -> int:
     return 0 if comparison.matches else 1
 
 
+def seal_reproduction_bundle_command(args: Namespace) -> int:
+    """Seal retained authorities into the one standard offline replay bundle."""
+    queries = _canonical_reproduction_json(Path(args.queries), "reproduction_queries_not_canonical")
+    grader_result = _canonical_reproduction_json(
+        Path(args.grader_result), "reproduction_grader_result_not_canonical"
+    )
+    normalized_evidence = _canonical_reproduction_json(
+        Path(args.normalized_evidence), "reproduction_evidence_not_canonical"
+    )
+    if not isinstance(queries, list) or not all(isinstance(item, dict) for item in queries):
+        raise AnalysisError("reproduction_queries_invalid")
+    if not isinstance(grader_result, dict) or not isinstance(normalized_evidence, dict):
+        raise AnalysisError("reproduction_source_invalid")
+    bundle = seal_reproduction_bundle(
+        dataset_root=Path(args.parquet_root),
+        dataset_version=args.dataset_version,
+        queries=tuple(queries),
+        grader_result=grader_result,
+        normalized_evidence=normalized_evidence,
+        protocol_sha256=args.protocol_sha256,
+        runtime_lock=Path(args.runtime_lock),
+        output_root=Path(args.output_root),
+        backup_receipt=Path(args.backup_receipt) if args.backup_receipt else None,
+    )
+    print(bundle.bytes().decode("utf-8"))
+    return 0
+
+
 def allocate_stochastic_rerun_command(args: Namespace) -> int:
     """Reserve distinct lineage for a governed stochastic rerun or replication."""
     identity = allocate_stochastic_rerun(
@@ -392,6 +421,25 @@ def allocate_stochastic_rerun_command(args: Namespace) -> int:
         ).decode("utf-8")
     )
     return 0
+
+
+def _canonical_reproduction_json(path: Path, code: str) -> object:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AnalysisError(code)
+            result[key] = value
+        return result
+
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AnalysisError(code) from error
+    if canonical_bytes(value) != payload:
+        raise AnalysisError(code)
+    return value
 
 
 def _canonical_analysis_plan(data: bytes) -> dict[str, Any]:

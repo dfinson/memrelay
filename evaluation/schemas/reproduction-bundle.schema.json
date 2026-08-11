@@ -34,9 +34,12 @@
           "role": {
             "enum": [
               "analysis_source",
+              "analysis_data",
+              "backup_receipt",
               "evidence_source",
               "grader_contract",
-              "replay_runner"
+              "replay_runner",
+              "runtime_lock"
             ]
           },
           "root": {
@@ -83,6 +86,10 @@
       ],
       "type": "object"
     },
+    "protocol_sha256": {
+      "pattern": "^[a-f0-9]{64}$",
+      "type": "string"
+    },
     "runtime": {
       "additionalProperties": {
         "type": "string"
@@ -124,6 +131,7 @@
     "expected",
     "inputs",
     "normalization",
+    "protocol_sha256",
     "runner_path",
     "runtime",
     "schema_version"

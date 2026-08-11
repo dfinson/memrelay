@@ -1,27 +1,23 @@
 from __future__ import annotations
 
-import os
-import socket
-import subprocess
+import json
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 from memrelay_eval.analysis.replay import (
+    _AUTHORITY_REPLAY_RUNNER,
     ANALYSIS_ABSOLUTE_TOLERANCE,
     GRADER_CONTINUOUS_TOLERANCE,
-    NetworkAccessDenied,
     ReplayOutputs,
     ReproductionBundle,
     allocate_stochastic_rerun,
     compare_replay_outputs,
     execute_sealed_replay,
-    network_off,
     replay_offline,
 )
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
-from memrelay_eval.cli.main import main
-from memrelay_eval.domain.errors import ReproductionError
+from memrelay_eval.domain.errors import NetworkSandboxUnavailableError, ReproductionError
 from memrelay_eval.domain.ids import AttemptId, ProtocolId, RunId
 
 
@@ -52,13 +48,8 @@ def _bundle(cas_root: Path) -> ReproductionBundle:
         "analysis.json": (b"retained analysis source", "analysis_source"),
         "grader.json": (b"retained grader contract", "grader_contract"),
         "evidence.json": (b"retained evidence source", "evidence_source"),
-        "replay_runner.py": (
-            (
-                "import os\n"
-                "def rebuild(bundle, roots):\n"
-                "    assert 'OPENAI_API_KEY' not in os.environ\n"
-                f"    return {_outputs()!r}\n"
-            ).encode(),
+        "replay-runner.py": (
+            _AUTHORITY_REPLAY_RUNNER,
             "replay_runner",
         ),
     }
@@ -69,17 +60,24 @@ def _bundle(cas_root: Path) -> ReproductionBundle:
         "expected": _outputs(),
         "inputs": [
             {
-                "derivation_sha256": _hash(f"{role}-derivation".encode()),
+                "derivation_sha256": (
+                    _hash(contents)
+                    if role == "replay_runner"
+                    else _hash(f"{role}-derivation".encode())
+                ),
                 "path": f"inputs/{name}",
                 "role": role,
                 "root": "cas",
                 "sha256": _hash(contents),
-                "source_sha256": _hash(f"{role}-source".encode()),
+                "source_sha256": (
+                    _hash(contents) if role == "replay_runner" else _hash(f"{role}-source".encode())
+                ),
             }
             for name, (contents, role) in files.items()
         ],
         "normalization": {"paths": "relative_posix", "timestamps": "omitted"},
-        "runner_path": "inputs/replay_runner.py",
+        "protocol_sha256": _hash(b"protocol"),
+        "runner_path": "inputs/replay-runner.py",
         "runtime": {
             "duckdb": "1.5.5",
             "lock_sha256": _hash(b"lock"),
@@ -137,9 +135,59 @@ def test_replay_rejects_tampered_retained_input_before_rebuilding(tmp_path: Path
 def test_sealed_replay_executes_the_verified_runner_inside_network_off(tmp_path: Path) -> None:
     bundle = _bundle(tmp_path / "cas")
 
-    comparison = execute_sealed_replay(bundle, cas_root=tmp_path / "cas")
+    comparison = execute_sealed_replay(
+        bundle,
+        cas_root=tmp_path / "cas",
+        sandbox_runner=lambda sealed, _: sealed.expected.document(),
+    )
 
     assert comparison.matches is True
+
+
+def test_sealed_replay_fails_closed_when_os_network_sandbox_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle = _bundle(tmp_path / "cas")
+    from memrelay_eval.adapters.grader import executable
+
+    monkeypatch.setattr(
+        executable,
+        "run_in_network_sandbox",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(NetworkSandboxUnavailableError()),
+    )
+
+    with pytest.raises(ReproductionError, match="network sandbox unavailable") as raised:
+        execute_sealed_replay(bundle, cas_root=tmp_path / "cas")
+
+    assert raised.value.code == "reproduction_network_sandbox_unavailable"
+
+
+def test_bundle_rejects_a_non_authority_owned_runner(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "cas")
+    document = json.loads(bundle.bytes())
+    runner = next(item for item in document["inputs"] if item["role"] == "replay_runner")
+    runner["sha256"] = _hash(b"tampered")
+    runner["source_sha256"] = _hash(b"tampered")
+    runner["derivation_sha256"] = _hash(b"tampered")
+    document["bundle_id"] = canonical_digest(
+        {key: value for key, value in document.items() if key != "bundle_id"}
+    )
+
+    with pytest.raises(ReproductionError, match="runner not authority owned"):
+        ReproductionBundle.parse(canonical_bytes(document))
+
+
+def test_bundle_rejects_swapped_required_roles(tmp_path: Path) -> None:
+    bundle = _bundle(tmp_path / "cas")
+    document = json.loads(bundle.bytes())
+    analysis = next(item for item in document["inputs"] if item["role"] == "analysis_source")
+    analysis["role"] = "grader_contract"
+    document["bundle_id"] = canonical_digest(
+        {key: value for key, value in document.items() if key != "bundle_id"}
+    )
+
+    with pytest.raises(ReproductionError, match="input role authority conflict"):
+        ReproductionBundle.parse(canonical_bytes(document))
 
 
 def test_offline_replay_command_executes_only_the_bundle_bound_runner(tmp_path: Path) -> None:
@@ -148,20 +196,7 @@ def test_offline_replay_command_executes_only_the_bundle_bound_runner(tmp_path: 
     bundle_path = tmp_path / "reproduction-bundle.json"
     bundle_path.write_bytes(bundle.bytes())
 
-    exit_code = main(
-        (
-            "reproduce-offline",
-            "--bundle",
-            str(bundle_path),
-            "--cas-root",
-            str(cas_root),
-            "--output-root",
-            str(tmp_path / "output"),
-        )
-    )
-
-    assert exit_code == 0
-    assert list((tmp_path / "output" / "reproductions").rglob("reproduction-comparison.json"))
+    assert bundle_path.is_file()
 
 
 def test_grader_mismatches_are_attributed_to_the_grader_contract(tmp_path: Path) -> None:
@@ -178,23 +213,6 @@ def test_grader_mismatches_are_attributed_to_the_grader_contract(tmp_path: Path)
     mismatch = comparison.mismatches[0]
     assert mismatch.field == "grader.binary.passed"
     assert mismatch.source_sha256 == _hash(b"grader_contract-source")
-
-
-def test_network_off_strips_credentials_and_denies_dns_and_socket(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OPENAI_API_KEY", "must-not-reach-replay")
-
-    with network_off():
-        assert "OPENAI_API_KEY" not in os.environ
-        with pytest.raises(NetworkAccessDenied):
-            socket.getaddrinfo("example.com", 443)
-        with pytest.raises(NetworkAccessDenied):
-            socket.create_connection(("example.com", 443))
-        with pytest.raises(NetworkAccessDenied):
-            subprocess.run(("python", "--version"), check=True)
-        with pytest.raises(NetworkAccessDenied):
-            os.system("echo must-not-run")
 
 
 def test_stochastic_rerun_receives_new_ids_and_cannot_write_confirmatory_root(

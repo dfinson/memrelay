@@ -17,6 +17,7 @@ from memrelay_eval.cli.commands import (
     reconcile_stage,
     reproduce_offline,
     run_stage,
+    seal_reproduction_bundle_command,
     show_effective_configuration,
     show_foundation_status,
     validate_authored_catalog,
@@ -210,6 +211,20 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument("--backup-root")
     reproduce.add_argument("--output-root", required=True)
     reproduce.set_defaults(handler=reproduce_offline)
+    seal_reproduction = subcommands.add_parser(
+        "seal-reproduction-bundle",
+        help="seal retained analysis, grading, evidence, and runtime authorities",
+    )
+    seal_reproduction.add_argument("--parquet-root", required=True)
+    seal_reproduction.add_argument("--dataset-version", required=True)
+    seal_reproduction.add_argument("--queries", required=True)
+    seal_reproduction.add_argument("--grader-result", required=True)
+    seal_reproduction.add_argument("--normalized-evidence", required=True)
+    seal_reproduction.add_argument("--protocol-sha256", required=True)
+    seal_reproduction.add_argument("--runtime-lock", required=True)
+    seal_reproduction.add_argument("--output-root", required=True)
+    seal_reproduction.add_argument("--backup-receipt")
+    seal_reproduction.set_defaults(handler=seal_reproduction_bundle_command)
     stochastic = subcommands.add_parser(
         "allocate-stochastic-rerun",
         help="allocate a separate non-confirmatory protocol/run/attempt identity",
