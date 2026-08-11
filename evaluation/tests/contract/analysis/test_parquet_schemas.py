@@ -38,6 +38,7 @@ def test_committed_json_schema_versions_describe_the_parquet_boundary() -> None:
         "parquet-assigned-units.schema.json",
         "parquet-eligible-outcomes.schema.json",
         "parquet-dataset-manifest.schema.json",
+        "analysis-derivation-manifest.schema.json",
         "eligible-outcome-authority.schema.json",
     ):
         document = json.loads((schemas / name).read_text(encoding="utf-8"))

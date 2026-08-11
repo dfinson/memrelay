@@ -277,6 +277,15 @@ class MaterializationError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
+class AnalysisError(DomainError):
+    """A read-only analysis request or derivation cannot satisfy its frozen contract."""
+
+    def __init__(self, code: str, fields: tuple[str, ...] = ()) -> None:
+        self.code = code
+        self.fields = fields
+        super().__init__(code.replace("_", " "))
+
+
 class TerminalDecisionConflictError(ReconciliationError):
     """A later report attempted to replace an immutable inclusion decision."""
 
