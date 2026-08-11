@@ -572,7 +572,9 @@ class PrimaryStagePlan:
     units: tuple[ModelStageUnit, ...]
 
     def __post_init__(self) -> None:
-        _require_sha256(self.entry_bundle_sha256, "primary_plan_hash_invalid", "entry_bundle_sha256")
+        _require_sha256(
+            self.entry_bundle_sha256, "primary_plan_hash_invalid", "entry_bundle_sha256"
+        )
         _require_sha256(self.pilot_exit_sha256, "primary_plan_hash_invalid", "pilot_exit_sha256")
         _validate_primary_task_families(self.task_families)
         _validate_fixed_units(
@@ -679,13 +681,18 @@ class SecondaryRolePlan:
     units: tuple[ModelStageUnit, ...]
 
     def __post_init__(self) -> None:
-        if self.model_role not in _SECONDARY_ROLES or self.stratum_id != f"secondary-{self.model_role}":
+        if (
+            self.model_role not in _SECONDARY_ROLES
+            or self.stratum_id != f"secondary-{self.model_role}"
+        ):
             raise StageControlError("secondary_stratum_invalid")
         _require_sha256(self.entry_bundle_sha256, "secondary_plan_hash_invalid", "entry_bundle")
         _require_sha256(
             self.primary_conclusion_sha256, "secondary_plan_hash_invalid", "primary_conclusion"
         )
-        if len(self.task_ids) != _SECONDARY_TASK_COUNT or len(set(self.task_ids)) != len(self.task_ids):
+        if len(self.task_ids) != _SECONDARY_TASK_COUNT or len(set(self.task_ids)) != len(
+            self.task_ids
+        ):
             raise StageControlError("secondary_task_envelope_invalid")
         _validate_fixed_units(
             self.units,
@@ -728,10 +735,15 @@ class SecondaryStagePlan:
             raise StageControlError("secondary_role_availability_invalid")
         if len(self.role_plans) * _SECONDARY_UNITS_PER_ROLE > _SECONDARY_UNIT_LIMIT:
             raise StageControlError("secondary_enrollment_envelope_invalid")
-        if any(plan.primary_conclusion_sha256 != self.primary_conclusion_sha256 for plan in self.role_plans):
+        if any(
+            plan.primary_conclusion_sha256 != self.primary_conclusion_sha256
+            for plan in self.role_plans
+        ):
             raise StageControlError("secondary_primary_lineage_conflict")
         object.__setattr__(
-            self, "unavailable_roles", types.MappingProxyType(dict(sorted(self.unavailable_roles.items())))
+            self,
+            "unavailable_roles",
+            types.MappingProxyType(dict(sorted(self.unavailable_roles.items()))),
         )
 
     @property
@@ -798,9 +810,9 @@ def conclude_primary_stage(
 ) -> PrimaryStageConclusion:
     """Seal terminal complete ITT evidence and existing frozen claim decisions."""
 
-    if set(terminal_unit_ids) != {unit.unit_id for unit in plan.units} or len(terminal_unit_ids) != len(
-        plan.units
-    ):
+    if set(terminal_unit_ids) != {unit.unit_id for unit in plan.units} or len(
+        terminal_unit_ids
+    ) != len(plan.units):
         raise StageControlError("primary_itt_incomplete")
     decision_hashes: list[str] = []
     statuses: list[str] = []
@@ -834,7 +846,10 @@ def seal_secondary_stage_plan(
 ) -> SecondaryStagePlan:
     """Create independently authorized M1/M2 strata only after primary reconciliation."""
 
-    if primary_exit.stage_kind is not StageKind.PRIMARY or not primary_exit.is_accepted_and_complete:
+    if (
+        primary_exit.stage_kind is not StageKind.PRIMARY
+        or not primary_exit.is_accepted_and_complete
+    ):
         raise StageControlError("secondary_primary_exit_not_accepted")
     if primary_conclusion.primary_plan_sha256 != primary_plan.digest:
         raise StageControlError("secondary_primary_lineage_conflict")

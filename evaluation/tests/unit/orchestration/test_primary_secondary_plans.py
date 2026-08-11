@@ -77,14 +77,18 @@ def _primary_plan():
         f"F{family}": tuple(f"task-{family}-{number}" for number in range(4))
         for family in range(1, 9)
     }
-    return seal_primary_stage_plan(
-        entry_bundle=entry,
-        pilot_exit=pilot_exit,
-        authorization=_authorization(entry),
-        now=_NOW,
-        task_families=families,
-        limits=limits,
-    ), pilot_exit, entry
+    return (
+        seal_primary_stage_plan(
+            entry_bundle=entry,
+            pilot_exit=pilot_exit,
+            authorization=_authorization(entry),
+            now=_NOW,
+            task_families=families,
+            limits=limits,
+        ),
+        pilot_exit,
+        entry,
+    )
 
 
 def _conclusion(plan):
