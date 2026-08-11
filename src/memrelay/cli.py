@@ -152,11 +152,25 @@ def _prefetch_embedding_model(cfg: Config) -> None:
         return
     model_name = cfg.embeddings.model
     size_hint = _embedding_model_size_hint(model_name)
-    click.echo(f"embedding model: preparing {model_name} (one-time{size_hint})...")
     try:
         # Lazy import: keeps `--help`/`config` fast and does not start FastEmbed during setup.
         # The materializer is the sole controlled bootstrap path and validates every byte.
-        from memrelay.engine.model_lock import materialize_verified_embedding_model
+        from memrelay.engine.model_lock import (
+            EmbeddingModelIntegrityError,
+            materialize_verified_embedding_model,
+            verify_embedding_model_cache,
+        )
+
+        try:
+            verify_embedding_model_cache(cfg.home_path / "models")
+            already_present = True
+        except EmbeddingModelIntegrityError:
+            already_present = False
+
+        if already_present:
+            click.echo(f"embedding model: {model_name} already present; verifying...")
+        else:
+            click.echo(f"embedding model: downloading {model_name} (one-time{size_hint})...")
 
         materialize_verified_embedding_model(cfg.home_path / "models")
     except Exception as exc:  # noqa: BLE001 - any failure must not abort init
@@ -166,7 +180,7 @@ def _prefetch_embedding_model(cfg: Config) -> None:
             err=True,
         )
         return
-    click.echo("embedding model: done.")
+    click.echo("embedding model: verified." if already_present else "embedding model: done.")
 
 
 def _prefetch_fts_extension(cfg: Config) -> None:

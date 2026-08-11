@@ -45,7 +45,7 @@ def test_init_downloads_model_when_absent(cli_env, real_prefetch, monkeypatch) -
     assert result.exit_code == 0, result.output
     assert len(calls) == 1, "the lock materializer must be called once"
     lowered = result.output.lower()
-    assert "preparing" in lowered
+    assert "downloading" in lowered
     assert "done" in lowered
 
 
