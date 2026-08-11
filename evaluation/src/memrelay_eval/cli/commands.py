@@ -28,6 +28,7 @@ from memrelay_eval.domain.errors import (
     CrossRepositoryDeniedError,
     InvalidConfigurationError,
 )
+from memrelay_eval.evidence.backup import preflight_backup_root
 from memrelay_eval.orchestration.configuration import (
     load_evaluator_toml,
     resolve_effective_configuration,
@@ -94,11 +95,12 @@ def bootstrap(
     """Perform the one permitted runtime download after checking the evidence root."""
 
     backup_root = Path(args.backup_root).expanduser().resolve()
+    root = evaluation_root or Path(__file__).parents[3]
     if backup_root_validator is None:
-        _validate_backup_root(backup_root)
+        (root / "artifacts").mkdir(parents=True, exist_ok=True)
+        preflight_backup_root(root / "artifacts", backup_root)
     else:
         backup_root_validator(backup_root)
-    root = evaluation_root or Path(__file__).parents[3]
     repository = LockRepository(root / "artifacts")
     archive_path = (
         Path(args.collector_archive).expanduser().resolve()
@@ -112,18 +114,6 @@ def bootstrap(
         f"telemetry evidence {verification.evidence.sha256} retained"
     )
     return 0
-
-
-def _validate_backup_root(backup_root: Path) -> None:
-    if not backup_root.exists():
-        raise ConformancePauseError(
-            "backup_root_missing", "backup root must exist before bootstrap"
-        )
-    if backup_root.drive == Path.cwd().resolve().drive:
-        raise ConformancePauseError(
-            "backup_root_not_second_volume",
-            "backup root must be on a different volume before a live runtime bootstrap",
-        )
 
 
 def lock_models(
@@ -278,3 +268,24 @@ def reconcile_stage(args: Namespace) -> int:
     from memrelay_eval.application.reconciliation_services import reconcile_stage_command
 
     return reconcile_stage_command(args)
+
+
+def backup_terminal(args: Namespace) -> int:
+    """Create one verified local second-volume generation for a terminal run."""
+
+    from memrelay_eval.domain.ids import AttemptId, RunId
+    from memrelay_eval.evidence.backup import TerminalEvidenceBackup
+    from memrelay_eval.ledger import SqliteLedger
+
+    ledger = SqliteLedger.open_control(Path(args.ledger))
+    try:
+        receipt = TerminalEvidenceBackup(
+            artifacts_root=Path(args.artifacts_root),
+            ledger=ledger,
+            ledger_path=Path(args.ledger),
+            backup_root=Path(args.backup_root),
+        ).backup_terminal_run(run_id=RunId(args.run_id), attempt_id=AttemptId(args.attempt_id))
+    finally:
+        ledger.close()
+    print(receipt.bytes().decode("utf-8"))
+    return 0

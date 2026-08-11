@@ -170,6 +170,13 @@ class ConformancePauseError(DomainError):
         self.evidence = evidence
 
 
+class BackupConformanceError(ConformancePauseError):
+    """Backup or restore proof failed; paid-pilot admission remains blocked."""
+
+    def __init__(self, code: str, evidence: tuple[str, ...] = ()) -> None:
+        super().__init__(code, "backup or restore conformance failed", evidence)
+
+
 class QualificationLimitError(ConformancePauseError):
     """A finite nonstudy qualification envelope cannot authorize another session."""
 

@@ -64,3 +64,22 @@ redacted reconciliation report and submits one typed included or excluded
 decision through the control-owned ledger. The command emits a canonical
 manifest with input, output, runtime, and protocol hashes, and makes no
 provider or analysis calls.
+
+## Terminal evidence backup and restore
+
+`memrelay-eval bootstrap --backup-root <second-volume-path>` proves a writable
+independent local volume using canonical platform volume identities and an
+atomic-rename probe. After a terminal attempt, the control process runs
+`memrelay-eval backup-terminal` with the explicit artifact root, ledger, run,
+and attempt IDs. It takes a SQLite backup-API snapshot, copies a complete
+immutable CAS inventory into a staging generation, verifies every size and
+SHA-256 digest, atomically publishes the generation, and appends a typed
+`backup_receipt` artifact link. Existing incomplete, stale, conflicting, or
+tampered generations are rejected rather than repaired.
+
+`memrelay_eval.evidence.backup.restore_drill` restores only a published
+generation into a new quarantine root. The caller must supply the current
+authorization/retention/tombstone policy before reachability rebuilding or
+artifact reads. It verifies the SQLite snapshot, all inventory hashes,
+ledger-to-artifact links, and deterministic CAS reachability within the
+24-hour RTO; any failure remains a paid-pilot blocker.
