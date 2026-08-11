@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/adjudication-record-1.0.0.json",
+  "title": "Frozen Blinded Disagreement Adjudication Record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "view_sha256",
+    "panel_protocol_sha256",
+    "adjudication_protocol_sha256",
+    "source_judge_record_sha256",
+    "threshold_evaluations",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "candidate_id": {"type": "string", "minLength": 1},
+    "view_sha256": {"$ref": "#/$defs/hash"},
+    "panel_protocol_sha256": {"$ref": "#/$defs/hash"},
+    "adjudication_protocol_sha256": {"$ref": "#/$defs/hash"},
+    "source_judge_record_sha256": {
+      "type": "array",
+      "minItems": 0,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/hash"}
+    },
+    "threshold_evaluations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uncovered_requirement_satisfaction",
+        "semantic_appropriateness",
+        "maintainability",
+        "unnecessary_complexity",
+        "repository_fit",
+        "evidence_supported_confidence"
+      ],
+      "properties": {
+        "uncovered_requirement_satisfaction": {"$ref": "#/$defs/threshold"},
+        "semantic_appropriateness": {"$ref": "#/$defs/threshold"},
+        "maintainability": {"$ref": "#/$defs/threshold"},
+        "unnecessary_complexity": {"$ref": "#/$defs/threshold"},
+        "repository_fit": {"$ref": "#/$defs/threshold"},
+        "evidence_supported_confidence": {"$ref": "#/$defs/threshold"}
+      }
+    },
+    "status": {"enum": ["not_triggered", "completed", "failed", "blocked", "unavailable"]},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "family"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "family": {"type": "string", "minLength": 1}
+      }
+    },
+    "pins": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runtime_lock_sha256",
+        "model_lock_sha256",
+        "rubric_sha256",
+        "system_prompt_sha256",
+        "tools_sha256",
+        "decoding_controls_sha256",
+        "presentation_order_sha256"
+      ],
+      "properties": {
+        "runtime_lock_sha256": {"$ref": "#/$defs/hash"},
+        "model_lock_sha256": {"$ref": "#/$defs/hash"},
+        "rubric_sha256": {"$ref": "#/$defs/hash"},
+        "system_prompt_sha256": {"$ref": "#/$defs/hash"},
+        "tools_sha256": {"$ref": "#/$defs/hash"},
+        "decoding_controls_sha256": {"$ref": "#/$defs/hash"},
+        "presentation_order_sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "resolutions": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "uncovered_requirement_satisfaction": {"$ref": "#/$defs/resolution"},
+        "semantic_appropriateness": {"$ref": "#/$defs/resolution"},
+        "maintainability": {"$ref": "#/$defs/resolution"},
+        "unnecessary_complexity": {"$ref": "#/$defs/resolution"},
+        "repository_fit": {"$ref": "#/$defs/resolution"},
+        "evidence_supported_confidence": {"$ref": "#/$defs/resolution"}
+      }
+    },
+    "failure_code": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["criterion", "status", "maximum_spread", "observed_spread", "crossed"],
+      "properties": {
+        "criterion": {
+          "enum": [
+            "uncovered_requirement_satisfaction",
+            "semantic_appropriateness",
+            "maintainability",
+            "unnecessary_complexity",
+            "repository_fit",
+            "evidence_supported_confidence"
+          ]
+        },
+        "status": {"enum": ["evaluated", "blocked"]},
+        "maximum_spread": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "observed_spread": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "crossed": {"type": ["boolean", "null"]},
+        "failure_code": {"type": "string", "minLength": 1}
+      }
+    },
+    "resolution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "resolution", "uncertainty", "citations"],
+      "properties": {
+        "score": {"type": "number", "minimum": 0, "maximum": 1},
+        "resolution": {"type": "string", "minLength": 1},
+        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "pattern": "^artifact://blinded/[a-f0-9]{64}$"}
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "completed"}}},
+      "then": {"required": ["model", "pins", "resolutions"], "not": {"required": ["failure_code"]}},
+      "else": {"required": ["failure_code"], "not": {"required": ["resolutions"]}}
+    }
+  ]
+}

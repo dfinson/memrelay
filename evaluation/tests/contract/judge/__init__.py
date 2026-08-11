@@ -1,0 +1,1 @@
+"""Judge contract tests."""

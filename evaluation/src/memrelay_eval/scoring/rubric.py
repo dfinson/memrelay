@@ -28,6 +28,7 @@ JUDGE_CRITERIA = (
 _ARTIFACT_LOCATION = re.compile(r"^artifact://blinded/[a-f0-9]{64}$")
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "unavailable"})
+_SESSION_RESPONSE_CONTRACTS = frozenset({"judge", "adjudication"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +318,8 @@ class JudgeSessionRequest:
     view_bytes: bytes
     wall_seconds_limit: float
     authorized_blinded_artifacts: Mapping[str, str] = field(default_factory=dict)
+    response_contract: str = "judge"
+    disputed_criteria: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (
@@ -327,6 +330,15 @@ class JudgeSessionRequest:
             or not self.system_prompt
             or not self.view_bytes
             or self.wall_seconds_limit <= 0
+            or self.response_contract not in _SESSION_RESPONSE_CONTRACTS
+        ):
+            raise JudgePanelConformanceError("judge_session_request_invalid")
+        if self.response_contract == "judge" and self.disputed_criteria:
+            raise JudgePanelConformanceError("judge_session_request_invalid")
+        if self.response_contract == "adjudication" and (
+            not self.disputed_criteria
+            or len(set(self.disputed_criteria)) != len(self.disputed_criteria)
+            or any(name not in JUDGE_CRITERIA for name in self.disputed_criteria)
         ):
             raise JudgePanelConformanceError("judge_session_request_invalid")
         if (
@@ -353,9 +365,21 @@ class JudgeSessionRequest:
             "authorized_blinded_artifacts",
             MappingProxyType(dict(self.authorized_blinded_artifacts)),
         )
+        object.__setattr__(self, "disputed_criteria", tuple(self.disputed_criteria))
 
     @property
     def prompt(self) -> str:
+        if self.response_contract == "adjudication":
+            criteria = ", ".join(self.disputed_criteria)
+            return (
+                f"{self.system_prompt}\n"
+                f"Rubric SHA-256: {self.rubric_sha256}\n"
+                "Return JSON with a resolutions object containing exactly these disputed "
+                f"criteria: {criteria}. Each resolution must have normalized score, resolution, "
+                "uncertainty, and blinded artifact citations. Do not return any other criterion "
+                "or infer identity, treatment, provider, credentials, cost, or other evidence.\n"
+                f"Blinded adjudication evidence:\n{self.view_bytes.decode('utf-8')}"
+            )
         return (
             f"{self.system_prompt}\n"
             f"Rubric SHA-256: {self.rubric_sha256}\n"

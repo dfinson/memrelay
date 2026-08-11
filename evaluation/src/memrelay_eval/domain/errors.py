@@ -292,6 +292,14 @@ class JudgePanelConformanceError(IneligibleEvidenceError):
         super().__init__(code.replace("_", " "))
 
 
+class AdjudicationConformanceError(IneligibleEvidenceError):
+    """Frozen disagreement adjudication failed without a replacement or retry path."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
 class TelemetryConformanceError(DomainError):
     """A versioned telemetry contract, delivery, or Collector proof failed closed."""
 
