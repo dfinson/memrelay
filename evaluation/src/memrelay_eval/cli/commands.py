@@ -19,6 +19,13 @@ from memrelay_eval.analysis.queries import (
     DerivationSpec,
     ReadOnlyDuckDbAnalysis,
 )
+from memrelay_eval.analysis.replay import (
+    ReproductionBundle,
+    allocate_stochastic_rerun,
+    execute_sealed_replay,
+    publish_comparison,
+    seal_reproduction_bundle,
+)
 from memrelay_eval.analysis.reports import (
     ReportInput,
     build_stage_report_input,
@@ -365,6 +372,65 @@ def analyze_stage(args: Namespace) -> int:
     return 0
 
 
+def reproduce_offline(args: Namespace) -> int:
+    """Run a hash-sealed rebuild and compare it with retained original outputs."""
+    bundle = ReproductionBundle.parse(Path(args.bundle).read_bytes())
+    comparison = execute_sealed_replay(
+        bundle,
+        cas_root=Path(args.cas_root),
+        backup_root=Path(args.backup_root) if args.backup_root else None,
+    )
+    path = publish_comparison(comparison, Path(args.output_root))
+    print(canonical_bytes({**comparison.document(), "path": path.as_posix()}).decode("utf-8"))
+    return 0 if comparison.matches else 1
+
+
+def seal_reproduction_bundle_command(args: Namespace) -> int:
+    """Seal retained authorities into the one standard offline replay bundle."""
+    queries = _canonical_reproduction_json(Path(args.queries), "reproduction_queries_not_canonical")
+    grader_result = _canonical_reproduction_json(
+        Path(args.grader_result), "reproduction_grader_result_not_canonical"
+    )
+    normalized_evidence = _canonical_reproduction_json(
+        Path(args.normalized_evidence), "reproduction_evidence_not_canonical"
+    )
+    if not isinstance(queries, list) or not all(isinstance(item, dict) for item in queries):
+        raise AnalysisError("reproduction_queries_invalid")
+    if not isinstance(grader_result, dict) or not isinstance(normalized_evidence, dict):
+        raise AnalysisError("reproduction_source_invalid")
+    bundle = seal_reproduction_bundle(
+        dataset_root=Path(args.parquet_root),
+        dataset_version=args.dataset_version,
+        queries=tuple(queries),
+        grader_result=grader_result,
+        normalized_evidence=normalized_evidence,
+        protocol_sha256=args.protocol_sha256,
+        runtime_lock=Path(args.runtime_lock),
+        output_root=Path(args.output_root),
+        backup_receipt=Path(args.backup_receipt) if args.backup_receipt else None,
+    )
+    print(bundle.bytes().decode("utf-8"))
+    return 0
+
+
+def allocate_stochastic_rerun_command(args: Namespace) -> int:
+    """Reserve distinct lineage for a governed stochastic rerun or replication."""
+    identity = allocate_stochastic_rerun(
+        original_protocol_id=args.original_protocol_id,
+        original_run_id=args.original_run_id,
+        original_attempt_id=args.original_attempt_id,
+        conclusion_class=args.conclusion_class,
+        output_root=Path(args.output_root),
+        original_evidence_root=Path(args.original_evidence_root),
+    )
+    print(
+        canonical_bytes(
+            {**identity.document(), "output_directory": identity.output_directory.as_posix()}
+        ).decode("utf-8")
+    )
+    return 0
+
+
 def report_stage(args: Namespace) -> int:
     """Render a local report from one canonical frozen authority document."""
     input_bytes = Path(args.stage_evidence).read_bytes()
@@ -448,6 +514,25 @@ def _canonical_analysis_plan(data: bytes) -> dict[str, Any]:
         ):
             raise AnalysisError("analysis_plan_schema_invalid")
     return document
+
+
+def _canonical_reproduction_json(path: Path, code: str) -> object:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise AnalysisError(code)
+            result[key] = value
+        return result
+
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload.decode("utf-8"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise AnalysisError(code) from error
+    if canonical_bytes(value) != payload:
+        raise AnalysisError(code)
+    return value
 
 
 def _claim_decision(document: object) -> ClaimGateDecision:
