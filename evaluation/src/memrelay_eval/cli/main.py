@@ -7,8 +7,8 @@ from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
-    backup_terminal,
     analyze_stage,
+    backup_terminal,
     bootstrap,
     compile_authored_catalog,
     lock_models,
