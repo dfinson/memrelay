@@ -291,7 +291,11 @@ class TerminalEvidenceBackup:
                     )
                     _write_bytes(staging / "backup-receipt.json", receipt.bytes())
                     _fsync_tree(staging)
-                    self._reject_prior_generation_for_attempt(receipt)
+                    existing = self._existing_generation_for_attempt(receipt)
+                    if existing is not None:
+                        self._link_receipt(existing, run_id, attempt_id)
+                        gate.record_backup(existing)
+                        return existing
                     self._publish_or_verify_generation(staging, receipt)
                     self._link_receipt(receipt, run_id, attempt_id)
                     gate.record_backup(receipt)
@@ -338,12 +342,12 @@ class TerminalEvidenceBackup:
         _fsync_directory(generations)
         _verify_generation(destination, receipt)
 
-    def _reject_prior_generation_for_attempt(self, receipt: BackupReceipt) -> None:
-        """Never replace a failed terminal backup with a new generation for the same attempt."""
+    def _existing_generation_for_attempt(self, receipt: BackupReceipt) -> BackupReceipt | None:
+        """Return one verified prior generation instead of creating a fallback backup."""
 
         generations = self.backup_root / "generations"
         if not generations.exists():
-            return
+            return None
         for candidate in sorted(generations.iterdir()):
             if not candidate.is_dir() or candidate.is_symlink():
                 continue
@@ -351,7 +355,8 @@ class TerminalEvidenceBackup:
             if existing.run_id != receipt.run_id or existing.attempt_id != receipt.attempt_id:
                 continue
             _verify_generation(candidate, existing)
-            raise BackupConformanceError("backup_attempt_already_backed_up")
+            return existing
+        return None
 
     def _link_receipt(self, receipt: BackupReceipt, run_id: RunId, attempt_id: AttemptId) -> None:
         store = FilesystemArtifactStore(self.artifacts_root)
