@@ -26,6 +26,7 @@ from memrelay_eval.adapters.telemetry.semantics import (
 from memrelay_eval.domain.entities import AttemptTerminal
 from memrelay_eval.domain.errors import (
     AgentParityMismatchError,
+    AuthorityConflictError,
     ExecutionAdapterError,
     ExecutionEvidenceConflictError,
     SecretBoundaryViolationError,
@@ -219,6 +220,18 @@ class InspectAttemptController:
                 )
             )
             raise
+        except AuthorityConflictError as error:
+            self._recorder.append(
+                AttemptTerminal(
+                    attempt_id,
+                    run_id,
+                    AttemptTerminalKind.EVIDENCE_INCOMPLETE,
+                    datetime.now(UTC),
+                    error.code,
+                    tuple(evidence.inventory.artifacts.values()),
+                )
+            )
+            raise
         except ExecutionEvidenceConflictError:
             conflict_ref = persist_execution_conflict_finding(self._store)
             self._recorder.append(
@@ -390,8 +403,12 @@ def _copilot_raw_quantities(usage: Mapping[str, object] | object) -> dict[str, i
         "allowance": "allowance",
         "billing_periods": "billing_periods",
     }
-    return {
-        target: value
-        for source, target in fields.items()
-        if isinstance((value := usage.get(source)), int) and not isinstance(value, bool)
-    }
+    normalized: dict[str, int] = {}
+    for source, target in fields.items():
+        value = usage.get(source)
+        if value is None:
+            continue
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise AuthorityConflictError("authority_conflict", ("invalid_native_usage_quantity",))
+        normalized[target] = value
+    return normalized

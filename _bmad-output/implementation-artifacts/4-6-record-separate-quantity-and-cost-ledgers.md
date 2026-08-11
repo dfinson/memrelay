@@ -139,6 +139,9 @@ GPT-5.6 Terra (gpt-5.6-terra)
   boundary and framework/local quantity publication through the direct-engine boundary, including
   failed, timed-out, and observed-zero paths. Every cost intent now carries its native-source
   artifact reference, and SQLite authority-conflict insertion has replay coverage.
+- Remediation: invalid native Copilot quantities are rejected before cost-row publication and append
+  exactly one `evidence_incomplete` terminal with retained native evidence, so a claimed attempt
+  cannot remain unterminated or fabricate a quantity ledger row.
 
 ### File List
 
