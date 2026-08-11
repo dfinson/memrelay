@@ -41,6 +41,7 @@ from memrelay_eval.application.copilot_services import (
     eligible_models,
     qualify_native_catalog,
 )
+from memrelay_eval.application.observation_services import qualify_observation
 from memrelay_eval.application.telemetry_services import (
     DEFAULT_COLLECTOR_ARCHIVE_NAME,
     verify_local_telemetry_bootstrap,
@@ -54,10 +55,18 @@ from memrelay_eval.domain.errors import (
     ConformancePauseError,
     CrossRepositoryDeniedError,
     InvalidConfigurationError,
+    ObservationQualificationError,
     StageControlError,
 )
+from memrelay_eval.domain.observation import (
+    observation_contract_from_document,
+    observation_evidence_from_document,
+)
 from memrelay_eval.evidence.backup import preflight_backup_root
-from memrelay_eval.evidence.manifest import stage_command_manifest
+from memrelay_eval.evidence.manifest import (
+    observation_qualification_manifest,
+    stage_command_manifest,
+)
 from memrelay_eval.orchestration.configuration import (
     load_evaluator_toml,
     resolve_effective_configuration,
@@ -467,6 +476,151 @@ def plan_offline_command(args: Namespace) -> int:
     command_manifest = plan_offline_to_command_manifest(result)
     print(command_manifest.decode("utf-8"))
     return result.exit_code
+
+
+def observation_conformance(args: Namespace) -> int:
+    """Qualify one frozen synthetic sentinel path and retain its immutable decision."""
+
+    input_path = Path(args.input)
+    document, input_bytes = _canonical_observation_input(input_path)
+    contract_value = document.get("contract")
+    evidence_value = document.get("evidence")
+    if not isinstance(contract_value, dict) or not isinstance(evidence_value, dict):
+        raise ObservationQualificationError("observation_qualification_input_invalid")
+    try:
+        contract = observation_contract_from_document(contract_value)
+        evidence = observation_evidence_from_document(evidence_value)
+        decided_at = _observation_timestamp(document.get("decided_at"))
+    except ValueError as error:
+        raise ObservationQualificationError("observation_qualification_input_invalid") from error
+    decision = qualify_observation(
+        contract,
+        evidence,
+        decided_at=decided_at,
+    )
+    identity = contract.identity
+    protocol_sha256 = canonical_digest(
+        {
+            "protocol_version": identity.protocol_version,
+            "conformance_sha256": identity.conformance_sha256,
+        }
+    )
+    # The shared Story 6.1 command-manifest wrapper reads these values after
+    # this handler returns or raises, binding that terminal record to this path.
+    args.runtime_lock_sha256 = identity.runtime_lock_sha256
+    args.protocol_sha256 = protocol_sha256
+    input_hashes = {
+        "observation_input": sha256(input_bytes).hexdigest(),
+        "configuration": identity.configuration_sha256,
+        "reconciliation_policy": identity.reconciliation_policy_sha256,
+        "semantic_map": identity.semantic_map_sha256,
+        "sentinel_contract": identity.sentinel_contract_sha256,
+        "source_implementation": identity.source_implementation_sha256,
+    }
+    output_hashes = {"observation_qualification": decision.decision_sha256}
+    qualification_manifest = observation_qualification_manifest(
+        path=contract.path.value,
+        conformance_sha256=identity.conformance_sha256,
+        protocol_version=identity.protocol_version,
+        protocol_sha256=protocol_sha256,
+        terminal_status="succeeded" if decision.qualified else "failed",
+        error_code=None if decision.qualified else decision.assessment.reason_code,
+        input_hashes=input_hashes,
+        output_hashes=output_hashes,
+        runtime_lock_sha256=identity.runtime_lock_sha256,
+    )
+    _persist_observation_decision(
+        Path(args.output_root),
+        path=contract.path.value,
+        conformance_sha256=identity.conformance_sha256,
+        decision_bytes=canonical_bytes(decision.to_document()),
+        qualification_manifest=qualification_manifest,
+    )
+    print(canonical_bytes(decision.to_document()).decode("utf-8"))
+    if not decision.qualified:
+        raise ObservationQualificationError(decision.assessment.reason_code)
+    return 0
+
+
+def _canonical_observation_input(path: Path) -> tuple[dict[str, object], bytes]:
+    try:
+        data = path.read_bytes()
+        document = json.loads(data.decode("utf-8"), object_pairs_hook=_reject_duplicate_json_keys)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ObservationQualificationError("observation_qualification_input_invalid") from error
+    if (
+        not isinstance(document, dict)
+        or set(document) != {"contract", "evidence", "decided_at"}
+        or canonical_bytes(document) != data
+    ):
+        raise ObservationQualificationError("observation_qualification_input_invalid")
+    return document, data
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate_observation_input_key")
+        document[key] = value
+    return document
+
+
+def _observation_timestamp(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise ObservationQualificationError("observation_qualification_input_invalid")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ObservationQualificationError("observation_qualification_input_invalid") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ObservationQualificationError("observation_qualification_input_invalid")
+    return parsed.astimezone(UTC)
+
+
+def _persist_observation_decision(
+    output_root: Path,
+    *,
+    path: str,
+    conformance_sha256: str,
+    decision_bytes: bytes,
+    qualification_manifest: bytes,
+) -> None:
+    directory = output_root / "observation-qualification" / path / conformance_sha256
+    decision_sha256 = sha256(decision_bytes).hexdigest()
+    manifest_sha256 = sha256(qualification_manifest).hexdigest()
+    _write_immutable_observation_file(
+        directory / f"decision-{decision_sha256}.json", decision_bytes
+    )
+    _write_immutable_observation_file(
+        directory / f"manifest-{manifest_sha256}.json", qualification_manifest
+    )
+
+
+def _write_immutable_observation_file(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        if path.is_file() and path.read_bytes() == data:
+            return
+        raise ObservationQualificationError("observation_qualification_output_conflict")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(data)
+        os.link(temporary, path)
+    except FileExistsError:
+        if not path.is_file() or path.read_bytes() != data:
+            raise ObservationQualificationError(
+                "observation_qualification_output_conflict"
+            ) from None
+    except OSError as error:
+        raise ObservationQualificationError(
+            "observation_qualification_output_publish_failed"
+        ) from error
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+    if not path.is_file() or path.read_bytes() != data:
+        raise ObservationQualificationError("observation_qualification_output_publish_failed")
 
 
 def reconcile_stage(args: Namespace) -> int:

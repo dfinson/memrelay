@@ -1,0 +1,188 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/observation-qualification-1.0.0.json",
+  "title": "Observation Sentinel Qualification",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "artifact_type",
+    "contract",
+    "evidence",
+    "qualified",
+    "reason_code",
+    "failure_reasons",
+    "delivery_numerator",
+    "delivery_denominator",
+    "delivery_proportion",
+    "missing_by_boundary",
+    "pre_idempotency_duplicates",
+    "post_idempotency_duplicates",
+    "reordered_boundaries",
+    "delayed_sentinels",
+    "restart_epochs",
+    "estimand",
+    "non_claims",
+    "decision_sha256",
+    "decided_at"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "artifact_type": {"const": "observation_qualification"},
+    "contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "path",
+        "identity",
+        "expected_sentinels",
+        "window_started_at",
+        "deadline_at",
+        "require_restart_recovery",
+        "estimand",
+        "non_claims"
+      ],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "path": {"enum": ["replay", "file_watch"]},
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "source_implementation_sha256",
+            "semantic_map_sha256",
+            "configuration_sha256",
+            "runtime_lock_sha256",
+            "sentinel_contract_sha256",
+            "reconciliation_policy_sha256",
+            "conformance_sha256",
+            "protocol_version"
+          ],
+          "properties": {
+            "source_implementation_sha256": {"$ref": "#/$defs/sha256"},
+            "semantic_map_sha256": {"$ref": "#/$defs/sha256"},
+            "configuration_sha256": {"$ref": "#/$defs/sha256"},
+            "runtime_lock_sha256": {"$ref": "#/$defs/sha256"},
+            "sentinel_contract_sha256": {"$ref": "#/$defs/sha256"},
+            "reconciliation_policy_sha256": {"$ref": "#/$defs/sha256"},
+            "conformance_sha256": {"$ref": "#/$defs/sha256"},
+            "protocol_version": {
+              "type": "string",
+              "pattern": "^memrelay\\.eval\\.observation-sentinel/1\\.0\\.0\\+[a-f0-9]{16}$"
+            }
+          }
+        },
+        "expected_sentinels": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/sentinel"}
+        },
+        "window_started_at": {"$ref": "#/$defs/timestamp"},
+        "deadline_at": {"$ref": "#/$defs/timestamp"},
+        "require_restart_recovery": {"type": "boolean"},
+        "estimand": {"type": "string"},
+        "non_claims": {"type": "string"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "conformance_sha256",
+        "records",
+        "final_drain_completed",
+        "collector_shutdown_verified",
+        "reconciliation_completed",
+        "authority_conflict",
+        "partial_success"
+      ],
+      "properties": {
+        "path": {"enum": ["replay", "file_watch"]},
+        "conformance_sha256": {"$ref": "#/$defs/sha256"},
+        "records": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/boundaryRecord"}
+        },
+        "final_drain_completed": {"type": "boolean"},
+        "collector_shutdown_verified": {"type": "boolean"},
+        "reconciliation_completed": {"type": "boolean"},
+        "authority_conflict": {"type": "boolean"},
+        "partial_success": {"type": "boolean"}
+      }
+    },
+    "qualified": {"type": "boolean"},
+    "reason_code": {"type": "string", "pattern": "^observation_[a-z_]+$"},
+    "failure_reasons": {
+      "type": "array",
+      "items": {"type": "string", "pattern": "^observation_[a-z_]+$"}
+    },
+    "delivery_numerator": {"type": "integer", "minimum": 0},
+    "delivery_denominator": {"type": "integer", "minimum": 1},
+    "delivery_proportion": {"type": "number", "minimum": 0, "maximum": 1},
+    "missing_by_boundary": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["boundary", "sentinel_ids"],
+        "properties": {
+          "boundary": {"$ref": "#/$defs/boundary"},
+          "sentinel_ids": {"type": "array", "items": {"$ref": "#/$defs/sentinelId"}}
+        }
+      }
+    },
+    "pre_idempotency_duplicates": {"type": "array", "items": {"$ref": "#/$defs/sentinelId"}},
+    "post_idempotency_duplicates": {"type": "array", "items": {"$ref": "#/$defs/sentinelId"}},
+    "reordered_boundaries": {"type": "array", "items": {"$ref": "#/$defs/boundary"}},
+    "delayed_sentinels": {"type": "array", "items": {"$ref": "#/$defs/sentinelId"}},
+    "restart_epochs": {"type": "array", "items": {"type": "integer", "minimum": 0}},
+    "estimand": {"type": "string"},
+    "non_claims": {"type": "string"},
+    "decision_sha256": {"$ref": "#/$defs/sha256"},
+    "decided_at": {"$ref": "#/$defs/timestamp"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "timestamp": {"type": "string", "pattern": "Z$"},
+    "sentinelId": {"type": "string", "pattern": "^sentinel_[a-f0-9]{32}$"},
+    "sentinel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identifier", "sequence"],
+      "properties": {
+        "identifier": {"$ref": "#/$defs/sentinelId"},
+        "sequence": {"type": "integer", "minimum": 1}
+      }
+    },
+    "boundary": {
+      "enum": [
+        "discovery",
+        "capture",
+        "pre_idempotency",
+        "spool",
+        "daemon",
+        "mcp_graph",
+        "telemetry",
+        "manifest",
+        "terminal_flush",
+        "reconciliation"
+      ]
+    },
+    "boundaryRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "boundary", "sentinel_id", "sequence", "observed_at", "restart_epoch"],
+      "properties": {
+        "path": {"enum": ["replay", "file_watch"]},
+        "boundary": {"$ref": "#/$defs/boundary"},
+        "sentinel_id": {"$ref": "#/$defs/sentinelId"},
+        "sequence": {"type": "integer", "minimum": 1},
+        "observed_at": {"$ref": "#/$defs/timestamp"},
+        "restart_epoch": {"type": "integer", "minimum": 0}
+      }
+    }
+  }
+}

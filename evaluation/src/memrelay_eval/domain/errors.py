@@ -373,6 +373,14 @@ class TelemetryConformanceError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
+class ObservationQualificationError(DomainError):
+    """A path-scoped observation sentinel contract did not qualify."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
 class AuthorityConflictError(DomainError):
     """Provider, credential, resource, or ledger authority is unknown or incompatible."""
 

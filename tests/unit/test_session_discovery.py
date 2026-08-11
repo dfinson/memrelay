@@ -397,3 +397,60 @@ def test_run_observe_capture_observes_on_cadence_and_final_drains(monkeypatch: A
     assert seen == ["s1", "s1"]
     assert task is not None and task.done()  # loop task finished — nothing leaked
     assert capture._task is None  # handle released
+
+
+def test_poller_restart_keeps_each_capture_terminal_drain(monkeypatch: Any) -> None:
+    """A stopped session may restart, but each capture still issues one authoritative drain."""
+    import memrelay.ingest.graphiti_sink as graphiti_sink
+
+    calls: list[tuple[str, bool]] = []
+    observed = asyncio.Event()
+
+    async def fake_run_observe(path: Any, session_id: str, **kwargs: Any) -> None:
+        del path
+        calls.append((session_id, bool(kwargs["final"])))
+        if not kwargs["final"]:
+            observed.set()
+
+    monkeypatch.setattr(graphiti_sink, "run_observe", fake_run_observe)
+
+    async def scenario() -> None:
+        active = [_ref("sentinel_00000000000000000000000000000001", "C:/synthetic/events.jsonl")]
+
+        async def parking_wait(_interval: float, stop: asyncio.Event) -> None:
+            await stop.wait()
+
+        def capture_factory(ref: SessionRef) -> RunObserveCapture:
+            return RunObserveCapture(
+                ref,
+                spool=object(),
+                provider=object(),
+                config=None,
+                namespace_map=None,
+                wait=parking_wait,
+            )
+
+        poller = SessionDiscoveryPoller(
+            discover=lambda: list(active), capture_factory=capture_factory
+        )
+        await poller.poll_once()
+        await asyncio.wait_for(observed.wait(), timeout=5.0)
+        active.clear()
+        await poller.poll_once()
+
+        observed.clear()
+        active.append(
+            _ref("sentinel_00000000000000000000000000000001", "C:/synthetic/events.jsonl")
+        )
+        await poller.poll_once()
+        await asyncio.wait_for(observed.wait(), timeout=5.0)
+        await poller.aclose()
+
+    asyncio.run(scenario())
+
+    assert calls == [
+        ("sentinel_00000000000000000000000000000001", False),
+        ("sentinel_00000000000000000000000000000001", True),
+        ("sentinel_00000000000000000000000000000001", False),
+        ("sentinel_00000000000000000000000000000001", True),
+    ]

@@ -19,6 +19,7 @@ from memrelay_eval.cli.commands import (
     bootstrap,
     compile_authored_catalog,
     lock_models,
+    observation_conformance,
     plan_offline_command,
     reconcile_stage,
     report_stage,
@@ -190,6 +191,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_command_manifest_root(plan_offline)
     plan_offline.set_defaults(handler=plan_offline_command)
+    observation = subcommands.add_parser(
+        "observation-conformance",
+        help="qualify one frozen replay or file-watch sentinel evidence input",
+    )
+    observation.add_argument(
+        "--input",
+        required=True,
+        help="canonical observation contract/evidence input JSON containing no source payloads",
+    )
+    observation.add_argument(
+        "--output-root",
+        default="artifacts",
+        help="append-only artifact root for path-scoped decisions and manifests",
+    )
+    _add_command_manifest_root(observation)
+    observation.set_defaults(handler=observation_conformance)
     reconcile = subcommands.add_parser(
         "reconcile",
         help="reconcile canonical terminal evidence and append one immutable inclusion decision",
@@ -319,6 +336,7 @@ _LEGACY_MANIFESTED_COMMANDS = frozenset(
         "validate-catalog",
         "compile-catalog",
         "plan-offline",
+        "observation-conformance",
         "reconcile",
         "backup-terminal",
         "analyze",
@@ -335,6 +353,7 @@ _INPUT_PATH_FIELDS = {
     "validate-catalog": ("catalog", "prior_lock"),
     "compile-catalog": ("catalog", "prior_lock", "runtime_lock"),
     "plan-offline": ("catalog", "prior_lock", "runtime_lock", "lock"),
+    "observation-conformance": ("input",),
     "reconcile": ("input", "ledger"),
     "backup-terminal": ("artifacts_root", "ledger"),
     "analyze": ("plan", "parquet_root"),
@@ -357,6 +376,7 @@ _OUTPUT_PATH_FIELDS = {
     "validate-catalog": (),
     "compile-catalog": ("output_dir", "lock", "manifest"),
     "plan-offline": ("output_dir", "manifest"),
+    "observation-conformance": ("output_root",),
     "reconcile": ("artifacts_root", "manifest"),
     "backup-terminal": ("backup_root",),
     "analyze": ("output_root",),
@@ -525,9 +545,13 @@ def _hash_path(path: Path) -> str:
 
 def _authority_hashes(args: argparse.Namespace) -> tuple[str | None, str | None]:
     runtime_lock = getattr(args, "runtime_lock", None)
-    runtime_lock_sha256 = (
-        _hash_path(Path(runtime_lock)) if runtime_lock and Path(runtime_lock).is_file() else None
-    )
+    runtime_lock_sha256 = getattr(args, "runtime_lock_sha256", None)
+    if runtime_lock_sha256 is None:
+        runtime_lock_sha256 = (
+            _hash_path(Path(runtime_lock))
+            if runtime_lock and Path(runtime_lock).is_file()
+            else None
+        )
     protocol_sha256 = getattr(args, "protocol_sha256", None)
     for field in _INPUT_PATH_FIELDS.get(args.command, ()):
         path = _command_path(args, field)

@@ -65,6 +65,33 @@ decision through the control-owned ledger. The command emits a canonical
 manifest with input, output, runtime, and protocol hashes, and makes no
 provider or analysis calls.
 
+## Observation sentinel qualification
+
+Observation conformance qualifies `replay` and `file_watch` independently. Each
+path freezes hashes of the current discovery/capture implementation, semantic
+map, configuration, runtime lock, sentinel contract, and reconciliation policy
+before injecting opaque synthetic sentinels. Evidence retains only sentinel IDs,
+sequence numbers, timestamps, restart epochs, and boundary names across
+discovery, capture, pre-idempotency input, spool, daemon, MCP-visible graph,
+telemetry, manifests, terminal flush, and reconciliation.
+
+A post-idempotency duplicate, missing/gapped/reordered/delayed sentinel,
+restart-recovery failure, terminal-flush failure, authority conflict, or
+unreconciled telemetry fails that path and emits no completeness claim.
+Changing a hashed implementation or semantic-map input derives a new
+conformance hash and protocol version; previously written evidence retains its
+original binding. These decisions support only the named path's frozen sentinel
+contract, not efficacy, safety, economics, production-wide reliability, or
+cross-repository fitness.
+
+Use `memrelay-eval observation-conformance --input <canonical-input.json>
+--output-root <artifacts-root>` to retain one immutable decision and
+path-specific manifest. The canonical input contains only the serialized frozen
+contract, boundary evidence, and UTC decision time; unsupported fields,
+non-canonical JSON, and source payloads are rejected. An unqualified path still
+persists its decision and returns its typed failure reason, while the ordinary
+Story 6.1 command manifest is emitted alongside it.
+
 ## Terminal evidence backup and restore
 
 `memrelay-eval bootstrap --backup-root <second-volume-path>` proves a writable
