@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/frozen-threshold-policy-1.0.0.json",
+  "title": "Sealed frozen claim threshold policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protocol_sha256", "family_sha256", "family_registration_sha256", "sealed_claim_protocol_sha256", "categorical_policy_sha256", "categorical_scope_id", "reliability_benefit", "quality_benefit", "noninferiority", "superiority_ratio", "economic_noninferiority_ratio", "panel_gate_sha256"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protocol_sha256": {"$ref": "#/$defs/sha256"},
+    "family_sha256": {"$ref": "#/$defs/sha256"},
+    "family_registration_sha256": {"$ref": "#/$defs/sha256"},
+    "sealed_claim_protocol_sha256": {"$ref": "#/$defs/sha256"},
+    "categorical_policy_sha256": {"$ref": "#/$defs/sha256"},
+    "categorical_scope_id": {"type": "string", "minLength": 1},
+    "reliability_benefit": {"const": 0.05},
+    "quality_benefit": {"const": 0.05},
+    "noninferiority": {"const": -0.02},
+    "superiority_ratio": {"const": 0.9},
+    "economic_noninferiority_ratio": {"const": 1.1},
+    "panel_gate_sha256": {"anyOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

@@ -1,0 +1,16 @@
+{
+  "family_mode": "reliability",
+  "family_endpoint_ids": ["EP-PRIM-SUCCESS", "EP-QUAL", "EP-HARM"],
+  "method": "holm",
+  "method_version": "1.0.0",
+  "inputs": {
+    "EP-HARM": 0.01,
+    "EP-QUAL": 0.01,
+    "EP-PRIM-SUCCESS": 0.04
+  },
+  "expected": {
+    "EP-PRIM-SUCCESS": {"adjusted_p_value": 0.04, "rank": 3},
+    "EP-QUAL": {"adjusted_p_value": 0.03, "rank": 1},
+    "EP-HARM": {"adjusted_p_value": 0.03, "rank": 2}
+  }
+}
