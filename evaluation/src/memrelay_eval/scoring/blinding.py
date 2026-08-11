@@ -156,7 +156,7 @@ class FrozenLeakageProtocol:
 
 @dataclass(frozen=True, slots=True)
 class LeakageConformance:
-    """Leakage gate result retained with its preregistered protocol hash."""
+    """Polarity-symmetric leakage gate result retained with its protocol hash."""
 
     protocol_sha256: str
     auc: float
@@ -271,8 +271,8 @@ def evaluate_leakage_classifier(
         (_classifier_score(candidate.view_bytes, positive, negative), candidate.arm)
         for candidate in evaluation
     )
-    auc = _auc(scored)
-    upper = _auc_upper_bound_95(auc, scored)
+    auc, positive_count, negative_count = _polarity_symmetric_auc(scored)
+    upper = _auc_upper_bound_95(auc, positive_count, negative_count)
     return LeakageConformance(protocol.sha256, auc, upper, ())
 
 
@@ -438,9 +438,20 @@ def _auc(scored: Sequence[tuple[float, Literal[0, 1]]]) -> float:
     return wins / (len(positives) * len(negatives))
 
 
-def _auc_upper_bound_95(auc: float, scored: Sequence[tuple[float, Literal[0, 1]]]) -> float:
+def _polarity_symmetric_auc(
+    scored: Sequence[tuple[float, Literal[0, 1]]],
+) -> tuple[float, int, int]:
+    """Choose the stronger label direction before applying the fixed AUC gate."""
+    directional_auc = _auc(scored)
     positive_count = sum(arm == 1 for _, arm in scored)
     negative_count = len(scored) - positive_count
+    if directional_auc >= 0.5:
+        return directional_auc, positive_count, negative_count
+    return 1 - directional_auc, negative_count, positive_count
+
+
+def _auc_upper_bound_95(auc: float, positive_count: int, negative_count: int) -> float:
+    """Compute the upper bound for the orientation selected by the leakage statistic."""
     q1 = auc / (2 - auc)
     q2 = (2 * auc * auc) / (1 + auc)
     variance = (

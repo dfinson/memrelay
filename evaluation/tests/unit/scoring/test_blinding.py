@@ -14,6 +14,7 @@ from memrelay_eval.scoring.blinding import (
     BlindingPolicy,
     FrozenLeakageProtocol,
     LeakageCandidate,
+    LeakageConformance,
     detect_direct_leaks,
     evaluate_leakage_classifier,
     generate_blinded_view,
@@ -177,8 +178,38 @@ def test_classifier_upper_bound_and_direct_leaks_fail_closed() -> None:
         protocol,
     )
 
+    assert conformance.auc == 1.0
     assert conformance.upper_auc_95 > 0.60
     with pytest.raises(BlindingConformanceError, match="classifier auc upper bound"):
         require_blinding_conformance((), conformance)
     with pytest.raises(BlindingConformanceError, match="direct blinding leak"):
         require_blinding_conformance(("assignment",), conformance)
+
+
+def test_classifier_rejects_perfectly_separable_inverted_polarity() -> None:
+    protocol = FrozenLeakageProtocol(
+        seed=1,
+        sentinel_corpus_sha256="0" * 64,
+        training_ids=("train-zero", "train-one"),
+        evaluation_ids=("eval-zero", "eval-one"),
+    )
+    conformance = evaluate_leakage_classifier(
+        (
+            LeakageCandidate("train-zero", b"zero only", 0),
+            LeakageCandidate("train-one", b"one only", 1),
+            LeakageCandidate("eval-zero", b"one only", 0),
+            LeakageCandidate("eval-one", b"zero only", 1),
+        ),
+        protocol,
+    )
+
+    assert conformance.auc == 1.0
+    assert conformance.upper_auc_95 == 1.0
+    with pytest.raises(BlindingConformanceError, match="classifier auc upper bound"):
+        require_blinding_conformance((), conformance)
+
+
+def test_classifier_gate_accepts_the_exact_upper_auc_boundary() -> None:
+    conformance = LeakageConformance("0" * 64, 0.60, 0.60, ())
+
+    require_blinding_conformance((), conformance)
