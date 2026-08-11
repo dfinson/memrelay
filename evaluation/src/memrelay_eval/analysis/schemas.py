@@ -11,10 +11,14 @@ from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.domain.errors import MaterializationError
 
 PARQUET_SCHEMA_VERSION: Final = "1.0.0"
+ANALYSIS_SCHEMA_VERSION: Final = "1.0.0"
 PYARROW_VERSION: Final = "25.0.0"
 ASSIGNED_UNITS_TABLE: Final = "assigned_units"
 ELIGIBLE_OUTCOMES_TABLE: Final = "eligible_outcomes"
 SAFETY_SCHEMA_VERSION: Final = "1.0.0"
+ITT_TABLE_ARTIFACT: Final = "assignment_aligned_itt_table"
+ESTIMATOR_DECISION_ARTIFACT: Final = "frozen_estimator_decision"
+DIAGNOSTIC_REPORT_ARTIFACT: Final = "assignment_balance_diagnostic_report"
 
 _STATUS_CATEGORIES: Final = (
     "included",

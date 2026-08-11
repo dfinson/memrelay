@@ -285,6 +285,14 @@ class SafetyAnalysisError(DomainError):
         super().__init__(code.replace("_", " "))
 
 
+class AnalysisError(DomainError):
+    """A frozen assignment-aligned analysis request cannot be safely completed."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code.replace("_", " "))
+
+
 class TerminalDecisionConflictError(ReconciliationError):
     """A later report attempted to replace an immutable inclusion decision."""
 
