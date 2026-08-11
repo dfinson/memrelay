@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from errno import EACCES, EAGAIN, EEXIST, ENOTEMPTY
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,6 +22,11 @@ from memrelay_eval.domain.ids import AttemptId, RetentionPolicyId, RunId
 from memrelay_eval.domain.states import ArtifactScope
 from memrelay_eval.evidence.manifest import canonical_json_bytes
 from memrelay_eval.ledger.repository import verify_snapshot_artifact_links, verify_snapshot_file
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 if TYPE_CHECKING:
     from memrelay_eval.domain.ports import LedgerPort
@@ -324,7 +330,9 @@ class TerminalEvidenceBackup:
             return
         try:
             os.replace(staging, destination)
-        except FileExistsError:
+        except OSError as error:
+            if error.errno not in {EACCES, EEXIST, ENOTEMPTY} or not destination.exists():
+                raise BackupConformanceError("backup_generation_publish_collision") from error
             _verify_generation(destination, receipt)
         _fsync_directory(generations)
         _verify_generation(destination, receipt)
@@ -553,22 +561,49 @@ def _verify_restored_ledger_links(snapshot: Path, store: FilesystemArtifactStore
 
 
 class _BackupLock:
+    """Kernel-backed generation lease; a stale marker can never retain ownership."""
+
     def __init__(self, path: Path) -> None:
         self.path = path
 
     def __enter__(self) -> _BackupLock:
         try:
-            self.descriptor = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError as error:
-            raise BackupConformanceError("backup_concurrent_writer_detected") from error
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._handle = self.path.open("a+b")
+            self._handle.seek(0, os.SEEK_END)
+            if self._handle.tell() == 0:
+                self._handle.write(b"\0")
+                self._handle.flush()
+            self._handle.seek(0)
+        except OSError as error:
+            if hasattr(self, "_handle") and not self._handle.closed:
+                self._handle.close()
+            raise BackupConformanceError("backup_lock_acquisition_failed") from error
+        try:
+            if os.name == "nt":
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if not self._handle.closed:
+                self._handle.close()
+            code = (
+                "backup_concurrent_writer_detected"
+                if error.errno in {EACCES, EAGAIN}
+                else "backup_lock_acquisition_failed"
+            )
+            raise BackupConformanceError(code) from error
         return self
 
     def __exit__(self, *_: object) -> None:
-        os.close(self.descriptor)
         try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+            self._handle.seek(0)
+            if os.name == "nt":
+                msvcrt.locking(self._handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(self._handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            self._handle.close()
 
 
 def _write_bytes(path: Path, data: bytes) -> None:

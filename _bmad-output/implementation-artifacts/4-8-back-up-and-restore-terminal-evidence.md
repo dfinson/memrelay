@@ -131,6 +131,9 @@ GPT-5.6 Terra (gpt-5.6-terra)
   enforcement, verified ledger-to-artifact reads, reachability rebuild, and retained RTO report.
 - Added focused contract, fault, and integration coverage for second-volume rejection,
   partial generations, receipt-link interruption, tampering, rebuild, and revoked policy.
+- Replaced the stale backup sentinel with a kernel-backed cross-platform advisory lease and
+  added process-termination plus Windows directory-collision regressions; existing
+  generations are accepted only after complete byte-identical receipt verification.
 - The local host has no independent writable volume available for a physical
   second-volume drill; bootstrap correctly fails closed until operations supplies one.
 
