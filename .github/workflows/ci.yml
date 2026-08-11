@@ -107,6 +107,19 @@ jobs:
       - name: Install evaluator dependencies from its lockfile
         run: uv sync --locked --extra dev
 
+      - name: Bootstrap pinned Linux grader sandboxes
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          docker pull docker.io/library/python:3.13.15-slim-bookworm@sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48
+
+      - name: Smoke the restricted production grader (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          uv run --locked pytest \
+            tests/unit/scoring/test_deterministic_grader.py::test_network_namespace_blocks_listener_and_host_escapes \
+            tests/unit/scoring/test_deterministic_grader.py::test_docker_fallback_blocks_live_host_escapes
+
       - name: Run evaluator contract, fault, and ownership tests
         run: uv run --locked pytest
   first-run-smoke:
@@ -212,6 +225,12 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: evaluation/uv.lock
+
+      - name: Bootstrap pinned Linux grader sandboxes
+        if: runner.os != 'Windows'
+        run: |
+          sudo apt-get update && sudo apt-get install --yes bubblewrap
+          docker pull docker.io/library/python:3.13.15-slim-bookworm@sha256:0f16c5d35fe6464ee471792ab3bb9116f911b65b3fbf10120c98d2bdc6332f48
 
       - name: Install locked evaluator dependencies and run conformance (POSIX)
         if: runner.os != 'Windows'

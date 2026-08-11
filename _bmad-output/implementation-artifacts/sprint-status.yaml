@@ -73,7 +73,7 @@ development_status:
   epic-2-retrospective: optional
 
   epic-3: in-progress
-  3-1-freeze-snapshots-and-run-deterministic-graders: ready-for-dev
+  3-1-freeze-snapshots-and-run-deterministic-graders: review
   3-2-generate-deterministic-blinded-evidence-views: ready-for-dev
   3-3-run-three-independent-structured-judge-sessions: ready-for-dev
   3-4-calibrate-and-gate-panel-reliability: ready-for-dev

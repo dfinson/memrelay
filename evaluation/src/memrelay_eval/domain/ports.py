@@ -16,6 +16,8 @@ from .entities import (
     DynamicSequenceCleanup,
     DynamicSequenceTerminal,
     ExposureRecord,
+    GraderContract,
+    GraderResult,
     InclusionDecision,
     InternalRetryRecord,
     MonetaryViewLink,
@@ -107,7 +109,7 @@ class ProvisioningAssignmentPort(Protocol):
 
 
 class GraderPort(Protocol):
-    async def grade(self, snapshot: object, contract: object) -> object: ...
+    async def grade(self, snapshot: object, contract: GraderContract) -> GraderResult: ...
 
 
 class ProcessLauncherPort(Protocol):

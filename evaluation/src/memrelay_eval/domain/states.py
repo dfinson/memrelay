@@ -105,6 +105,13 @@ class InclusionStatus(StrEnum):
     EXCLUDED = "excluded"
 
 
+class GraderTerminalKind(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+    BLOCKED = "blocked"
+
+
 class LedgerIntentKind(StrEnum):
     CREATE_EXPERIMENT = "create_experiment"
     CREATE_RUN = "create_run"

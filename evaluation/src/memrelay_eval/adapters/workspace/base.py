@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ctypes
 import json
 import os
@@ -19,6 +20,7 @@ from typing import Protocol
 
 from ...canonical import canonical_bytes
 from ...domain.entities import ArtifactLink, ArtifactRef, TelemetryObservation
+from ...domain.errors import SnapshotHardlinkError, SnapshotMutationError
 from ...domain.ids import AttemptId, RunId
 from ..fakes import InMemoryArtifactStore, InMemoryLedger, InMemoryTelemetry
 
@@ -121,11 +123,19 @@ class WorkspaceHandle:
 
 @dataclass(frozen=True, slots=True)
 class WorkspaceSnapshot:
-    """Immutable source/workspace identity taken before any execution."""
+    """Immutable detached snapshot identity; no mutable workspace path is retained."""
 
     revision: str
     source_content_sha256: str
     workspace_content_sha256: str
+    baseline_revision: str | None = None
+    baseline_files_artifact: ArtifactRef | None = None
+    terminal_files_artifact: ArtifactRef | None = None
+    patch_artifact: ArtifactRef | None = None
+    canonical_artifact: ArtifactRef | None = None
+    canonical_sha256: str | None = None
+    attempt_id: AttemptId | None = None
+    run_id: RunId | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,10 +219,51 @@ class BaseWorkspaceProvider:
             raise WorkspaceProviderError("cannot freeze a cleaned workspace")
         revision = self._git(handle.workspace_root, "rev-parse", "HEAD")
         content_hash = self._archive_hash(handle.workspace_root, revision)
+        baseline_files = self._snapshot_file_bytes(handle.source_root)
+        terminal_files = self._snapshot_file_bytes(handle.workspace_root)
+        patch_bytes = self._git_bytes(
+            handle.workspace_root, "diff", "--binary", handle.frozen_revision
+        )
+        baseline_files_artifact = self.artifact_store.put_bytes(
+            baseline_files, media_type="application/json", classification="workspace_snapshot"
+        )
+        terminal_files_artifact = self.artifact_store.put_bytes(
+            terminal_files, media_type="application/json", classification="workspace_snapshot"
+        )
+        patch_artifact = self.artifact_store.put_bytes(
+            patch_bytes, media_type="text/x-diff", classification="workspace_patch"
+        )
+        snapshot_document = canonical_bytes(
+            {
+                "schema_version": "1.0.0",
+                "normalization": {
+                    "paths": "relative_posix",
+                    "timestamps": "omitted",
+                    "file_order": "codepoint",
+                    "reparse_points": "rejected",
+                },
+                "baseline_revision": handle.frozen_revision,
+                "terminal_revision": revision,
+                "baseline_files_sha256": baseline_files_artifact.sha256,
+                "terminal_files_sha256": terminal_files_artifact.sha256,
+                "patch_sha256": patch_artifact.sha256,
+            }
+        )
+        canonical_artifact = self.artifact_store.put_bytes(
+            snapshot_document, media_type="application/json", classification="workspace_snapshot"
+        )
         snapshot = WorkspaceSnapshot(
             revision=revision,
             source_content_sha256=handle.source_content_sha256,
             workspace_content_sha256=content_hash,
+            baseline_revision=handle.frozen_revision,
+            baseline_files_artifact=baseline_files_artifact,
+            terminal_files_artifact=terminal_files_artifact,
+            patch_artifact=patch_artifact,
+            canonical_artifact=canonical_artifact,
+            canonical_sha256=canonical_artifact.sha256,
+            attempt_id=handle.attempt_id,
+            run_id=handle.run_id,
         )
         self._record_evidence(handle, "workspace_snapshot")
         return snapshot
@@ -460,6 +511,105 @@ class BaseWorkspaceProvider:
         except subprocess.CalledProcessError as error:
             raise WorkspaceProviderError(error.stderr.decode(errors="replace").strip()) from error
         return sha256(archive).hexdigest()
+
+    @staticmethod
+    def _git_bytes(path: Path, *arguments: str) -> bytes:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(path), *arguments],
+                check=True,
+                capture_output=True,
+            ).stdout
+        except subprocess.CalledProcessError as error:
+            raise WorkspaceProviderError(error.stderr.decode(errors="replace").strip()) from error
+
+    def _snapshot_file_bytes(self, root: Path) -> bytes:
+        """Capture regular workspace files with no clock or host-path authority."""
+        self._assert_safe_authority_path(root, "workspace snapshot root")
+        files: list[dict[str, object]] = []
+        normalized_identities: set[str] = set()
+        for current, directories, filenames in os.walk(root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            retained_directories: list[str] = []
+            for directory in sorted(directories):
+                if directory == ".git":
+                    continue
+                if self._is_reparse_point(current_path / directory):
+                    raise WorkspacePathSafetyError(
+                        "workspace snapshot contains a symlink or reparse point: "
+                        f"{current_path / directory}"
+                    )
+                retained_directories.append(directory)
+            directories[:] = retained_directories
+            for filename in sorted(filenames):
+                candidate = current_path / filename
+                relative = candidate.relative_to(root)
+                if relative.parts and relative.parts[0] == ".git":
+                    continue
+                if self._is_reparse_point(candidate):
+                    raise WorkspacePathSafetyError(
+                        f"workspace snapshot contains a symlink or reparse point: {candidate}"
+                    )
+                status = candidate.stat()
+                if not stat.S_ISREG(status.st_mode):
+                    raise WorkspacePathSafetyError(
+                        f"workspace snapshot contains non-regular file: {candidate}"
+                    )
+                normalized_identity = _normalized_snapshot_path(relative.as_posix())
+                if normalized_identity in normalized_identities:
+                    raise WorkspacePathSafetyError(
+                        f"workspace snapshot contains path-normalization aliases: {candidate}"
+                    )
+                normalized_identities.add(normalized_identity)
+                data = self._read_regular_snapshot_file(root, relative, candidate)
+                files.append(
+                    {
+                        "path": relative.as_posix(),
+                        "mode": stat.S_IMODE(status.st_mode),
+                        "sha256": sha256(data).hexdigest(),
+                        "content_base64": base64.b64encode(data).decode("ascii"),
+                    }
+                )
+        return canonical_bytes({"schema_version": "1.0.0", "files": files})
+
+    def _read_regular_snapshot_file(self, root: Path, relative: Path, candidate: Path) -> bytes:
+        """Read one file from a bound descriptor while rejecting links and replacement races."""
+        before = candidate.stat()
+        _require_unlinked_regular_file(before)
+        descriptor: int | None = None
+        root_descriptor: int | None = None
+        try:
+            if os.name != "nt" and os.supports_dir_fd:
+                root_descriptor = os.open(root, os.O_RDONLY)
+                descriptor = os.open(
+                    relative.as_posix(),
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=root_descriptor,
+                )
+            else:
+                descriptor = os.open(candidate, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            opened = os.fstat(descriptor)
+            _require_unlinked_regular_file(opened)
+            if not _same_file_identity(before, opened):
+                raise SnapshotMutationError("workspace snapshot file changed before handle read")
+            chunks: list[bytes] = []
+            while chunk := os.read(descriptor, 1024 * 1024):
+                chunks.append(chunk)
+            after_handle = os.fstat(descriptor)
+            after_path = candidate.stat()
+            _require_unlinked_regular_file(after_handle)
+            _require_unlinked_regular_file(after_path)
+            if not (
+                _same_file_identity(before, after_handle)
+                and _same_file_identity(before, after_path)
+            ):
+                raise SnapshotMutationError("workspace snapshot file changed during handle read")
+            return b"".join(chunks)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if root_descriptor is not None:
+                os.close(root_descriptor)
 
     def _clear_readonly_and_retry(
         self,
@@ -731,3 +881,37 @@ class BaseWorkspaceProvider:
 
     def _remove_workspace(self, handle: WorkspaceHandle) -> None:
         raise NotImplementedError
+
+
+def _normalized_snapshot_path(path: str) -> str:
+    """Return a host-neutral identity, rejecting ambiguous Windows-compatible aliases."""
+    import unicodedata
+
+    normalized = unicodedata.normalize("NFC", path).replace("\\", "/")
+    if not normalized or normalized.startswith("/"):
+        raise WorkspacePathSafetyError("workspace snapshot path is not relative")
+    segments = normalized.split("/")
+    if any(
+        not segment or segment in {".", ".."} or segment.endswith((" ", "."))
+        for segment in segments
+    ):
+        raise WorkspacePathSafetyError("workspace snapshot path has a forbidden alias")
+    return "/".join(segment.casefold() for segment in segments)
+
+
+def _require_unlinked_regular_file(status: os.stat_result) -> None:
+    if not stat.S_ISREG(status.st_mode):
+        raise WorkspacePathSafetyError("workspace snapshot input is not a regular file")
+    if status.st_nlink > 1:
+        raise SnapshotHardlinkError("workspace snapshot input has multiple hardlinks")
+
+
+def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        first.st_dev == second.st_dev
+        and first.st_ino == second.st_ino
+        and first.st_mode == second.st_mode
+        and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
+        and first.st_nlink == second.st_nlink
+    )
