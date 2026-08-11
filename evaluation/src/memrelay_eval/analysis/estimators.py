@@ -10,6 +10,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from statistics import fmean, stdev
 
+try:
+    import numpy as np
+except ImportError:  # pragma: no cover - the qualified evaluator includes NumPy
+    np = None  # type: ignore[assignment]
+
 from memrelay_eval.canonical import canonical_digest
 from memrelay_eval.domain.errors import AnalysisError
 
@@ -715,8 +720,13 @@ def _randomization_p_value(table: IttTable, permutation_count: int) -> float:
     if permutation_count < 1:
         raise AnalysisError("permutation_count_invalid")
     observations = table.observations
+    fast = _single_task_randomization_p_value(table, permutation_count)
+    if fast is not None:
+        return fast
     if table.estimand.resampling_design == "paired_sign_flip":
-        permutations = _pair_sign_permutations(observations, table.estimand)
+        permutations = _pair_sign_permutations(observations, table.estimand, permutation_count)
+    elif table.estimand.resampling_design == "cluster_randomization":
+        permutations = _cluster_permutations(observations, table.estimand, permutation_count)
     else:
         permutations = _block_permutations(observations, table.estimand, permutation_count)
     observed_statistic = _randomization_statistic(table.observations, table.estimand)
@@ -726,8 +736,175 @@ def _randomization_p_value(table: IttTable, permutation_count: int) -> float:
     return (sum(abs(value) >= abs(observed_statistic) for value in values) + 1) / (len(values) + 1)
 
 
+def _single_task_randomization_p_value(table: IttTable, permutation_count: int) -> float | None:
+    """Vectorize the exact registered randomization statistic for homogeneous ITT tasks.
+
+    The simulation engine materializes every assignment unit with one common task.  This
+    is algebraically the same equal-task statistic used by ``_effect``; vectorizing the
+    randomized allocations keeps a 10,000-trial frozen simulation practical without a
+    second estimator or a normal approximation.
+    """
+
+    if np is None or {item.task_id for item in table.observations} != {"simulated-primary"}:
+        return None
+    estimand = table.estimand
+    observations = table.observations
+    values = np.asarray([float(item.numeric_value) for item in observations], dtype=float)
+    total = float(values.sum())
+    observed = _randomization_statistic(observations, estimand)
+    groups: dict[str, list[int]] = defaultdict(list)
+    if estimand.resampling_design == "cluster_randomization":
+        for index, item in enumerate(observations):
+            groups[item.disclosure.cluster_id].append(index)
+    elif estimand.resampling_design == "paired_sign_flip":
+        for index, item in enumerate(observations):
+            if not item.disclosure.pair_id:
+                raise AnalysisError("pairing_not_registered_and_fresh")
+            groups[item.disclosure.pair_id].append(index)
+    else:
+        for index, item in enumerate(observations):
+            groups[item.disclosure.block_id].append(index)
+    group_values = list(groups.values())
+    if estimand.resampling_design == "paired_sign_flip":
+        if any(len(group) != 2 for group in group_values):
+            raise AnalysisError("genuine_pair_required")
+        differences = np.asarray(
+            [
+                _pair_statistic(
+                    observations[first].numeric_value,
+                    observations[second].numeric_value,
+                    estimand,
+                )
+                if observations[first].arm == estimand.treatment_arm
+                else _pair_statistic(
+                    observations[second].numeric_value,
+                    observations[first].numeric_value,
+                    estimand,
+                )
+                for first, second in group_values
+            ],
+            dtype=float,
+        )
+        if len(differences) <= 16:
+            return None
+        rng = random.Random(0)
+        signs = np.asarray(
+            [
+                [1.0 if rng.getrandbits(1) else -1.0 for _ in differences]
+                for _ in range(permutation_count)
+            ]
+        )
+        statistics = signs @ differences / len(differences)
+    else:
+        treatment_counts = [
+            sum(observations[index].arm == estimand.treatment_arm for index in group)
+            for group in group_values
+        ]
+        if estimand.resampling_design == "cluster_randomization":
+            if any(
+                len({observations[index].arm for index in group}) != 1 for group in group_values
+            ):
+                raise AnalysisError("assignment_cluster_arm_support_invalid")
+            treated_clusters = sum(
+                all(observations[index].arm == estimand.treatment_arm for index in group)
+                for group in group_values
+            )
+            if treated_clusters == 0 or treated_clusters == len(group_values):
+                raise AnalysisError("assignment_cluster_arm_support_invalid")
+            treated_total = sum(len(group) for group in group_values) // 2
+        else:
+            if any(
+                count == 0 or count == len(group)
+                for count, group in zip(treatment_counts, group_values, strict=True)
+            ):
+                return None
+            treated_total = sum(treatment_counts)
+        rng = random.Random(0)
+        selected = np.zeros((permutation_count, len(observations)), dtype=float)
+        for row in range(permutation_count):
+            if estimand.resampling_design == "cluster_randomization":
+                selected_groups = set(rng.sample(range(len(group_values)), treated_clusters))
+                for group_index in selected_groups:
+                    selected[row, group_values[group_index]] = 1.0
+            else:
+                for group, count in zip(group_values, treatment_counts, strict=True):
+                    selected[row, rng.sample(group, count)] = 1.0
+        treated_sums = selected @ values
+        treatment = treated_sums / treated_total
+        control = (total - treated_sums) / (len(observations) - treated_total)
+        if estimand.summary_measure == "difference":
+            statistics = treatment - control
+        else:
+            if np.any(control <= 0.0) or np.any(treatment <= 0.0):
+                raise AnalysisError("ratio_statistic_nonpositive")
+            statistics = np.log(treatment / control)
+    return (int(np.count_nonzero(np.abs(statistics) >= abs(observed))) + 1) / (len(statistics) + 1)
+
+
+def _cluster_permutations(
+    observations: Sequence[IttObservation], estimand: FrozenEstimand, permutation_count: int
+) -> Iterable[float]:
+    """Resample whole registered clusters for a cluster-randomized ITT estimand."""
+
+    clusters: dict[str, list[IttObservation]] = defaultdict(list)
+    for observation in observations:
+        clusters[observation.disclosure.cluster_id].append(observation)
+    cluster_values = list(clusters.values())
+    treated_count = sum(
+        all(item.arm == estimand.treatment_arm for item in cluster) for cluster in cluster_values
+    )
+    if (
+        treated_count == 0
+        or treated_count == len(cluster_values)
+        or any(len({item.arm for item in cluster}) != 1 for cluster in cluster_values)
+    ):
+        raise AnalysisError("assignment_cluster_arm_support_invalid")
+    combinations_count = math.comb(len(cluster_values), treated_count)
+    layouts = (
+        list(itertools.combinations(range(len(cluster_values)), treated_count))
+        if combinations_count <= permutation_count
+        else []
+    )
+    rng = random.Random(0)
+
+    def statistic(treated_indices: Sequence[int]) -> float:
+        treated = set(treated_indices)
+        reassigned = [
+            IttObservation(
+                assignment_id=item.assignment_id,
+                analysis_unit_id=item.analysis_unit_id,
+                arm=(estimand.treatment_arm if cluster_index in treated else estimand.control_arm),
+                task_id=item.task_id,
+                sequence_id=item.sequence_id,
+                repository_id=item.repository_id,
+                environment_fingerprint_sha256=item.environment_fingerprint_sha256,
+                terminal_kind=item.terminal_kind,
+                inclusion_status=item.inclusion_status,
+                attrition_status=item.attrition_status,
+                exposure_status=item.exposure_status,
+                contamination_status=item.contamination_status,
+                outcome_status=item.outcome_status,
+                numeric_value=item.numeric_value,
+                outcome_id=item.outcome_id,
+                disclosure=item.disclosure,
+            )
+            for cluster_index, cluster in enumerate(cluster_values)
+            for item in cluster
+        ]
+        return _randomization_statistic(reassigned, estimand)
+
+    if combinations_count <= permutation_count:
+        return (statistic(layout) for layout in layouts)
+    return (
+        statistic(rng.sample(range(len(cluster_values)), treated_count))
+        for _ in range(permutation_count)
+    )
+
+
 def _pair_sign_permutations(
-    observations: Sequence[IttObservation], estimand: FrozenEstimand
+    observations: Sequence[IttObservation],
+    estimand: FrozenEstimand,
+    permutation_count: int,
 ) -> Iterable[float]:
     pairs: dict[str, list[IttObservation]] = defaultdict(list)
     for observation in observations:
@@ -753,7 +930,7 @@ def _pair_sign_permutations(
         rng = random.Random(0)
         return (
             fmean(value if rng.getrandbits(1) else -value for value in differences)
-            for _ in range(10_000)
+            for _ in range(permutation_count)
         )
     return (
         fmean(sign * value for sign, value in zip(signs, differences, strict=True))
@@ -768,12 +945,16 @@ def _block_permutations(
     for observation in observations:
         blocks[observation.disclosure.block_id].append(observation)
     layouts: list[list[tuple[IttObservation, ...]]] = []
+    block_counts: list[int] = []
+    combinations_count = 1
     for block in blocks.values():
         count = sum(item.arm == estimand.treatment_arm for item in block)
         if count == 0 or count == len(block):
             raise AnalysisError("assignment_block_arm_support_invalid")
-        layouts.append(list(itertools.combinations(tuple(block), count)))
-    combinations_count = math.prod(len(layout) for layout in layouts)
+        block_counts.append(count)
+        combinations_count *= math.comb(len(block), count)
+        if combinations_count <= permutation_count:
+            layouts.append(list(itertools.combinations(tuple(block), count)))
 
     def statistic(chosen: Sequence[tuple[IttObservation, ...]]) -> float:
         reassigned: list[IttObservation] = []
@@ -810,7 +991,15 @@ def _block_permutations(
     if combinations_count <= permutation_count:
         return (statistic(item) for item in itertools.product(*layouts))
     rng = random.Random(0)
-    return (statistic([rng.choice(layout) for layout in layouts]) for _ in range(permutation_count))
+    return (
+        statistic(
+            [
+                tuple(rng.sample(block, count))
+                for block, count in zip(blocks.values(), block_counts, strict=True)
+            ]
+        )
+        for _ in range(permutation_count)
+    )
 
 
 def _normalized_exposure(value: str) -> str:

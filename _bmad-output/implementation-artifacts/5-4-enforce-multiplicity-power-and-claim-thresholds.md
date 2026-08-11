@@ -1,6 +1,6 @@
 # Story 5.4: Enforce Multiplicity, Power, and Claim Thresholds
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -32,30 +32,30 @@ So that outcomes cannot weaken confirmatory standards.
 
 ## Tasks / Subtasks
 
-- [ ] Implement immutable claim-family and threshold records (AC: 1-3)
-  - [ ] Freeze family membership, endpoint IDs, direction, margins, gates, ordering, alpha `0.05`, Holm method/version, power `0.80`, and analysis/interval procedure before enrollment.
-  - [ ] Encode the frozen mode cardinalities: reliability has 3 endpoints (`EP-PRIM-SUCCESS`, `EP-QUAL`, `EP-HARM`); efficiency has 5 (`EP-SUCC-NI`, `EP-QUAL`, `EP-COST`, `EP-WALL`, `EP-HARM`) with cost, wall, or their registered intersection selected before enrollment; dual has 5 (`EP-PRIM-SUCCESS`, `EP-QUAL`, `EP-COST`, `EP-WALL`, `EP-HARM`) with every preregistered efficiency component required.
-  - [ ] Canonicalize/hash the record and reject mutation, family switching, endpoint salvage, or threshold relaxation after outcome access.
-- [ ] Implement Holm FWER control and compatible simultaneous intervals (AC: 1)
-  - [ ] Correctly handle ties, missing/blocked endpoints, monotonic adjusted decisions, and deterministic endpoint ordering.
-  - [ ] Derive claim decisions from the same frozen family/procedure used for intervals; marginal intervals or raw p-values cannot decide claims.
-  - [ ] Preserve raw estimates, raw/adjusted p-values, simultaneous bounds, ranks, family hash, and gate trace.
-  - [ ] Treat final architecture as authoritative over the older TEA `STAT-MULTIPLICITY` row's graphical/weighted-Bonferroni wording: v1 uses Holm only. Add a conformance fixture that rejects graphical recycling or unequal-weight substitution as a protocol change.
-- [ ] Implement exact frozen benefit/non-inferiority gates (AC: 2, 3)
-  - [ ] Reliability benefit: risk-difference point estimate `>= +0.05` and simultaneous 95% lower bound `> 0`.
-  - [ ] Qualitative benefit: blinded `[0,1]` panel-score difference `>= +0.05`, simultaneous 95% lower bound `> 0`, and panel gate passed.
-  - [ ] No-regression: one-sided 97.5% lower bound `> -0.02`.
-  - [ ] Cost or active-wall superiority: ratio point estimate `<= 0.90`, simultaneous 95% upper bound `< 1.0`, and simultaneous reliability and qualitative lower bounds each `> -0.02`.
-  - [ ] Release fitness later requires at least one target benefit, all categorical gates, and endpoint-appropriate non-target non-inferiority: difference-scale simultaneous lower bounds `> -0.02` and cost/wall ratio simultaneous upper bounds `< 1.10`.
-- [ ] Implement frozen simulation-based power evaluation (AC: 1)
-  - [ ] Simulate the exact assignment, estimator, pair/block/cluster/sequence hierarchy, Holm family, endpoint dependence, missingness/attrition/contamination sensitivity, and censoring policy.
-  - [ ] Run at least 10,000 trials per retained cell in the finite frozen Cartesian grid with reproducible seeds and independent spot checks; retain every enumerated cell, record rejected positive-definiteness/invalid cells explicitly, and require the worst owner-ratified plausible cell to meet target power.
-  - [ ] If the fixed 512-unit primary is below `0.80` for its target margin, emit `estimation_only`; never increase N, drop endpoints, change cells, or weaken thresholds automatically.
-  - [ ] Consume only DG-5 baseline-only or arm-blind-escrow nuisance inputs; decoded pilot efficacy cannot tune effects, thresholds, families, tasks, or simulation cells.
-- [ ] Implement immutable claim-gate decision records (AC: 1-3)
-  - [ ] Emit pass/fail/blocked/indeterminate/estimation-only with source, derivation, protocol, family, threshold, power, panel, and categorical-gate hashes.
-- [ ] Add boundary, multiplicity, simulation, and anti-relaxation tests (AC: 1-3).
-  - [ ] Cover the frozen fixed-information look: efficacy output is denied before final information, while separately governed safety/budget monitoring remains available.
+- [x] Implement immutable claim-family and threshold records (AC: 1-3)
+  - [x] Freeze family membership, endpoint IDs, direction, margins, gates, ordering, alpha `0.05`, Holm method/version, power `0.80`, and analysis/interval procedure before enrollment.
+  - [x] Encode the frozen mode cardinalities: reliability has 3 endpoints (`EP-PRIM-SUCCESS`, `EP-QUAL`, `EP-HARM`); efficiency has 5 (`EP-SUCC-NI`, `EP-QUAL`, `EP-COST`, `EP-WALL`, `EP-HARM`) with cost, wall, or their registered intersection selected before enrollment; dual has 5 (`EP-PRIM-SUCCESS`, `EP-QUAL`, `EP-COST`, `EP-WALL`, `EP-HARM`) with every preregistered efficiency component required.
+  - [x] Canonicalize/hash the record and reject mutation, family switching, endpoint salvage, or threshold relaxation after outcome access.
+- [x] Implement Holm FWER control and compatible simultaneous intervals (AC: 1)
+  - [x] Correctly handle ties, missing/blocked endpoints, monotonic adjusted decisions, and deterministic endpoint ordering.
+  - [x] Derive claim decisions from the same frozen family/procedure used for intervals; marginal intervals or raw p-values cannot decide claims.
+  - [x] Preserve raw estimates, raw/adjusted p-values, simultaneous bounds, ranks, family hash, and gate trace.
+  - [x] Treat final architecture as authoritative over the older TEA `STAT-MULTIPLICITY` row's graphical/weighted-Bonferroni wording: v1 uses Holm only. Add a conformance fixture that rejects graphical recycling or unequal-weight substitution as a protocol change.
+- [x] Implement exact frozen benefit/non-inferiority gates (AC: 2, 3)
+  - [x] Reliability benefit: risk-difference point estimate `>= +0.05` and simultaneous 95% lower bound `> 0`.
+  - [x] Qualitative benefit: blinded `[0,1]` panel-score difference `>= +0.05`, simultaneous 95% lower bound `> 0`, and panel gate passed.
+  - [x] No-regression: one-sided 97.5% lower confidence bound `> -0.02`.
+  - [x] Cost or active-wall superiority: ratio point estimate `<= 0.90`, simultaneous 95% upper bound `< 1.0`, and simultaneous reliability and qualitative lower bounds each `> -0.02`.
+  - [x] Release fitness later requires at least one target benefit, all categorical gates, and endpoint-appropriate non-target non-inferiority: difference-scale simultaneous lower bounds `> -0.02` and cost/wall ratio simultaneous upper bounds `< 1.10`.
+- [x] Implement frozen simulation-based power evaluation (AC: 1)
+  - [x] Simulate the exact assignment, estimator, pair/block/cluster/sequence hierarchy, Holm family, endpoint dependence, missingness/attrition/contamination sensitivity, and censoring policy.
+  - [x] Run at least 10,000 trials per retained cell in the finite frozen Cartesian grid with reproducible seeds and independent spot checks; retain every enumerated cell, record rejected positive-definiteness/invalid cells explicitly, and require the worst owner-ratified plausible cell to meet target power.
+  - [x] If the fixed 512-unit primary is below `0.80` for its target margin, emit `estimation_only`; never increase N, drop endpoints, change cells, or weaken thresholds automatically.
+  - [x] Consume only DG-5 baseline-only or arm-blind-escrow nuisance inputs; decoded pilot efficacy cannot tune effects, thresholds, families, tasks, or simulation cells.
+- [x] Implement immutable claim-gate decision records (AC: 1-3)
+  - [x] Emit pass/fail/blocked/indeterminate/estimation-only with source, derivation, protocol, family, threshold, power, panel, and categorical-gate hashes.
+- [x] Add boundary, multiplicity, simulation, and anti-relaxation tests (AC: 1-3).
+  - [x] Cover the frozen fixed-information look: efficacy output is denied before final information, while separately governed safety/budget monitoring remains available.
 
 ## Developer Context
 
@@ -107,12 +107,25 @@ All comparison operators are intentional and strict: lower bounds must exceed, n
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Implemented frozen claim-family, threshold, Holm-compatible interval, strict gate, and
+  fixed-information simulation-power records with canonical lineage hashes.
+- Hardened final review: a pre-enrollment sealed claim registry now authenticates the
+  exact family, thresholds, frozen estimator registry, and power-cell grid; evaluator-issued
+  power evidence is protocol-validated and simulations materialize assignment-unit ITT data
+  through the Story 5.3 estimator before using its matching compact randomization adapter.
+- Added focused unit, golden, and schema-contract coverage; focused pytest reports 13 passed.
 
 ### File List
+
+- `evaluation/src/memrelay_eval/analysis/{multiplicity,intervals,power,gates}.py`
+- `evaluation/src/memrelay_eval/analysis/{__init__,schemas}.py`
+- `evaluation/schemas/{frozen-claim-family,claim-gate-decision,frozen-power-protocol}.schema.json`
+- `evaluation/tests/unit/analysis/test_multiplicity_gates_power.py`
+- `evaluation/tests/golden/analysis/{test_holm.py,holm/reordered-ties.json}`
+- `evaluation/tests/contract/analysis/test_parquet_schemas.py`

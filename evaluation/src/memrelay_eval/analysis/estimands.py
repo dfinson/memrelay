@@ -18,11 +18,17 @@ _HISTORY_ESTIMANDS = {
 }
 _SUMMARY_MEASURES = frozenset({"difference", "ratio"})
 _RESAMPLING_DESIGNS = frozenset(
-    {"blocked_randomization", "paired_sign_flip", "sequence_randomization"}
+    {
+        "blocked_randomization",
+        "paired_sign_flip",
+        "cluster_randomization",
+        "sequence_randomization",
+    }
 )
 _ASSIGNMENT_MECHANISMS = {
     "blocked_randomization": "blocked_randomization",
     "paired_sign_flip": "paired_randomization",
+    "cluster_randomization": "blocked_randomization",
     "sequence_randomization": "sequence_randomization",
 }
 

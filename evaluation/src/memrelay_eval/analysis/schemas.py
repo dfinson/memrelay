@@ -18,6 +18,12 @@ ELIGIBLE_OUTCOMES_TABLE: Final = "eligible_outcomes"
 ITT_TABLE_ARTIFACT: Final = "assignment_aligned_itt_table"
 ESTIMATOR_DECISION_ARTIFACT: Final = "frozen_estimator_decision"
 DIAGNOSTIC_REPORT_ARTIFACT: Final = "assignment_balance_diagnostic_report"
+CLAIM_FAMILY_ARTIFACT: Final = "frozen_claim_family"
+CLAIM_GATE_DECISION_ARTIFACT: Final = "claim_gate_decision"
+POWER_PROTOCOL_ARTIFACT: Final = "frozen_power_protocol"
+POWER_EVALUATION_ARTIFACT: Final = "power_evaluation"
+SEALED_CLAIM_PROTOCOL_ARTIFACT: Final = "sealed_claim_protocol"
+THRESHOLD_POLICY_ARTIFACT: Final = "frozen_threshold_policy"
 
 _STATUS_CATEGORIES: Final = (
     "included",
