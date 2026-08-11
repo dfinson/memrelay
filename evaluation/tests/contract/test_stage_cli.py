@@ -10,6 +10,11 @@ from memrelay_eval.cli.main import main
 from memrelay_eval.domain.ids import ProtocolId, StageAuthorizationId, StageId
 from memrelay_eval.domain.policies import STAGE_ENTRY_LOCK_FIELDS
 from memrelay_eval.domain.states import StageKind, StageState
+from memrelay_eval.evidence.conformance import (
+    build_conformance_report,
+    report_bytes,
+    synthetic_proof_receipts,
+)
 from memrelay_eval.orchestration.stages import (
     StageAuthorization,
     StageEntryBundle,
@@ -106,10 +111,21 @@ def _seal_stage_inputs(
     entry_path.write_bytes(entry.bytes())
     predecessor_path.write_bytes(predecessor.bytes())
     authorization_path.write_bytes(authorization.bytes())
+    conformance = build_conformance_report(
+        mode="unpaid_ci",
+        stage_locks=entry.locks,
+        proof_receipts=synthetic_proof_receipts(
+            input_sha256=HASH_A, implementation_root=Path(__file__).parents[2]
+        ),
+        input_hashes={"synthetic_catalog_to_report_sha256": HASH_A},
+    )
+    conformance_path = tmp_path / "conformance-report.json"
+    conformance_path.write_bytes(report_bytes(conformance))
     return {
         "entry": str(entry_path),
         "predecessor": str(predecessor_path),
         "authorization": str(authorization_path),
+        "conformance": str(conformance_path),
         "output_root": str(tmp_path / "artifacts"),
     }
 
@@ -126,6 +142,8 @@ def _run(paths: dict[str, str], stage: str = "integration") -> int:
             paths["predecessor"],
             "--authorization",
             paths["authorization"],
+            "--conformance-report",
+            paths["conformance"],
             "--output-root",
             paths["output_root"],
         ]
@@ -204,6 +222,32 @@ def test_missing_authority_refuses_before_enrollment_with_typed_status(
     assert document["error_code"] == "stage_inputs_incomplete"
     assert document["stage"] == stage
     _validate_manifest(document)
+
+
+def test_missing_conformance_report_refuses_before_integration_enrollment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _clear_environment(monkeypatch)
+    paths = _seal_stage_inputs(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--stage",
+            "integration",
+            "--entry-bundle",
+            paths["entry"],
+            "--predecessor-exit",
+            paths["predecessor"],
+            "--authorization",
+            paths["authorization"],
+            "--output-root",
+            paths["output_root"],
+        ]
+    )
+
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out)["error_code"] == "conformance_report_missing"
 
 
 def test_rejected_predecessor_refuses_entry(

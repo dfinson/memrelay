@@ -1,6 +1,6 @@
 # Story 6.2: Gate Bootstrap and Conformance
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -103,12 +103,30 @@ Current-checkout fact: no `evaluation/` tree exists and predecessor stories are 
 
 ### Agent Model Used
 
-To be recorded by the implementing dev agent.
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added immutable, canonical conformance reports that bind all frozen integration
+  locks and every mandatory proof receipt, and reject corrupted, incomplete,
+  failed, or stale authority before enrollment.
+- Added the deterministic unpaid synthetic catalog-to-report CLI path with the
+  existing fake ports and full socket/DNS denial inherited from offline planning.
+- Preserved Story 6.1 sealed stage bundles and independent authorization; the new
+  report is required in addition to, never instead of, those authorities.
+- Added conformance schema, runbook, and focused contract, fault, integration,
+  and existing stage-CLI coverage.
 
 ### File List
+
+- evaluation/src/memrelay_eval/evidence/conformance.py
+- evaluation/src/memrelay_eval/cli/commands.py
+- evaluation/src/memrelay_eval/cli/main.py
+- evaluation/schemas/conformance-report.schema.json
+- evaluation/docs/runbooks/conformance.md
+- evaluation/tests/contract/test_bootstrap_conformance.py
+- evaluation/tests/integration/test_unpaid_catalog_to_report.py
+- evaluation/tests/fault/test_conformance_fail_closed.py
+- evaluation/tests/contract/test_stage_cli.py

@@ -18,6 +18,7 @@ from memrelay_eval.cli.commands import (
     backup_terminal,
     bootstrap,
     compile_authored_catalog,
+    conformance,
     lock_models,
     plan_offline_command,
     reconcile_stage,
@@ -82,6 +83,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="path to the independent sealed stage authorization",
     )
     run.add_argument(
+        "--conformance-report",
+        dest="conformance_report",
+        help="path to the immutable passed conformance report required before enrollment",
+    )
+    run.add_argument(
         "--output-root",
         dest="output_root",
         default="artifacts",
@@ -98,6 +104,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_command_manifest_root(bootstrap_parser)
     bootstrap_parser.set_defaults(handler=bootstrap)
+    conformance_parser = subcommands.add_parser(
+        "conformance",
+        help="run the deterministic unpaid bootstrap/conformance proof closure",
+    )
+    conformance_parser.add_argument(
+        "--catalog",
+        default="catalog/catalog.yaml",
+        help="synthetic catalog used for the unpaid catalog-to-report path",
+    )
+    conformance_parser.add_argument(
+        "--stage-locks",
+        required=True,
+        help="canonical JSON map of the frozen integration-entry hashes",
+    )
+    conformance_parser.add_argument(
+        "--output-root",
+        default="artifacts",
+        help="append-only root for immutable conformance reports",
+    )
+    _add_command_manifest_root(conformance_parser)
+    conformance_parser.set_defaults(handler=conformance)
     lock_models_parser = subcommands.add_parser(
         "lock-models", help="explicitly qualify and lock native Copilot models"
     )
@@ -315,6 +342,7 @@ def _add_command_manifest_root(parser: argparse.ArgumentParser) -> None:
 _LEGACY_MANIFESTED_COMMANDS = frozenset(
     {
         "bootstrap",
+        "conformance",
         "lock-models",
         "validate-catalog",
         "compile-catalog",
@@ -331,6 +359,7 @@ _LEGACY_MANIFESTED_COMMANDS = frozenset(
 
 _INPUT_PATH_FIELDS = {
     "bootstrap": ("collector_archive",),
+    "conformance": ("catalog", "stage_locks"),
     "lock-models": (),
     "validate-catalog": ("catalog", "prior_lock"),
     "compile-catalog": ("catalog", "prior_lock", "runtime_lock"),
@@ -353,6 +382,7 @@ _INPUT_PATH_FIELDS = {
 
 _OUTPUT_PATH_FIELDS = {
     "bootstrap": (),
+    "conformance": ("output_root",),
     "lock-models": (),
     "validate-catalog": (),
     "compile-catalog": ("output_dir", "lock", "manifest"),

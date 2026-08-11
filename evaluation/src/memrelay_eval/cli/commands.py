@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import uuid
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
@@ -57,6 +58,14 @@ from memrelay_eval.domain.errors import (
     StageControlError,
 )
 from memrelay_eval.evidence.backup import preflight_backup_root
+from memrelay_eval.evidence.conformance import (
+    CONFORMANCE_LABEL,
+    build_conformance_report,
+    report_bytes,
+    require_enrollment_conformance,
+    synthetic_proof_receipts,
+    write_conformance_report,
+)
 from memrelay_eval.evidence.manifest import stage_command_manifest
 from memrelay_eval.orchestration.configuration import (
     load_evaluator_toml,
@@ -189,6 +198,23 @@ def _run_enrollable_stage(args: Namespace) -> int:
         admission_entry = load_entry_bundle(entry_bytes)
         predecessor_exit = load_exit_bundle(predecessor_bytes)
         authorization = load_authorization(authorization_bytes)
+        report_path = getattr(args, "conformance_report", None)
+        if not report_path:
+            raise StageControlError("conformance_report_missing")
+        try:
+            report_bytes_input = Path(report_path).read_bytes()
+        except OSError as error:
+            raise StageControlError("conformance_report_unreadable") from error
+        # The initial paid stage must lock the complete conformance authority to
+        # its exact immutable inputs. Later stages still require the intact passed
+        # report, but link their own predecessor exit through Story 6.1 bundles.
+        try:
+            require_enrollment_conformance(
+                report_bytes_input,
+                admission_entry.locks if stage == "integration" else None,
+            )
+        except ConformancePauseError as error:
+            raise StageControlError(error.code) from error
         runtime_lock_sha256 = admission_entry.locks["runtime_lock_sha256"]
         protocol_sha256 = admission_entry.locks["protocol_sha256"]
         authorize_stage_entry(
@@ -321,6 +347,100 @@ def bootstrap(
         f"telemetry evidence {verification.evidence.sha256} retained"
     )
     return 0
+
+
+def conformance(args: Namespace) -> int:
+    """Run the deterministic unpaid catalog-to-report proof closure.
+
+    The command deliberately composes only the existing fake planning ports. It
+    never imports a Copilot or OpenAI client, and its network deny guard is owned
+    by ``plan_offline`` for the full catalog compilation and assignment path.
+    """
+
+    from memrelay_eval.orchestration.planning import plan_offline
+
+    root = Path(args.output_root)
+    catalog_path = Path(args.catalog)
+    stage_locks = _canonical_stage_locks(Path(args.stage_locks))
+    catalog_hash = sha256(catalog_path.read_bytes()).hexdigest()
+    planning_root = root / f"unpaid-catalog-{catalog_hash}"
+    synthetic_catalog = planning_root / catalog_path.name
+    if not planning_root.exists():
+        shutil.copytree(catalog_path.parent, planning_root)
+    elif (
+        not synthetic_catalog.is_file()
+        or synthetic_catalog.read_bytes() != catalog_path.read_bytes()
+    ):
+        raise ConformancePauseError(
+            "unpaid_catalog_source_conflict",
+            "the retained synthetic catalog does not match the requested catalog",
+        )
+    result = plan_offline(
+        catalog_path=synthetic_catalog,
+        output_dir=planning_root / "generated",
+        manifest_path=planning_root / "plan-manifest.json",
+        lock_path=planning_root / "catalog-lock.json",
+    )
+    if result.terminal_status != "succeeded":
+        raise ConformancePauseError("unpaid_vertical_slice_failed", result.error_code or "unknown")
+    vertical_slice_hash = sha256(
+        canonical_bytes(
+            {
+                "catalog_input_hashes": dict(sorted(result.input_hashes.items())),
+                "catalog_output_hashes": dict(sorted(result.output_hashes.items())),
+                "manifest_ref": result.manifest_ref,
+                "protocol_id": result.protocol_id,
+            }
+        )
+    ).hexdigest()
+    evaluation_root = Path(__file__).parents[3]
+    report = build_conformance_report(
+        mode="unpaid_ci",
+        stage_locks=stage_locks,
+        proof_receipts=synthetic_proof_receipts(
+            input_sha256=vertical_slice_hash, implementation_root=evaluation_root
+        ),
+        input_hashes={
+            "catalog_to_report_sha256": vertical_slice_hash,
+            "catalog_yaml_sha256": catalog_hash,
+            "stage_locks_sha256": sha256(canonical_bytes(stage_locks)).hexdigest(),
+        },
+    )
+    path = write_conformance_report(root, report)
+    print(
+        canonical_bytes(
+            {
+                "artifact_type": "conformance_report_reference",
+                "evidence_label": CONFORMANCE_LABEL,
+                "path": str(path),
+                "report_id": report["report_id"],
+                "report_sha256": sha256(report_bytes(report)).hexdigest(),
+                "status": "passed",
+            }
+        ).decode("utf-8")
+    )
+    return 0
+
+
+def _canonical_stage_locks(path: Path) -> dict[str, str]:
+    try:
+        data = path.read_bytes()
+        document = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ConformancePauseError(
+            "conformance_stage_locks_unreadable", "conformance stage locks cannot be read"
+        ) from error
+    if not isinstance(document, dict) or canonical_bytes(document) != data:
+        raise ConformancePauseError(
+            "conformance_stage_locks_not_canonical", "conformance stage locks must be canonical"
+        )
+    if any(
+        not isinstance(key, str) or not isinstance(value, str) for key, value in document.items()
+    ):
+        raise ConformancePauseError(
+            "conformance_stage_locks_invalid", "conformance stage locks must map strings"
+        )
+    return dict(document)
 
 
 def lock_models(
