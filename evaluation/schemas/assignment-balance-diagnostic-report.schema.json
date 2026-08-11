@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/assignment-balance-diagnostic-report.schema.json",
+  "title": "Memrelay assignment balance diagnostic report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "source_itt_sha256",
+    "diagnostics",
+    "fingerprint_model_role_strata"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "source_itt_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "diagnostics": { "type": "array" },
+    "fingerprint_model_role_strata": { "type": "object" }
+  },
+  "additionalProperties": false
+}

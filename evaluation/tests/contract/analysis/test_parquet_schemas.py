@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pyarrow as pa
 from memrelay_eval.analysis.schemas import (
+    ANALYSIS_SCHEMA_VERSION,
     ASSIGNED_UNITS_TABLE,
     ELIGIBLE_OUTCOMES_TABLE,
     PARQUET_SCHEMA_VERSION,
@@ -40,6 +41,12 @@ def test_committed_json_schema_versions_describe_the_parquet_boundary() -> None:
         "parquet-dataset-manifest.schema.json",
         "analysis-derivation-manifest.schema.json",
         "eligible-outcome-authority.schema.json",
+        "assignment-aligned-itt-table.schema.json",
+        "frozen-estimator-decision.schema.json",
+        "assignment-balance-diagnostic-report.schema.json",
     ):
         document = json.loads((schemas / name).read_text(encoding="utf-8"))
-        assert document["properties"]["schema_version"]["const"] == PARQUET_SCHEMA_VERSION
+        assert document["properties"]["schema_version"]["const"] in {
+            PARQUET_SCHEMA_VERSION,
+            ANALYSIS_SCHEMA_VERSION,
+        }

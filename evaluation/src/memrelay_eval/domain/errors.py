@@ -278,7 +278,7 @@ class MaterializationError(DomainError):
 
 
 class AnalysisError(DomainError):
-    """A read-only analysis request or derivation cannot satisfy its frozen contract."""
+    """A frozen analysis request or derivation cannot satisfy its contract."""
 
     def __init__(self, code: str, fields: tuple[str, ...] = ()) -> None:
         self.code = code

@@ -48,6 +48,22 @@ _COMMON_STRATUM_DIMENSIONS: Final = (
 )
 
 
+MaterializedTables = tuple[
+    Mapping[str, object],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MaterializedAnalysisDataset:
+    """Verified Story 5.1 rows and their immutable dataset-manifest identity."""
+
+    dataset_manifest_sha256: str
+    assigned_units: list[dict[str, object]]
+    eligible_outcomes: list[dict[str, object]]
+
+
 @dataclass(frozen=True, slots=True)
 class AnalysisQuery:
     """A closed projection/filter request; this type intentionally accepts no SQL."""
@@ -155,21 +171,12 @@ class FrozenDataset:
         schema_hashes = _mapping(manifest["schema_sha256"], "dataset_schema_hashes_invalid")
         for table_name in sorted(_TABLES):
             file_reference = _mapping(files.get(table_name), "dataset_file_reference_invalid")
-            if (
-                not isinstance(file_reference.get("artifact_id"), str)
-                or not file_reference["artifact_id"]
-                or not _is_sha256(file_reference.get("sha256"))
-                or not isinstance(file_reference.get("size_bytes"), int)
-                or file_reference["size_bytes"] < 0
-            ):
-                raise AnalysisError("dataset_file_reference_invalid", (table_name,))
             file_name = f"{table_name}.parquet"
-            data = _read_regular_file(directory / file_name, "dataset_table_missing")
-            actual_sha = sha256(data).hexdigest()
-            if actual_sha != file_reference.get("sha256") or len(data) != file_reference.get(
-                "size_bytes"
-            ):
-                raise AnalysisError("dataset_table_hash_conflict", (table_name,))
+            data, actual_sha = _verify_table_file(
+                directory / file_name,
+                file_reference,
+                table_name=table_name,
+            )
             try:
                 table = pq.read_table(pa.BufferReader(data))
             except (pa.ArrowException, OSError, ValueError) as error:
@@ -191,6 +198,27 @@ class FrozenDataset:
             tables=tables,
             table_sha256=hashes,
         )
+
+
+def read_materialized_dataset(dataset_directory: Path | str) -> MaterializedAnalysisDataset:
+    """Read Story 5.1 rows through the same immutable verification boundary as DuckDB."""
+    directory = Path(dataset_directory).expanduser().resolve()
+    dataset = FrozenDataset.open(directory.parent, directory.name)
+    return MaterializedAnalysisDataset(
+        dataset_manifest_sha256=dataset.manifest_sha256,
+        assigned_units=dataset.tables[ASSIGNED_UNITS_TABLE].to_pylist(),
+        eligible_outcomes=dataset.tables[ELIGIBLE_OUTCOMES_TABLE].to_pylist(),
+    )
+
+
+def read_materialized_tables(dataset_directory: Path | str) -> MaterializedTables:
+    """Return verified rows for frozen ITT callers that do not need the identity wrapper."""
+    dataset = read_materialized_dataset(dataset_directory)
+    return (
+        {"dataset_manifest_sha256": dataset.dataset_manifest_sha256},
+        dataset.assigned_units,
+        dataset.eligible_outcomes,
+    )
 
 
 class ReadOnlyDuckDbAnalysis:
@@ -580,6 +608,25 @@ def _read_regular_file(path: Path, code: str) -> bytes:
         return path.read_bytes()
     except OSError as error:
         raise AnalysisError(code) from error
+
+
+def _verify_table_file(
+    path: Path, reference: Mapping[str, object], *, table_name: str
+) -> tuple[bytes, str]:
+    """Read one manifest-listed table once and bind its bytes to its immutable reference."""
+    if (
+        not isinstance(reference.get("artifact_id"), str)
+        or not reference["artifact_id"]
+        or not _is_sha256(reference.get("sha256"))
+        or not isinstance(reference.get("size_bytes"), int)
+        or reference["size_bytes"] < 0
+    ):
+        raise AnalysisError("dataset_file_reference_invalid", (table_name,))
+    data = _read_regular_file(path, "dataset_table_missing")
+    actual_sha = sha256(data).hexdigest()
+    if actual_sha != reference["sha256"] or len(data) != reference["size_bytes"]:
+        raise AnalysisError("dataset_table_hash_conflict", (table_name,))
+    return data, actual_sha
 
 
 def _mapping(value: object, code: str) -> Mapping[str, object]:

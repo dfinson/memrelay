@@ -11,7 +11,9 @@ from memrelay_eval.analysis.queries import (
     DerivationPublisher,
     DerivationSpec,
     FrozenDataset,
+    MaterializedAnalysisDataset,
     ReadOnlyDuckDbAnalysis,
+    read_materialized_dataset,
 )
 from memrelay_eval.canonical import canonical_bytes
 from memrelay_eval.cli.main import main
@@ -64,6 +66,32 @@ def test_schema_or_bytes_drift_blocks_registration_before_duckdb_opens(tmp_path)
         FrozenDataset.open(dataset.root, dataset.dataset_version)
 
     assert error.value.code == "dataset_table_hash_conflict"
+
+
+def test_frozen_itt_reader_and_duckdb_share_the_verified_dataset_boundary(tmp_path) -> None:
+    dataset = _dataset(tmp_path)
+
+    materialized = read_materialized_dataset(dataset.directory)
+    with ReadOnlyDuckDbAnalysis.open(dataset.root, dataset.dataset_version) as analysis:
+        assigned = analysis.read(AnalysisQuery("assigned_units"))
+        outcomes = analysis.read(AnalysisQuery("eligible_outcomes"))
+
+    assert isinstance(materialized, MaterializedAnalysisDataset)
+    assert materialized.dataset_manifest_sha256 == dataset.manifest_sha256
+    assert materialized.assigned_units == assigned.to_pylist()
+    assert materialized.eligible_outcomes == outcomes.to_pylist()
+
+
+def test_table_hash_tampering_fails_before_frozen_or_duckdb_registration(tmp_path) -> None:
+    dataset = _dataset(tmp_path)
+    (dataset.directory / "assigned_units.parquet").write_bytes(b"tampered")
+
+    with pytest.raises(AnalysisError) as frozen:
+        read_materialized_dataset(dataset.directory)
+    with pytest.raises(AnalysisError) as duckdb_open:
+        ReadOnlyDuckDbAnalysis.open(dataset.root, dataset.dataset_version)
+
+    assert frozen.value.code == duckdb_open.value.code == "dataset_table_hash_conflict"
 
 
 def test_aggregate_requires_every_varying_governed_dimension(tmp_path) -> None:
