@@ -217,6 +217,11 @@ class FilesystemArtifactStore:
         )
         return index
 
+    def verified_manifests(self) -> tuple[ArtifactManifest, ...]:
+        """Read verified authorities without creating a convenience index."""
+
+        return self._verified_manifests()
+
     def qualify(self) -> DurableAdapterQualification:
         """Emit a durable-adapter qualification after rebuild and integrity verification."""
         try:

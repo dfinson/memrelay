@@ -1,6 +1,6 @@
 # Story 4.8: Back Up and Restore Terminal Evidence
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -34,26 +34,26 @@ So that paid trials meet durability and reachability requirements.
 
 ## Tasks / Subtasks
 
-- [ ] Implement independent-volume preflight in bootstrap (AC: 1)
-  - [ ] Resolve canonical source/target volume identities using platform-appropriate APIs (for example Windows volume GUIDs rather than drive-letter spelling) and prove they differ across aliases, links, and mount points.
-  - [ ] Validate writable capacity, permissions, filesystem behavior, staging/atomic-rename capability, and no provider credentials in the backup process.
-  - [ ] Fail closed on ambiguity, same volume, incomplete capability, or policy conflict; select no fallback.
-- [ ] Define terminal backup inventory and receipt schemas (AC: 1, 2)
-  - [ ] Snapshot SQLite through a control-owned consistent-snapshot API on the sole-writer boundary (for example the SQLite backup API); never file-copy a live database/WAL/SHM set.
-  - [ ] Include terminal manifests, required `.eval`/Inspect JSON refs and bytes, all newly reachable CAS blobs, inclusion/reconciliation evidence, and documented restore metadata.
-  - [ ] Receipt records run/attempt, source/target volume fingerprints, inventory hash, each digest/size, copy/verification status, started/completed time, RPO position, and schema/tool version.
-- [ ] Implement idempotent atomic backup publication (AC: 1, 2)
-  - [ ] Copy into a target staging generation, verify every byte/hash and complete inventory, fsync as supported, then atomically publish the generation/receipt.
-  - [ ] Resume/retry after crash without overwriting prior generations or treating partial staging as complete.
-  - [ ] Link the verified receipt to required evidence through a typed sole-writer intent.
-- [ ] Enforce RPO after every terminal run (AC: 2)
-  - [ ] Track the highest terminal ledger position/inventory included and prove only the active in-flight attempt may be outside the last verified generation.
-  - [ ] Stop new paid attempts on backup lag/failure while preserving active evidence.
-- [ ] Implement isolated restore drill (AC: 3)
-  - [ ] Restore from only backup root plus documented non-secret inputs into a clean, quarantined destination; never attach the snapshot to the live operational ledger.
-  - [ ] Verify ledger snapshot, rebuild all convenience indexes from verified manifests/blobs, and prove experiment/run/attempt/evidence reachability and verified reads.
-  - [ ] Apply current tombstone, retention, authorization, and policy versions before any restored object can be indexed or rendered; measure and retain RTO evidence and reject any corrupt, missing, unauthorized, expired, or conflicting object without silent repair.
-- [ ] Add volume, atomicity, crash, corruption, rebuild, and timed restore tests (AC: 1-3).
+- [x] Implement independent-volume preflight in bootstrap (AC: 1)
+  - [x] Resolve canonical source/target volume identities using platform-appropriate APIs (for example Windows volume GUIDs rather than drive-letter spelling) and prove they differ across aliases, links, and mount points.
+  - [x] Validate writable capacity, permissions, filesystem behavior, staging/atomic-rename capability, and no provider credentials in the backup process.
+  - [x] Fail closed on ambiguity, same volume, incomplete capability, or policy conflict; select no fallback.
+- [x] Define terminal backup inventory and receipt schemas (AC: 1, 2)
+  - [x] Snapshot SQLite through a control-owned consistent-snapshot API on the sole-writer boundary (for example the SQLite backup API); never file-copy a live database/WAL/SHM set.
+  - [x] Include terminal manifests, required `.eval`/Inspect JSON refs and bytes, all newly reachable CAS blobs, inclusion/reconciliation evidence, and documented restore metadata.
+  - [x] Receipt records run/attempt, source/target volume fingerprints, inventory hash, each digest/size, copy/verification status, started/completed time, RPO position, and schema/tool version.
+- [x] Implement idempotent atomic backup publication (AC: 1, 2)
+  - [x] Copy into a target staging generation, verify every byte/hash and complete inventory, fsync as supported, then atomically publish the generation/receipt.
+  - [x] Resume/retry after crash without overwriting prior generations or treating partial staging as complete.
+  - [x] Link the verified receipt to required evidence through a typed sole-writer intent.
+- [x] Enforce RPO after every terminal run (AC: 2)
+  - [x] Track the highest terminal ledger position/inventory included and prove only the active in-flight attempt may be outside the last verified generation.
+  - [x] Stop new paid attempts on backup lag/failure while preserving active evidence.
+- [x] Implement isolated restore drill (AC: 3)
+  - [x] Restore from only backup root plus documented non-secret inputs into a clean, quarantined destination; never attach the snapshot to the live operational ledger.
+  - [x] Verify ledger snapshot, rebuild all convenience indexes from verified manifests/blobs, and prove experiment/run/attempt/evidence reachability and verified reads.
+  - [x] Apply current tombstone, retention, authorization, and policy versions before any restored object can be indexed or rendered; measure and retain RTO evidence and reject any corrupt, missing, unauthorized, expired, or conflicting object without silent repair.
+- [x] Add volume, atomicity, crash, corruption, rebuild, and timed restore tests (AC: 1-3).
 
 ## Developer Context
 
@@ -118,12 +118,26 @@ The baseline paid-trial durability proof covers eligible synthetic/license-audit
 
 ### Agent Model Used
 
-TBD by implementation agent
+GPT-5.6 Terra (gpt-5.6-terra)
 
 ### Debug Log References
 
 ### Completion Notes List
 
-- Ultimate context engine analysis completed - comprehensive developer guide created
+- Added canonical Windows volume-GUID/Unix device-identity preflight, atomic rename
+  capability probing, control-owned SQLite snapshots, verified immutable inventory
+  publication, receipt schemas, retry-safe generation verification, and typed receipt links.
+- Added a quarantined restore drill with inventory verification, current-policy-before-index
+  enforcement, verified ledger-to-artifact reads, reachability rebuild, and retained RTO report.
+- Added focused contract, fault, and integration coverage for second-volume rejection,
+  partial generations, receipt-link interruption, tampering, rebuild, and revoked policy.
+- The local host has no independent writable volume available for a physical
+  second-volume drill; bootstrap correctly fails closed until operations supplies one.
 
 ### File List
+
+- `_bmad-output/implementation-artifacts/{4-8-back-up-and-restore-terminal-evidence.md,sprint-status.yaml}`
+- `evaluation/{README.md,schemas/{backup-receipt,restore-report}.schema.json}`
+- `evaluation/src/memrelay_eval/{cli/{commands,main}.py,domain/{errors,ports}.py,evidence/backup.py}`
+- `evaluation/src/memrelay_eval/{adapters/artifacts/filesystem.py,ledger/repository.py}`
+- `evaluation/tests/{contract/evidence/test_backup_volume.py,fault/evidence/test_backup_atomicity.py,integration/evidence/test_restore_drill.py}`

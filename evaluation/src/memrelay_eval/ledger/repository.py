@@ -242,6 +242,31 @@ class SqliteLedger:
                         self.__owned_paths.discard(self.__registry_path)
                         self.__instances.discard(self)
 
+    def snapshot_to(self, destination: str) -> str:
+        """Create a consistent, control-owned SQLite snapshot without copying WAL files."""
+
+        self._ensure_open()
+        destination_path = Path(destination)
+        if destination_path.exists():
+            raise LedgerDirectWriteError("ledger_snapshot_destination_exists")
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.__lock:
+            snapshot = sqlite3.connect(destination_path)
+            try:
+                self.__connection.backup(snapshot)
+                integrity = snapshot.execute("PRAGMA integrity_check").fetchone()
+                if integrity is None or integrity[0] != "ok":
+                    raise LedgerDirectWriteError("ledger_snapshot_integrity_failure")
+                snapshot.commit()
+            except BaseException:
+                snapshot.close()
+                with suppress(OSError):
+                    destination_path.unlink()
+                raise
+            else:
+                snapshot.close()
+        return str(destination_path)
+
     @classmethod
     def _after_fork_in_child(cls) -> None:
         """Close inherited control-only state before forked worker code can execute."""
@@ -1738,6 +1763,48 @@ class SqliteLedger:
             journal_mode = self.__connection.execute("PRAGMA journal_mode").fetchone()[0]
             foreign_keys = self.__connection.execute("PRAGMA foreign_keys").fetchone()[0]
         return {"journal_mode": journal_mode, "foreign_keys": bool(foreign_keys)}
+
+
+def verify_snapshot_file(path: Path | str) -> int:
+    """Verify a detached SQLite backup and return its highest ledger position."""
+
+    snapshot = Path(path)
+    if not snapshot.is_file():
+        raise LedgerDirectWriteError("ledger_snapshot_missing")
+    connection = sqlite3.connect(f"file:{snapshot.as_posix()}?mode=ro", uri=True)
+    try:
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()
+        if integrity is None or integrity[0] != "ok":
+            raise LedgerDirectWriteError("ledger_snapshot_integrity_failure")
+        row = connection.execute("SELECT COALESCE(MAX(sequence), 0) FROM ledger_events").fetchone()
+        return int(row[0]) if row is not None else 0
+    finally:
+        connection.close()
+
+
+def verify_snapshot_artifact_links(path: Path | str, verify: Callable[[ArtifactRef], None]) -> int:
+    """Verify every ledger-referenced immutable artifact in a detached snapshot."""
+
+    snapshot = Path(path)
+    verify_snapshot_file(snapshot)
+    connection = sqlite3.connect(f"file:{snapshot.as_posix()}?mode=ro", uri=True)
+    try:
+        rows = connection.execute(
+            """
+            SELECT artifact_id, artifact_sha256, size_bytes FROM artifact_links
+            UNION ALL
+            SELECT artifact_id, artifact_sha256, size_bytes FROM intent_evidence_refs
+            UNION ALL
+            SELECT artifact_id, artifact_sha256, size_bytes FROM attempt_terminal_evidence_refs
+            UNION ALL
+            SELECT artifact_id, artifact_sha256, size_bytes FROM retry_authorization_evidence_refs
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    for artifact_id, digest, size in rows:
+        verify(ArtifactRef(ArtifactId(artifact_id), digest, size))
+    return len(rows)
 
 
 if os.name != "nt" and hasattr(os, "register_at_fork"):

@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 from memrelay_eval import __version__
 from memrelay_eval.cli.commands import (
+    backup_terminal,
     bootstrap,
     compile_authored_catalog,
     lock_models,
@@ -169,6 +170,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="command manifest path; defaults under --artifacts-root by stage",
     )
     reconcile.set_defaults(handler=reconcile_stage)
+    backup = subcommands.add_parser(
+        "backup-terminal",
+        help="snapshot and atomically publish terminal evidence to the configured second volume",
+    )
+    backup.add_argument("--backup-root", required=True)
+    backup.add_argument("--artifacts-root", default="artifacts")
+    backup.add_argument("--ledger", required=True)
+    backup.add_argument("--run-id", required=True)
+    backup.add_argument("--attempt-id", required=True)
+    backup.set_defaults(handler=backup_terminal)
     return parser
 
 
