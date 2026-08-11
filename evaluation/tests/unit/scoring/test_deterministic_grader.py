@@ -437,6 +437,7 @@ def test_network_namespace_blocks_listener_and_host_escapes(tmp_path: Path) -> N
         thread.join()
         listener.close()
 
+    assert _sandbox_diagnostics(store, result) == []
     assert result.terminal is GraderTerminalKind.PASSED
     assert result.objective_components == {
         "child": 1.0,
