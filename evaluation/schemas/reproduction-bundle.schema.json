@@ -37,6 +37,7 @@
               "analysis_data",
               "backup_receipt",
               "evidence_source",
+              "grader_artifact",
               "grader_contract",
               "replay_runner",
               "runtime_lock"

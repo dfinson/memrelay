@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
 import math
 import os
@@ -365,6 +367,8 @@ def execute_sealed_replay(
     roots = _verified_roots(bundle, cas_root=cas_root, backup_root=backup_root)
     document = (sandbox_runner or _run_runner_in_os_sandbox)(bundle, roots)
     actual = ReplayOutputs.from_document(document)
+    if sandbox_runner is None:
+        actual = _with_replayed_grader(actual, bundle, roots)
     verify_bundle_inputs(bundle, cas_root=cas_root, backup_root=backup_root)
     return compare_replay_outputs(bundle, actual)
 
@@ -531,19 +535,48 @@ def seal_reproduction_bundle(
             derivation_sha256=canonical_digest(plan),
         )
     )
-    grader_path = root / "inputs" / "grader-result.json"
+    grader_descriptor = _parse_grader_replay_descriptor(grader_result)
+    grader_path = root / "inputs" / "grader-replay.json"
     grader_bytes = canonical_bytes(dict(grader_result))
     grader_path.write_bytes(grader_bytes)
     copied_inputs.append(
         BundleInput(
             root="cas",
-            path="inputs/grader-result.json",
+            path="inputs/grader-replay.json",
             role="grader_contract",
             sha256=sha256(grader_bytes).hexdigest(),
             source_sha256=sha256(grader_bytes).hexdigest(),
             derivation_sha256=canonical_digest(grader_result),
         )
     )
+    grader_store = root / "inputs" / "grader-cas"
+    for artifact in grader_descriptor["artifacts"]:
+        artifact_data = base64.b64decode(artifact["content_base64"], validate=True)
+        artifact_sha256 = sha256(artifact_data).hexdigest()
+        if artifact_sha256 != artifact["sha256"]:
+            raise ReproductionError("reproduction_grader_artifact_hash_mismatch")
+        artifact_path = (
+            grader_store / "blobs" / "sha256" / artifact_sha256[:2] / artifact_sha256[2:]
+        )
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_bytes(artifact_data)
+        copied_inputs.append(
+            BundleInput(
+                root="cas",
+                path=(
+                    Path("inputs")
+                    / "grader-cas"
+                    / "blobs"
+                    / "sha256"
+                    / artifact_sha256[:2]
+                    / artifact_sha256[2:]
+                ).as_posix(),
+                role="grader_artifact",
+                sha256=artifact_sha256,
+                source_sha256=artifact_sha256,
+                derivation_sha256=None,
+            )
+        )
     evidence_path = root / "inputs" / "normalized-evidence.json"
     evidence_bytes = canonical_bytes(dict(normalized_evidence))
     evidence_path.write_bytes(evidence_bytes)
@@ -657,10 +690,17 @@ def rebuild_retained_outputs(bundle_bytes: bytes, roots: Mapping[str, str]) -> d
         (root_paths[plan_item.root] / plan_item.path).read_bytes(),
         "reproduction_plan_not_canonical",
     )
-    outputs = _supplement_replay_outputs(
-        _rebuild_retained_plan(plan, root_paths, bundle.protocol_sha256), bundle.inputs, root_paths
-    )
-    return outputs.document()
+    analysis = _rebuild_retained_plan(plan, root_paths, bundle.protocol_sha256)
+    evidence = _normalized_evidence_hash(bundle.inputs, root_paths)
+    return ReplayOutputs(
+        categories=analysis.categories,
+        numeric=analysis.numeric,
+        figures=analysis.figures,
+        grader_binary={},
+        grader_tests={},
+        grader_continuous={},
+        normalized_evidence={"evidence": evidence},
+    ).document()
 
 
 def _rebuild_retained_plan(
@@ -760,29 +800,321 @@ def _supplement_replay_outputs(
             by_role[item.role] = item
     try:
         grader_input = by_role["grader_contract"]
-        evidence_input = by_role["evidence_source"]
+        by_role["evidence_source"]
     except KeyError as error:
         raise ReproductionError("reproduction_input_role_authority_conflict") from error
     grader = _canonical_document(
         (roots[grader_input.root] / grader_input.path).read_bytes(),
-        "reproduction_grader_result_not_canonical",
+        "reproduction_grader_replay_not_canonical",
     )
-    _require_exact_keys(grader, {"binary", "continuous", "tests"}, "grader result")
-    evidence = _canonical_document(
-        (roots[evidence_input.root] / evidence_input.path).read_bytes(),
-        "reproduction_evidence_not_canonical",
-    )
+    descriptor = _parse_grader_replay_descriptor(grader)
+    expected_grader = _mapping(descriptor["expected"], "grader expected")
     return ReplayOutputs(
         categories=analysis.categories,
         numeric=analysis.numeric,
         figures=analysis.figures,
-        grader_binary=_string_boolean_mapping(grader["binary"], "grader.binary"),
-        grader_tests=_string_json_mapping(grader["tests"], "grader.tests"),
-        grader_continuous=_string_number_mapping(grader["continuous"], "grader.continuous"),
-        normalized_evidence={
-            "evidence": sha256(canonical_bytes(_normalize_evidence(evidence))).hexdigest()
-        },
+        grader_binary=_string_boolean_mapping(expected_grader["binary"], "grader.binary"),
+        grader_tests=_string_json_mapping(expected_grader["tests"], "grader.tests"),
+        grader_continuous=_string_number_mapping(
+            expected_grader["continuous"], "grader.continuous"
+        ),
+        normalized_evidence={"evidence": _normalized_evidence_hash(inputs, roots)},
     )
+
+
+def _normalized_evidence_hash(inputs: tuple[BundleInput, ...], roots: Mapping[str, Path]) -> str:
+    evidence_input = next((item for item in inputs if item.role == "evidence_source"), None)
+    if evidence_input is None:
+        raise ReproductionError("reproduction_input_role_authority_conflict")
+    evidence = _canonical_document(
+        (roots[evidence_input.root] / evidence_input.path).read_bytes(),
+        "reproduction_evidence_not_canonical",
+    )
+    return sha256(canonical_bytes(_normalize_evidence(evidence))).hexdigest()
+
+
+def build_grader_replay_descriptor(
+    *,
+    snapshot: object,
+    contract: object,
+    expected_result: object,
+    artifact_store: object,
+) -> dict[str, object]:
+    """Retain every immutable byte the production executable grader needs to re-run."""
+    from memrelay_eval.adapters.workspace.base import WorkspaceSnapshot
+    from memrelay_eval.domain.entities import GraderContract, GraderResult
+
+    if (
+        not isinstance(snapshot, WorkspaceSnapshot)
+        or not isinstance(contract, GraderContract)
+        or not isinstance(expected_result, GraderResult)
+        or not hasattr(artifact_store, "open_verified")
+    ):
+        raise ReproductionError("reproduction_grader_inputs_invalid")
+    refs = tuple(
+        ref
+        for ref in (
+            snapshot.baseline_files_artifact,
+            snapshot.terminal_files_artifact,
+            snapshot.patch_artifact,
+            snapshot.canonical_artifact,
+            contract.native_tests_artifact,
+            contract.hidden_tests_artifact,
+            contract.dependencies_artifact,
+        )
+        if ref is not None
+    )
+    if len(refs) != 7 or len({ref.sha256 for ref in refs}) != len(refs):
+        raise ReproductionError("reproduction_grader_inputs_incomplete")
+    artifacts: list[dict[str, object]] = []
+    for ref in refs:
+        data = artifact_store.open_verified(ref)
+        if sha256(data).hexdigest() != ref.sha256:
+            raise ReproductionError("reproduction_grader_artifact_hash_mismatch")
+        artifacts.append(
+            {
+                "content_base64": base64.b64encode(data).decode("ascii"),
+                "sha256": ref.sha256,
+                "size_bytes": ref.size_bytes,
+            }
+        )
+    return {
+        "artifact_type": "grader_replay_inputs",
+        "artifacts": artifacts,
+        "contract": {
+            **contract.to_record(),
+            "dependencies_size_bytes": contract.dependencies_artifact.size_bytes,
+            "hidden_tests_size_bytes": contract.hidden_tests_artifact.size_bytes,
+            "native_tests_size_bytes": contract.native_tests_artifact.size_bytes,
+        },
+        "expected": {
+            "binary": {"passed": expected_result.binary_passed},
+            "continuous": {"score": expected_result.continuous_score},
+            "tests": dict(expected_result.test_outcomes),
+        },
+        "schema_version": REPRODUCTION_SCHEMA_VERSION,
+        "snapshot": {
+            "baseline_files_sha256": snapshot.baseline_files_artifact.sha256,
+            "baseline_files_size_bytes": snapshot.baseline_files_artifact.size_bytes,
+            "baseline_revision": snapshot.baseline_revision,
+            "canonical_sha256": snapshot.canonical_sha256,
+            "canonical_size_bytes": snapshot.canonical_artifact.size_bytes,
+            "patch_sha256": snapshot.patch_artifact.sha256,
+            "patch_size_bytes": snapshot.patch_artifact.size_bytes,
+            "revision": snapshot.revision,
+            "source_content_sha256": snapshot.source_content_sha256,
+            "terminal_files_sha256": snapshot.terminal_files_artifact.sha256,
+            "terminal_files_size_bytes": snapshot.terminal_files_artifact.size_bytes,
+            "workspace_content_sha256": snapshot.workspace_content_sha256,
+        },
+    }
+
+
+def _parse_grader_replay_descriptor(value: Mapping[str, object]) -> Mapping[str, object]:
+    _require_exact_keys(
+        value,
+        {"artifact_type", "artifacts", "contract", "expected", "schema_version", "snapshot"},
+        "grader replay",
+    )
+    if (
+        value["artifact_type"] != "grader_replay_inputs"
+        or value["schema_version"] != REPRODUCTION_SCHEMA_VERSION
+    ):
+        raise ReproductionError("reproduction_grader_replay_schema_invalid")
+    expected = _mapping(value["expected"], "grader expected")
+    _require_exact_keys(expected, {"binary", "continuous", "tests"}, "grader expected")
+    binary = _string_boolean_mapping(expected["binary"], "grader.binary")
+    continuous = _string_number_mapping(expected["continuous"], "grader.continuous")
+    tests = _string_boolean_mapping(expected["tests"], "grader.tests")
+    if set(binary) != {"passed"} or set(continuous) != {"score"} or not tests:
+        raise ReproductionError("reproduction_grader_expected_invalid")
+    artifacts = _list(value["artifacts"], "grader artifacts")
+    if len(artifacts) != 7:
+        raise ReproductionError("reproduction_grader_inputs_incomplete")
+    seen: set[str] = set()
+    for raw in artifacts:
+        artifact = _mapping(raw, "grader artifact")
+        _require_exact_keys(artifact, {"content_base64", "sha256", "size_bytes"}, "grader artifact")
+        digest = _hash(artifact["sha256"], "grader artifact.sha256")
+        if (
+            digest in seen
+            or not isinstance(artifact["size_bytes"], int)
+            or artifact["size_bytes"] < 0
+        ):
+            raise ReproductionError("reproduction_grader_artifact_invalid")
+        if not isinstance(artifact["content_base64"], str):
+            raise ReproductionError("reproduction_grader_artifact_invalid")
+        try:
+            data = base64.b64decode(artifact["content_base64"], validate=True)
+        except ValueError as error:
+            raise ReproductionError("reproduction_grader_artifact_invalid") from error
+        if len(data) != artifact["size_bytes"] or sha256(data).hexdigest() != digest:
+            raise ReproductionError("reproduction_grader_artifact_hash_mismatch")
+        seen.add(digest)
+    contract = _mapping(value["contract"], "grader contract")
+    snapshot = _mapping(value["snapshot"], "grader snapshot")
+    _require_exact_keys(
+        contract,
+        {
+            "allowed_paths",
+            "command",
+            "dependencies_sha256",
+            "dependencies_size_bytes",
+            "expected_baseline_files_sha256",
+            "expected_baseline_revision",
+            "forbidden_paths",
+            "grader_sha256",
+            "grader_version",
+            "hidden_tests_sha256",
+            "hidden_tests_size_bytes",
+            "maximum_regrades",
+            "native_tests_sha256",
+            "native_tests_size_bytes",
+            "network_policy",
+            "schema_version",
+            "scope_policy_sha256",
+            "tamper_policy_sha256",
+        },
+        "grader contract",
+    )
+    _require_exact_keys(
+        snapshot,
+        {
+            "baseline_files_sha256",
+            "baseline_files_size_bytes",
+            "baseline_revision",
+            "canonical_sha256",
+            "canonical_size_bytes",
+            "patch_sha256",
+            "patch_size_bytes",
+            "revision",
+            "source_content_sha256",
+            "terminal_files_sha256",
+            "terminal_files_size_bytes",
+            "workspace_content_sha256",
+        },
+        "grader snapshot",
+    )
+    required_artifacts = {
+        contract["dependencies_sha256"],
+        contract["hidden_tests_sha256"],
+        contract["native_tests_sha256"],
+        snapshot["baseline_files_sha256"],
+        snapshot["canonical_sha256"],
+        snapshot["patch_sha256"],
+        snapshot["terminal_files_sha256"],
+    }
+    if not all(isinstance(item, str) and item in seen for item in required_artifacts):
+        raise ReproductionError("reproduction_grader_inputs_incomplete")
+    return value
+
+
+def _with_replayed_grader(
+    outputs: ReplayOutputs, bundle: ReproductionBundle, roots: Mapping[str, Path]
+) -> ReplayOutputs:
+    descriptor = _grader_descriptor_from_bundle(bundle, roots)
+    grader = _execute_retained_grader(descriptor)
+    return ReplayOutputs(
+        categories=outputs.categories,
+        numeric=outputs.numeric,
+        figures=outputs.figures,
+        grader_binary={"passed": grader["binary_passed"]},
+        grader_tests=grader["tests"],
+        grader_continuous={"score": grader["continuous_score"]},
+        normalized_evidence=outputs.normalized_evidence,
+    )
+
+
+def _grader_descriptor_from_bundle(
+    bundle: ReproductionBundle, roots: Mapping[str, Path]
+) -> Mapping[str, object]:
+    item = bundle.input_for("grader_contract")
+    data, digest = _read_verified_regular_file(roots[item.root] / item.path)
+    if digest != item.sha256:
+        raise ReproductionError("reproduction_source_hash_mismatch")
+    return _parse_grader_replay_descriptor(
+        _canonical_document(data, "reproduction_grader_replay_not_canonical")
+    )
+
+
+def _execute_retained_grader(descriptor: Mapping[str, object]) -> Mapping[str, object]:
+    """Use the established executable grader and its own OS network sandbox."""
+    from memrelay_eval.adapters.artifacts.filesystem import FilesystemArtifactStore
+    from memrelay_eval.adapters.grader.executable import CredentialFreeExecutableGrader
+    from memrelay_eval.adapters.workspace.base import WorkspaceSnapshot
+    from memrelay_eval.domain.entities import ArtifactRef, GraderContract
+    from memrelay_eval.domain.states import GraderTerminalKind
+
+    artifacts = {
+        item["sha256"]: base64.b64decode(item["content_base64"], validate=True)
+        for raw in _list(descriptor["artifacts"], "grader artifacts")
+        for item in (_mapping(raw, "grader artifact"),)
+    }
+    contract_document = _mapping(descriptor["contract"], "grader contract")
+    snapshot_document = _mapping(descriptor["snapshot"], "grader snapshot")
+    with tempfile.TemporaryDirectory(prefix="memrelay-replay-grader-") as temporary:
+        store = FilesystemArtifactStore(Path(temporary) / "cas")
+
+        def artifact(digest_key: str, size_key: str) -> ArtifactRef:
+            digest = contract_document.get(digest_key, snapshot_document.get(digest_key))
+            size = contract_document.get(size_key, snapshot_document.get(size_key))
+            if not isinstance(digest, str) or not isinstance(size, int):
+                raise ReproductionError("reproduction_grader_inputs_incomplete")
+            data = artifacts.get(digest)
+            if data is None or len(data) != size:
+                raise ReproductionError("reproduction_grader_artifact_missing")
+            reference = store.put_bytes(
+                data,
+                media_type="application/octet-stream",
+                classification="reproduction_grader_input",
+            )
+            if reference.sha256 != digest:
+                raise ReproductionError("reproduction_grader_artifact_hash_mismatch")
+            return reference
+
+        snapshot = WorkspaceSnapshot(
+            revision=str(snapshot_document["revision"]),
+            source_content_sha256=str(snapshot_document["source_content_sha256"]),
+            workspace_content_sha256=str(snapshot_document["workspace_content_sha256"]),
+            baseline_revision=str(snapshot_document["baseline_revision"]),
+            baseline_files_artifact=artifact("baseline_files_sha256", "baseline_files_size_bytes"),
+            terminal_files_artifact=artifact("terminal_files_sha256", "terminal_files_size_bytes"),
+            patch_artifact=artifact("patch_sha256", "patch_size_bytes"),
+            canonical_artifact=artifact("canonical_sha256", "canonical_size_bytes"),
+            canonical_sha256=str(snapshot_document["canonical_sha256"]),
+        )
+        contract = GraderContract(
+            grader_version=str(contract_document["grader_version"]),
+            grader_sha256=str(contract_document["grader_sha256"]),
+            native_tests_artifact=artifact("native_tests_sha256", "native_tests_size_bytes"),
+            hidden_tests_artifact=artifact("hidden_tests_sha256", "hidden_tests_size_bytes"),
+            dependencies_artifact=artifact("dependencies_sha256", "dependencies_size_bytes"),
+            scope_policy_sha256=str(contract_document["scope_policy_sha256"]),
+            tamper_policy_sha256=str(contract_document["tamper_policy_sha256"]),
+            command=tuple(_string_list(contract_document["command"], "grader command")),
+            allowed_paths=tuple(
+                _string_list(contract_document["allowed_paths"], "grader allowed paths")
+            ),
+            forbidden_paths=tuple(
+                _string_list(contract_document["forbidden_paths"], "grader forbidden paths")
+            ),
+            expected_baseline_revision=str(contract_document["expected_baseline_revision"]),
+            expected_baseline_files_sha256=str(contract_document["expected_baseline_files_sha256"]),
+            network_policy=str(contract_document["network_policy"]),
+            maximum_regrades=contract_document["maximum_regrades"],
+        )
+        result = asyncio.run(CredentialFreeExecutableGrader(store).grade(snapshot, contract))
+    if (
+        result.terminal not in {GraderTerminalKind.PASSED, GraderTerminalKind.FAILED}
+        or result.binary_passed is None
+        or result.continuous_score is None
+    ):
+        raise ReproductionError("reproduction_grader_execution_failed")
+    return {
+        "binary_passed": result.binary_passed,
+        "continuous_score": result.continuous_score,
+        "tests": dict(result.test_outcomes),
+    }
 
 
 def _normalize_evidence(value: object) -> object:
@@ -979,6 +1311,7 @@ def _parse_input(value: object) -> BundleInput:
             "analysis_source",
             "backup_receipt",
             "evidence_source",
+            "grader_artifact",
             "grader_contract",
             "replay_runner",
             "runtime_lock",
