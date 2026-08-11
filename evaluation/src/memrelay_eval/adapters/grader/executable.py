@@ -814,6 +814,18 @@ def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
     if sys.platform != "linux":
         raise NetworkSandboxUnavailableError()
     probe = (str(Path(sys.executable).resolve()), "-c", "pass")
+    try:
+        completed = _run_docker_sandbox(
+            probe,
+            cwd=cwd,
+            environment=environment,
+            timeout_seconds=5,
+        )
+    except NetworkSandboxUnavailableError:
+        pass
+    else:
+        if completed.returncode == 0:
+            return "docker"
     for kind in ("bubblewrap", "sudo_bubblewrap"):
         try:
             completed = subprocess.run(
@@ -829,18 +841,6 @@ def _require_network_sandbox(cwd: Path, environment: Mapping[str, str]) -> str:
             continue
         if completed.returncode == 0:
             return kind
-    try:
-        completed = _run_docker_sandbox(
-            probe,
-            cwd=cwd,
-            environment=environment,
-            timeout_seconds=5,
-        )
-    except NetworkSandboxUnavailableError:
-        pass
-    else:
-        if completed.returncode == 0:
-            return "docker"
     raise NetworkSandboxUnavailableError()
 
 
