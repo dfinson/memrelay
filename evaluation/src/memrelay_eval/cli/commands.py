@@ -67,12 +67,23 @@ from memrelay_eval.orchestration.control import (
     reuse_or_reject_model_lock,
     write_model_lock,
 )
+from memrelay_eval.orchestration.limits import (
+    PrimaryModelStageLimits,
+    SecondaryModelStageLimits,
+)
 from memrelay_eval.orchestration.stages import (
+    StageAuthorization,
+    StageEntryBundle,
+    StageExitBundle,
     authorize_stage_entry,
     load_authorization,
     load_entry_bundle,
     load_exit_bundle,
+    load_primary_stage_conclusion,
+    load_primary_stage_plan,
     refuse_cross_repository_stage,
+    seal_primary_stage_plan,
+    seal_secondary_stage_plan,
 )
 
 
@@ -202,6 +213,34 @@ def _run_enrollable_stage(args: Namespace) -> int:
             "stage_authorization": authorization.digest,
             "stage_entry_bundle": admission_entry.digest,
         }
+        if stage == "primary":
+            plan_bytes = _seal_primary_plan(
+                args,
+                entry_bundle=admission_entry,
+                predecessor_exit=predecessor_exit,
+                authorization=authorization,
+            )
+            output_hashes["primary_stage_plan"] = sha256(plan_bytes).hexdigest()
+            input_hashes.update(_model_stage_input_hashes(args, secondary=False))
+            _write_immutable_stage_manifest(
+                Path(args.output_root)
+                / "stage-plans"
+                / f"primary-{output_hashes['primary_stage_plan']}.json",
+                plan_bytes,
+            )
+        elif stage == "secondary":
+            plan_bytes = _seal_secondary_plan(
+                args,
+                primary_exit=predecessor_exit,
+            )
+            output_hashes["secondary_stage_plan"] = sha256(plan_bytes).hexdigest()
+            input_hashes.update(_model_stage_input_hashes(args, secondary=True))
+            _write_immutable_stage_manifest(
+                Path(args.output_root)
+                / "stage-plans"
+                / f"secondary-{output_hashes['secondary_stage_plan']}.json",
+                plan_bytes,
+            )
     except StageControlError as error:
         error_code = error.code
         terminal_status = "refused"
@@ -242,6 +281,163 @@ def _reject_ci_paid_execution(environment: dict[str, str]) -> None:
     markers = tuple(sorted(marker for marker in _CI_ENV_MARKERS if environment.get(marker)))
     if markers:
         raise StageControlError("paid_execution_forbidden_in_ci", markers)
+
+
+def _seal_primary_plan(
+    args: Namespace,
+    *,
+    entry_bundle: StageEntryBundle,
+    predecessor_exit: StageExitBundle,
+    authorization: StageAuthorization,
+) -> bytes:
+    task_document, _task_bytes = _required_canonical_json(
+        getattr(args, "task_plan", None), "primary_task_plan_missing"
+    )
+    limits_document, _limits_bytes = _required_canonical_json(
+        getattr(args, "limits", None), "primary_limits_missing"
+    )
+    plan = seal_primary_stage_plan(
+        entry_bundle=entry_bundle,
+        pilot_exit=predecessor_exit,
+        authorization=authorization,
+        now=datetime.now(UTC),
+        task_families=_task_families(task_document),
+        limits=_primary_limits(limits_document),
+    )
+    return plan.bytes()
+
+
+def _seal_secondary_plan(args: Namespace, *, primary_exit: StageExitBundle) -> bytes:
+    task_document, _task_bytes = _required_canonical_json(
+        getattr(args, "task_plan", None), "secondary_task_plan_missing"
+    )
+    limits_document, _limits_bytes = _required_canonical_json(
+        getattr(args, "limits", None), "secondary_limits_missing"
+    )
+    model_lock, _model_lock_bytes = _required_canonical_json(
+        getattr(args, "model_lock", None), "secondary_model_lock_missing"
+    )
+    primary_plan = load_primary_stage_plan(
+        _read_stage_input(getattr(args, "primary_plan", None) or "", "primary_plan_unreadable")
+    )
+    conclusion = load_primary_stage_conclusion(
+        _read_stage_input(
+            getattr(args, "primary_conclusion", None) or "", "primary_conclusion_unreadable"
+        )
+    )
+    entry_values = _role_stage_inputs(getattr(args, "secondary_entry", None), load_entry_bundle)
+    authorization_values = _role_stage_inputs(
+        getattr(args, "secondary_authorization", None), load_authorization
+    )
+    entries = {
+        role: value for role, value in entry_values.items() if isinstance(value, StageEntryBundle)
+    }
+    authorizations = {
+        role: value
+        for role, value in authorization_values.items()
+        if isinstance(value, StageAuthorization)
+    }
+    if len(entries) != len(entry_values) or len(authorizations) != len(authorization_values):
+        raise StageControlError("secondary_role_input_invalid")
+    if set(entries) != set(authorizations):
+        raise StageControlError("secondary_role_authorization_missing")
+    plan = seal_secondary_stage_plan(
+        primary_plan=primary_plan,
+        primary_exit=primary_exit,
+        primary_conclusion=conclusion,
+        model_lock=model_lock,
+        role_entry_bundles=entries,
+        role_authorizations=authorizations,
+        now=datetime.now(UTC),
+        task_families=_task_families(task_document),
+        limits=_secondary_limits(limits_document),
+    )
+    return plan.bytes()
+
+
+def _required_canonical_json(path: str | None, code: str) -> tuple[dict[str, object], bytes]:
+    if not path:
+        raise StageControlError(code)
+    data = _read_stage_input(path, code)
+    try:
+        document = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise StageControlError(code) from error
+    if not isinstance(document, dict) or canonical_bytes(document) != data:
+        raise StageControlError(code)
+    return document, data
+
+
+def _model_stage_input_hashes(args: Namespace, *, secondary: bool) -> dict[str, str]:
+    paths = {
+        "limits": getattr(args, "limits", None),
+        "task_plan": getattr(args, "task_plan", None),
+    }
+    if secondary:
+        paths |= {
+            "model_lock": getattr(args, "model_lock", None),
+            "primary_conclusion": getattr(args, "primary_conclusion", None),
+            "primary_plan": getattr(args, "primary_plan", None),
+        }
+    return {
+        name: sha256(_read_stage_input(path, f"{name}_unreadable")).hexdigest()
+        for name, path in paths.items()
+        if path
+    }
+
+
+def _task_families(document: dict[str, object]) -> dict[str, tuple[str, ...]]:
+    value = document.get("task_families")
+    if not isinstance(value, dict):
+        raise StageControlError("model_stage_task_plan_invalid")
+    if any(
+        not isinstance(family, str)
+        or not family
+        or not isinstance(task_ids, list)
+        or any(not isinstance(task_id, str) or not task_id for task_id in task_ids)
+        for family, task_ids in value.items()
+    ):
+        raise StageControlError("model_stage_task_plan_invalid")
+    return {family: tuple(task_ids) for family, task_ids in value.items()}
+
+
+def _primary_limits(document: dict[str, object]) -> PrimaryModelStageLimits:
+    try:
+        return PrimaryModelStageLimits(
+            ai_credit_cap=float(document["ai_credit_cap"]),
+            usd_cap=float(document["usd_cap"]),
+            task_class_active_seconds=dict(document["task_class_active_seconds"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise StageControlError("primary_limits_invalid") from error
+
+
+def _secondary_limits(document: dict[str, object]) -> SecondaryModelStageLimits:
+    try:
+        return SecondaryModelStageLimits(
+            ai_credit_cap=float(document["ai_credit_cap"]),
+            usd_cap=float(document["usd_cap"]),
+            task_class_active_seconds=dict(document["task_class_active_seconds"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise StageControlError("secondary_limits_invalid") from error
+
+
+def _role_stage_inputs(
+    values: list[str] | None, loader: Callable[[bytes], StageEntryBundle | StageAuthorization]
+) -> dict[str, StageEntryBundle | StageAuthorization]:
+    if not values:
+        raise StageControlError("secondary_role_authorization_missing")
+    result: dict[str, object] = {}
+    for value in values:
+        try:
+            role, path = value.split(":", 1)
+        except ValueError as error:
+            raise StageControlError("secondary_role_input_invalid") from error
+        if role not in {"M1", "M2"} or role in result or not path:
+            raise StageControlError("secondary_role_input_invalid")
+        result[role] = loader(_read_stage_input(path, "secondary_role_input_unreadable"))
+    return result
 
 
 def _require_stage_inputs(args: Namespace) -> tuple[str, str, str]:

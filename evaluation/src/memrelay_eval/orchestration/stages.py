@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from memrelay_eval.analysis.gates import CategoricalGateDecision, ClaimGateDecision
+from memrelay_eval.analysis.intervals import SimultaneousInterval
+from memrelay_eval.analysis.power import PowerEvaluation
 from memrelay_eval.canonical import (
     CanonicalizationError,
     attach_digest,
@@ -61,7 +64,11 @@ from memrelay_eval.domain.policies import (
     require_stage_predecessor,
 )
 from memrelay_eval.domain.states import ProbeWriteDisposition, StageKind, StageState
-from memrelay_eval.orchestration.control import CrossRepositoryAdmissionController
+from memrelay_eval.orchestration.control import (
+    CrossRepositoryAdmissionController,
+    SecondaryRoleQualification,
+    verified_secondary_role_qualifications,
+)
 from memrelay_eval.orchestration.history import (
     SequenceAnalysisIdentity,
     require_no_cross_regime_pooling,
@@ -464,6 +471,56 @@ def load_authorization(data: bytes) -> StageAuthorization:
     return authorization
 
 
+def load_primary_stage_plan(data: bytes) -> PrimaryStagePlan:
+    """Read an immutable published primary plan rather than accepting reconstructed units."""
+
+    document = _canonical_stage_document(data, "primary_plan_corrupt")
+    if document.get("artifact_type") != "primary_model_stage_plan" or not verify_digest(document):
+        raise StageControlError("primary_plan_corrupt")
+    try:
+        task_families = {
+            family: tuple(str(item) for item in document["task_families"][family])
+            for family in _PRIMARY_FAMILIES
+        }
+        plan = PrimaryStagePlan(
+            stage_id=StageId(str(document["stage_id"])),
+            protocol_id=ProtocolId(str(document["protocol_id"])),
+            entry_bundle_sha256=str(document["entry_bundle_sha256"]),
+            pilot_exit_sha256=str(document["pilot_exit_sha256"]),
+            task_families=task_families,
+            units=tuple(_model_unit_from_document(item) for item in document["units"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise StageControlError("primary_plan_corrupt") from error
+    if plan.bytes() != data:
+        raise StageControlError("primary_plan_corrupt")
+    return plan
+
+
+def load_primary_stage_conclusion(data: bytes) -> PrimaryStageConclusion:
+    """Read the immutable primary conclusion needed before secondary authorization."""
+
+    document = _canonical_stage_document(data, "primary_conclusion_corrupt")
+    if document.get("artifact_type") != "primary_stage_conclusion" or not verify_digest(document):
+        raise StageControlError("primary_conclusion_corrupt")
+    try:
+        conclusion = PrimaryStageConclusion(
+            primary_plan_sha256=str(document["primary_plan_sha256"]),
+            reconciliation_sha256=str(document["reconciliation_sha256"]),
+            exit_evidence_sha256={
+                str(key): str(value)
+                for key, value in dict(document["exit_evidence_sha256"]).items()
+            },
+            claim_decision_sha256=tuple(str(item) for item in document["claim_decision_sha256"]),
+            claim_statuses=tuple(str(item) for item in document["claim_statuses"]),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise StageControlError("primary_conclusion_corrupt") from error
+    if conclusion.bytes() != data:
+        raise StageControlError("primary_conclusion_corrupt")
+    return conclusion
+
+
 def authorize_stage_entry(
     *,
     stage_kind: StageKind,
@@ -602,19 +659,23 @@ class PrimaryStagePlan:
 
     @property
     def digest(self) -> str:
-        return canonical_digest(
-            {
-                "artifact_type": "primary_model_stage_plan",
-                "stage_id": str(self.stage_id),
-                "protocol_id": str(self.protocol_id),
-                "entry_bundle_sha256": self.entry_bundle_sha256,
-                "pilot_exit_sha256": self.pilot_exit_sha256,
-                "task_families": {
-                    family: list(self.task_families[family]) for family in _PRIMARY_FAMILIES
-                },
-                "units": [_model_unit_document(unit) for unit in self.units],
-            }
-        )
+        return canonical_digest(self.to_document())
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "artifact_type": "primary_model_stage_plan",
+            "stage_id": str(self.stage_id),
+            "protocol_id": str(self.protocol_id),
+            "entry_bundle_sha256": self.entry_bundle_sha256,
+            "pilot_exit_sha256": self.pilot_exit_sha256,
+            "task_families": {
+                family: list(self.task_families[family]) for family in _PRIMARY_FAMILIES
+            },
+            "units": [_model_unit_document(unit) for unit in self.units],
+        }
+
+    def bytes(self) -> bytes:
+        return canonical_bytes(attach_digest(self.to_document()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -666,6 +727,100 @@ class PrimaryStageConclusion:
             }
         )
 
+    def to_document(self) -> dict[str, object]:
+        return {
+            "artifact_type": "primary_stage_conclusion",
+            "primary_plan_sha256": self.primary_plan_sha256,
+            "reconciliation_sha256": self.reconciliation_sha256,
+            "exit_evidence_sha256": dict(sorted(self.exit_evidence_sha256.items())),
+            "claim_decision_sha256": list(self.claim_decision_sha256),
+            "claim_statuses": list(self.claim_statuses),
+            "secondary_repairs_primary": False,
+        }
+
+    def bytes(self) -> bytes:
+        return canonical_bytes(attach_digest(self.to_document()))
+
+
+@dataclass(frozen=True, slots=True)
+class PrimaryClaimEvidence:
+    """Typed, immutable claim evidence accepted at the primary exit boundary."""
+
+    decision: ClaimGateDecision
+    interval: SimultaneousInterval
+    power: PowerEvaluation
+    categorical: CategoricalGateDecision
+
+    def __post_init__(self) -> None:
+        if not all(
+            isinstance(value, expected)
+            for value, expected in (
+                (self.decision, ClaimGateDecision),
+                (self.interval, SimultaneousInterval),
+                (self.power, PowerEvaluation),
+                (self.categorical, CategoricalGateDecision),
+            )
+        ):
+            raise StageControlError("primary_claim_authority_invalid")
+        if (
+            self.decision.endpoint_id != self.interval.endpoint_id
+            or self.decision.family_sha256 != self.interval.family_sha256
+            or self.decision.family_sha256 != self.power.family_sha256
+            or self.decision.power_evaluation_sha256 != self.power.evaluation_sha256
+            or self.decision.categorical_gate_decision_sha256 != self.categorical.digest
+            or self.decision.categorical_policy_sha256 != self.categorical.policy_sha256
+        ):
+            raise StageControlError("primary_claim_authority_lineage_conflict")
+        if self.categorical.status == "blocked":
+            if (
+                self.decision.claim_id not in self.categorical.affected_claim_ids
+                or self.decision.status != "blocked"
+            ):
+                raise StageControlError("primary_categorical_block_not_enforced")
+        elif self.power.status == "estimation_only" and self.decision.status != "estimation-only":
+            raise StageControlError("primary_power_estimation_only_not_enforced")
+
+
+@dataclass(frozen=True, slots=True)
+class PrimaryAnalysisAuthority:
+    """Claim-family complete analysis authority for a terminal M0 conclusion."""
+
+    protocol_sha256: str
+    family_sha256: str
+    source_sha256: str
+    derivation_sha256: str
+    required_claim_ids: tuple[str, ...]
+    claim_evidence: tuple[PrimaryClaimEvidence, ...]
+
+    def __post_init__(self) -> None:
+        for value in (
+            self.protocol_sha256,
+            self.family_sha256,
+            self.source_sha256,
+            self.derivation_sha256,
+        ):
+            _require_sha256(value, "primary_analysis_authority_invalid", "lineage")
+        if (
+            not self.required_claim_ids
+            or len(set(self.required_claim_ids)) != len(self.required_claim_ids)
+            or any(not claim_id for claim_id in self.required_claim_ids)
+            or len(self.claim_evidence) != len(self.required_claim_ids)
+        ):
+            raise StageControlError("primary_claim_family_incomplete")
+        decisions = tuple(item.decision for item in self.claim_evidence)
+        if (
+            {decision.claim_id for decision in decisions} != set(self.required_claim_ids)
+            or len({decision.claim_id for decision in decisions}) != len(decisions)
+            or any(
+                decision.protocol_sha256 != self.protocol_sha256
+                or decision.family_sha256 != self.family_sha256
+                or decision.source_sha256 != self.source_sha256
+                or decision.derivation_sha256 != self.derivation_sha256
+                for decision in decisions
+            )
+        ):
+            raise StageControlError("primary_claim_authority_lineage_conflict")
+
 
 @dataclass(frozen=True, slots=True)
 class SecondaryRolePlan:
@@ -677,6 +832,7 @@ class SecondaryRolePlan:
     protocol_id: ProtocolId
     entry_bundle_sha256: str
     primary_conclusion_sha256: str
+    qualification: SecondaryRoleQualification
     task_ids: tuple[str, ...]
     units: tuple[ModelStageUnit, ...]
 
@@ -686,6 +842,8 @@ class SecondaryRolePlan:
             or self.stratum_id != f"secondary-{self.model_role}"
         ):
             raise StageControlError("secondary_stratum_invalid")
+        if self.qualification.role != self.model_role:
+            raise StageControlError("secondary_role_qualification_conflict")
         _require_sha256(self.entry_bundle_sha256, "secondary_plan_hash_invalid", "entry_bundle")
         _require_sha256(
             self.primary_conclusion_sha256, "secondary_plan_hash_invalid", "primary_conclusion"
@@ -750,6 +908,34 @@ class SecondaryStagePlan:
     def total_units(self) -> int:
         return sum(len(plan.units) for plan in self.role_plans)
 
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "artifact_type": "secondary_model_stage_plan",
+            "primary_conclusion_sha256": self.primary_conclusion_sha256,
+            "unavailable_roles": dict(self.unavailable_roles),
+            "role_plans": [
+                {
+                    "role": plan.model_role,
+                    "stratum_id": plan.stratum_id,
+                    "stage_id": str(plan.stage_id),
+                    "protocol_id": str(plan.protocol_id),
+                    "entry_bundle_sha256": plan.entry_bundle_sha256,
+                    "primary_conclusion_sha256": plan.primary_conclusion_sha256,
+                    "qualification": plan.qualification.to_document(),
+                    "task_ids": list(plan.task_ids),
+                    "units": [_model_unit_document(unit) for unit in plan.units],
+                }
+                for plan in self.role_plans
+            ],
+        }
+
+    def bytes(self) -> bytes:
+        return canonical_bytes(attach_digest(self.to_document()))
+
 
 def seal_primary_stage_plan(
     *,
@@ -806,29 +992,23 @@ def conclude_primary_stage(
     terminal_unit_ids: Sequence[str],
     reconciliation_sha256: str,
     exit_evidence_sha256: Mapping[str, str],
-    claim_decisions: Sequence[object],
+    analysis_authority: PrimaryAnalysisAuthority,
 ) -> PrimaryStageConclusion:
-    """Seal terminal complete ITT evidence and existing frozen claim decisions."""
+    """Seal terminal complete ITT evidence and verified frozen claim authority."""
 
     if set(terminal_unit_ids) != {unit.unit_id for unit in plan.units} or len(
         terminal_unit_ids
     ) != len(plan.units):
         raise StageControlError("primary_itt_incomplete")
-    decision_hashes: list[str] = []
-    statuses: list[str] = []
-    for decision in claim_decisions:
-        decision_sha256 = getattr(decision, "decision_sha256", None)
-        status = getattr(decision, "status", None)
-        if not isinstance(decision_sha256, str) or not isinstance(status, str):
-            raise StageControlError("primary_claim_decisions_incomplete")
-        decision_hashes.append(decision_sha256)
-        statuses.append(status)
+    if not isinstance(analysis_authority, PrimaryAnalysisAuthority):
+        raise StageControlError("primary_claim_authority_invalid")
+    decisions = tuple(item.decision for item in analysis_authority.claim_evidence)
     return PrimaryStageConclusion(
         primary_plan_sha256=plan.digest,
         reconciliation_sha256=reconciliation_sha256,
         exit_evidence_sha256=exit_evidence_sha256,
-        claim_decision_sha256=tuple(decision_hashes),
-        claim_statuses=tuple(statuses),
+        claim_decision_sha256=tuple(decision.decision_sha256 for decision in decisions),
+        claim_statuses=tuple(decision.status for decision in decisions),
     )
 
 
@@ -837,7 +1017,7 @@ def seal_secondary_stage_plan(
     primary_plan: PrimaryStagePlan,
     primary_exit: StageExitBundle,
     primary_conclusion: PrimaryStageConclusion,
-    role_availability: Mapping[str, str],
+    model_lock: Mapping[str, object],
     role_entry_bundles: Mapping[str, StageEntryBundle],
     role_authorizations: Mapping[str, StageAuthorization],
     now: datetime,
@@ -861,10 +1041,19 @@ def seal_secondary_stage_plan(
         or primary_exit.reconciliation_sha256 != primary_conclusion.reconciliation_sha256
     ):
         raise StageControlError("secondary_primary_lineage_conflict")
-    if set(role_availability) != _SECONDARY_ROLES or any(
-        value not in _ROLE_AVAILABILITY for value in role_availability.values()
+    qualified_roles, unavailable = verified_secondary_role_qualifications(model_lock)
+    model_lock_sha256 = model_lock.get("lock_sha256")
+    entry_model_locks = {
+        bundle.locks["model_lock_sha256"]
+        for role, bundle in role_entry_bundles.items()
+        if role in _SECONDARY_ROLES
+    }
+    if (
+        not isinstance(model_lock_sha256, str)
+        or len(entry_model_locks) > 1
+        or (entry_model_locks and entry_model_locks != {model_lock_sha256})
     ):
-        raise StageControlError("secondary_role_availability_invalid")
+        raise StageControlError("secondary_model_lock_mismatch")
     normalized_families = {
         family: tuple(task_families.get(family, ())) for family in _PRIMARY_FAMILIES
     }
@@ -873,11 +1062,9 @@ def seal_secondary_stage_plan(
         task_id for family in _PRIMARY_FAMILIES for task_id in normalized_families[family]
     )
     plans: list[SecondaryRolePlan] = []
-    unavailable: dict[str, str] = {}
     for role in sorted(_SECONDARY_ROLES):
-        availability = role_availability[role]
-        if availability != "qualified":
-            unavailable[role] = availability
+        qualification = qualified_roles.get(role)
+        if qualification is None:
             continue
         entry_bundle = role_entry_bundles.get(role)
         authorization = role_authorizations.get(role)
@@ -912,6 +1099,7 @@ def seal_secondary_stage_plan(
                 protocol_id=entry_bundle.protocol_id,
                 entry_bundle_sha256=entry_bundle.digest,
                 primary_conclusion_sha256=primary_conclusion.digest,
+                qualification=qualification,
                 task_ids=task_ids,
                 units=units,
             )
@@ -1034,6 +1222,19 @@ def _model_unit_document(unit: ModelStageUnit) -> dict[str, object]:
         "repeat": unit.repeat,
         "concurrency_lane": unit.concurrency_lane,
     }
+
+
+def _model_unit_from_document(value: object) -> ModelStageUnit:
+    if not isinstance(value, Mapping):
+        raise ValueError("model stage unit must be an object")
+    return ModelStageUnit(
+        unit_id=str(value["unit_id"]),
+        task_id=str(value["task_id"]),
+        model_role=str(value["model_role"]),
+        arm_slot=int(value["arm_slot"]),
+        repeat=int(value["repeat"]),
+        concurrency_lane=int(value["concurrency_lane"]),
+    )
 
 
 def plan_stage_resume(
