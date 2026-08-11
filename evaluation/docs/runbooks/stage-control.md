@@ -45,7 +45,13 @@ new stage id**, never an in-place patch.
 ## Entry guard (AC 2)
 
 `memrelay-eval run --stage integration|pilot|primary|secondary` fails closed
-**before enrollment** with a typed status when any of the following hold:
+**before enrollment** with a typed status whenever any of the following hold.
+This table is illustrative, not exhaustive: unreadable or malformed input files
+raise additional typed codes such as `stage_entry_bundle_unreadable`,
+`predecessor_exit_unreadable`, `stage_authorization_unreadable`,
+`stage_entry_bundle_corrupt`, `authorization_corrupt`, and
+`stage_bundle_incomplete`; every code is a `StageControlError.code` value and
+never a bare unhandled exception.
 
 | Condition | Typed code |
 | --- | --- |

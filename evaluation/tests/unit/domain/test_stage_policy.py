@@ -278,3 +278,15 @@ def test_headroom_rejects_dimension_mismatch() -> None:
     with pytest.raises(StageControlError) as failure:
         stage_headroom_status({"usd": 1}, {"framework_tokens": 1})
     assert failure.value.code == "stage_headroom_dimension_mismatch"
+
+
+def test_headroom_rejects_non_numeric_value_with_typed_error_instead_of_type_error() -> None:
+    with pytest.raises(StageControlError) as failure:
+        stage_headroom_status({"usd": "5"}, {"usd": 20})
+    assert failure.value.code == "stage_headroom_value_not_numeric"
+
+
+def test_headroom_rejects_boolean_value_with_typed_error() -> None:
+    with pytest.raises(StageControlError) as failure:
+        stage_headroom_status({"usd": True}, {"usd": 20})
+    assert failure.value.code == "stage_headroom_value_not_numeric"

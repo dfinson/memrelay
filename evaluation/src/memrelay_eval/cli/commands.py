@@ -220,8 +220,13 @@ def _run_enrollable_stage(args: Namespace) -> int:
     )
     digest = json.loads(manifest.decode("utf-8"))["digest"]
     manifest_path = Path(args.output_root) / "commands" / f"run-{stage}-{digest}.json"
-    _write_immutable_stage_manifest(manifest_path, manifest)
-    print(manifest.decode("utf-8"))
+    try:
+        _write_immutable_stage_manifest(manifest_path, manifest)
+    finally:
+        # Emit exactly one terminal manifest on every path, including a failed
+        # publish, so a disk/permission fault never silently swallows the
+        # required command manifest contract.
+        print(manifest.decode("utf-8"))
     return exit_code
 
 

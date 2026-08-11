@@ -48,6 +48,13 @@ def stage_headroom_status(
     for name in sorted(limits):
         cap = limits[name]
         used = consumed[name]
+        if (
+            isinstance(cap, bool)
+            or isinstance(used, bool)
+            or not isinstance(cap, (int, float))
+            or not isinstance(used, (int, float))
+        ):
+            raise StageControlError("stage_headroom_value_not_numeric", (name,))
         if cap < 0 or used < 0:
             raise StageControlError("stage_headroom_negative", (name,))
         remaining = cap - used

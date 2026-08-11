@@ -273,3 +273,36 @@ def test_cross_repository_run_is_denied_before_discovery(
     assert "credential" not in output
     # Deny-before-discovery emits no stage manifest and touches no artifact root.
     assert not (tmp_path / "commands").exists()
+
+
+def test_manifest_publish_failure_still_emits_the_manifest_before_raising(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A failed on-disk publish must never silently swallow the terminal manifest.
+
+    Regression test for a Copilot automated-review finding: the manifest was
+    previously printed only *after* ``_write_immutable_stage_manifest``
+    succeeded, so a write failure (disk full, permissions, a genuine publish
+    conflict) propagated as an unhandled exception with no manifest ever
+    reaching stdout, violating the "always emits exactly one manifest on every
+    terminal path" contract.
+    """
+
+    import memrelay_eval.cli.commands as commands_module
+    from memrelay_eval.domain.errors import StageControlError
+
+    def _boom(path: Path, data: bytes) -> None:
+        raise StageControlError("stage_command_manifest_publish_failed", (str(path),))
+
+    monkeypatch.setattr(commands_module, "_write_immutable_stage_manifest", _boom)
+    _clear_environment(monkeypatch)
+    paths = _seal_stage_inputs(tmp_path)
+
+    with pytest.raises(StageControlError) as failure:
+        _run(paths)
+
+    assert failure.value.code == "stage_command_manifest_publish_failed"
+    printed = json.loads(capsys.readouterr().out.strip())
+    assert printed["command"] == "run"
+    assert printed["terminal_status"] == "succeeded"
+    _validate_manifest(printed)
