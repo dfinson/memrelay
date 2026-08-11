@@ -575,7 +575,6 @@ def test_docker_fallback_blocks_live_host_escapes(
         "'docker':docker,'host_file':host_file,"
         "'input_readable':input_readable,'input_immutable':input_immutable,"
         "'unprivileged':os.geteuid()==65534}\n"
-        "assert all(checks.values())\n"
         "sys.stdout.write(json.dumps({'schema_version':'1.0.0','native_tests':True,"
         "'hidden_tests':True,'continuous_score':1.0,'objective_components':"
         "{name:float(value) for name,value in checks.items()}},"
@@ -590,6 +589,18 @@ def test_docker_fallback_blocks_live_host_escapes(
 
     assert _sandbox_diagnostics(store, result) == []
     assert result.terminal is GraderTerminalKind.PASSED
+    assert result.objective_components == {
+        "child": 1.0,
+        "connect_ex": 1.0,
+        "direct": 1.0,
+        "docker": 1.0,
+        "dns": 1.0,
+        "host_file": 1.0,
+        "input_immutable": 1.0,
+        "input_readable": 1.0,
+        "ipv6": 1.0,
+        "unprivileged": 1.0,
+    }
     docker = shutil.which("docker")
     assert docker is not None
     containers = subprocess.run(
