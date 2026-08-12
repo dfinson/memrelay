@@ -288,13 +288,15 @@ def _run_enrollable_stage(args: Namespace) -> int:
             pilot_plan = load_pilot_plan(pilot_plan_bytes)
             authorize_pilot_plan(admission_entry, pilot_plan)
             input_hashes["pilot_plan"] = sha256(pilot_plan_bytes).hexdigest()
-        if stage == "integration" and any(
-            (
-                getattr(args, "integration_plan", None),
-                getattr(args, "integration_scenarios", None),
-                getattr(args, "integration_limits", None),
-            )
-        ):
+        if stage == "integration":
+            if not any(
+                (
+                    getattr(args, "integration_plan", None),
+                    getattr(args, "integration_scenarios", None),
+                    getattr(args, "integration_limits", None),
+                )
+            ):
+                raise StageControlError("integration_plan_required")
             integration_plan_bytes = _seal_or_load_integration_plan(
                 args,
                 entry_bundle=admission_entry,
