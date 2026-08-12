@@ -1160,6 +1160,88 @@ class CircuitBreakerAdmissionController:
 
 
 @dataclass(frozen=True, slots=True)
+class IntegrationStageLimits:
+    """The non-transferable paid envelope for the fixed 32-run integration stage."""
+
+    ai_credit_cap: float
+    usd_cap: float
+    per_run_tool_call_cap: int
+    task_agent_token_cap: int = 3_200_000
+    framework_input_token_cap: int = 600_000
+    framework_output_token_cap: int = 200_000
+    per_run_active_seconds: int = 15 * 60
+    elapsed_seconds_cap: int = 8 * 60 * 60
+    concurrency_cap: int = 2
+
+    def __post_init__(self) -> None:
+        if (
+            self.task_agent_token_cap != 3_200_000
+            or self.framework_input_token_cap != 600_000
+            or self.framework_output_token_cap != 200_000
+            or self.per_run_active_seconds != 15 * 60
+            or self.elapsed_seconds_cap != 8 * 60 * 60
+            or self.concurrency_cap != 2
+            or not isinstance(self.per_run_tool_call_cap, int)
+            or isinstance(self.per_run_tool_call_cap, bool)
+            or self.per_run_tool_call_cap <= 0
+            or not isinstance(self.ai_credit_cap, (int, float))
+            or isinstance(self.ai_credit_cap, bool)
+            or not math.isfinite(self.ai_credit_cap)
+            or self.ai_credit_cap <= 0
+            or not isinstance(self.usd_cap, (int, float))
+            or isinstance(self.usd_cap, bool)
+            or not math.isfinite(self.usd_cap)
+            or self.usd_cap <= 0
+        ):
+            raise StageControlError("integration_budget_envelope_invalid")
+
+    @property
+    def digest(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def to_document(self) -> dict[str, int | float]:
+        return {
+            "task_agent_token_cap": self.task_agent_token_cap,
+            "ai_credit_cap": self.ai_credit_cap,
+            "framework_input_token_cap": self.framework_input_token_cap,
+            "framework_output_token_cap": self.framework_output_token_cap,
+            "usd_cap": self.usd_cap,
+            "per_run_tool_call_cap": self.per_run_tool_call_cap,
+            "per_run_active_seconds": self.per_run_active_seconds,
+            "elapsed_seconds_cap": self.elapsed_seconds_cap,
+            "concurrency_cap": self.concurrency_cap,
+        }
+
+    def stage_envelope(self, source_sha256: str) -> FrozenLimitEnvelope:
+        """Project the frozen paid envelope onto the shared breaker dimensions."""
+
+        return FrozenLimitEnvelope(
+            scope="stage",
+            source_sha256=source_sha256,
+            limits={
+                CircuitBreakerLimit.COPILOT_TOKENS.value: self.task_agent_token_cap,
+                CircuitBreakerLimit.COPILOT_AI_CREDITS.value: self.ai_credit_cap,
+                CircuitBreakerLimit.FRAMEWORK_INPUT_TOKENS.value: self.framework_input_token_cap,
+                CircuitBreakerLimit.FRAMEWORK_OUTPUT_TOKENS.value: self.framework_output_token_cap,
+                CircuitBreakerLimit.FRAMEWORK_USD.value: self.usd_cap,
+                CircuitBreakerLimit.ELAPSED_SECONDS.value: self.elapsed_seconds_cap,
+            },
+        )
+
+    def run_envelope(self, source_sha256: str) -> FrozenLimitEnvelope:
+        """Project per-run tool and active-time caps onto the shared breaker seam."""
+
+        return FrozenLimitEnvelope(
+            scope="run",
+            source_sha256=source_sha256,
+            limits={
+                CircuitBreakerLimit.TOOL_CALLS.value: self.per_run_tool_call_cap,
+                CircuitBreakerLimit.ACTIVE_SECONDS.value: self.per_run_active_seconds,
+            },
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class PrimaryModelStageLimits:
     """The fixed paid-call envelope for the 512-unit confirmatory primary stage."""
 

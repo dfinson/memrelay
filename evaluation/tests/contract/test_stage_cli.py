@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.cli.main import main
-from memrelay_eval.domain.ids import ProtocolId, StageAuthorizationId, StageId
+from memrelay_eval.domain.ids import ProtocolId, ScenarioId, StageAuthorizationId, StageId
 from memrelay_eval.domain.policies import STAGE_ENTRY_LOCK_FIELDS
 from memrelay_eval.domain.states import StageKind, StageState
 from memrelay_eval.evidence.conformance import (
@@ -22,6 +26,7 @@ from memrelay_eval.evidence.conformance import (
     observed_probe_result,
     report_bytes,
 )
+from memrelay_eval.orchestration.limits import IntegrationStageLimits
 from memrelay_eval.orchestration.stages import (
     StageAuthorization,
     StageEntryBundle,
@@ -112,9 +117,15 @@ def _seal_stage_inputs(
     authorizer_role: str = "operator",
     valid_from: datetime | None = None,
     valid_until: datetime | None = None,
+    integration_inputs: bool = False,
 ) -> dict[str, str]:
     now = datetime.now(UTC)
     predecessor = predecessor or _accepted_predecessor()
+    limits = (
+        IntegrationStageLimits(ai_credit_cap=100.0, usd_cap=10.0, per_run_tool_call_cap=60)
+        if integration_inputs
+        else None
+    )
     stage_id = StageId.new()
     protocol_id = ProtocolId.new()
     entry = StageEntryBundle(
@@ -122,7 +133,10 @@ def _seal_stage_inputs(
         stage_kind=StageKind.INTEGRATION,
         protocol_id=protocol_id,
         predecessor_stage_kind=StageKind.CONFORMANCE,
-        locks=_entry_locks(predecessor.digest),
+        locks={
+            **_entry_locks(predecessor.digest),
+            **({"limits_sha256": limits.digest} if limits is not None else {}),
+        },
     )
     authorization = StageAuthorization(
         authorization_id=StageAuthorizationId.new(),
@@ -164,7 +178,7 @@ def _seal_stage_inputs(
     bootstrap_path = tmp_path / "bootstrap-receipt.json"
     conformance_path.write_bytes(report_bytes(conformance))
     bootstrap_path.write_bytes(bootstrap)
-    return {
+    paths = {
         "entry": str(entry_path),
         "predecessor": str(predecessor_path),
         "authorization": str(authorization_path),
@@ -172,9 +186,34 @@ def _seal_stage_inputs(
         "bootstrap": str(bootstrap_path),
         "output_root": str(tmp_path / "artifacts"),
     }
+    if limits is not None:
+        scenarios_path = tmp_path / "integration-scenarios.json"
+        limits_path = tmp_path / "integration-limits.json"
+        scenarios_path.write_bytes(
+            canonical_bytes(
+                {
+                    "scenario_ids": [
+                        str(ScenarioId.from_digest(canonical_digest({"scenario": index})))
+                        for index in range(8)
+                    ]
+                }
+            )
+        )
+        limits_path.write_bytes(
+            canonical_bytes(
+                {
+                    "ai_credit_cap": limits.ai_credit_cap,
+                    "usd_cap": limits.usd_cap,
+                    "per_run_tool_call_cap": limits.per_run_tool_call_cap,
+                }
+            )
+        )
+        paths["integration_scenarios"] = str(scenarios_path)
+        paths["integration_limits"] = str(limits_path)
+    return paths
 
 
-def _run(paths: dict[str, str], stage: str = "integration") -> int:
+def _run(paths: dict[str, str], stage: str = "integration", *extra: str) -> int:
     return main(
         [
             "run",
@@ -192,6 +231,7 @@ def _run(paths: dict[str, str], stage: str = "integration") -> int:
             paths["bootstrap"],
             "--output-root",
             paths["output_root"],
+            *extra,
         ]
     )
 
@@ -212,9 +252,16 @@ def test_authorized_integration_run_writes_complete_manifest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _clear_environment(monkeypatch)
-    paths = _seal_stage_inputs(tmp_path)
+    paths = _seal_stage_inputs(tmp_path, integration_inputs=True)
 
-    exit_code = _run(paths)
+    exit_code = _run(
+        paths,
+        "integration",
+        "--integration-scenarios",
+        paths["integration_scenarios"],
+        "--integration-limits",
+        paths["integration_limits"],
+    )
 
     assert exit_code == 0
     printed = json.loads(capsys.readouterr().out.strip())
@@ -229,10 +276,19 @@ def test_authorized_integration_run_writes_complete_manifest(
     assert document["protocol_sha256"] == HASH_A
     assert set(document["input_hashes"]) == {
         "authorization",
+        "integration_limits",
+        "integration_scenarios",
         "predecessor_exit",
         "stage_entry_bundle",
     }
-    assert set(document["output_hashes"]) == {"stage_authorization", "stage_entry_bundle"}
+    assert set(document["output_hashes"]) == {
+        "integration_plan",
+        "stage_authorization",
+        "stage_entry_bundle",
+    }
+    plans = list((Path(paths["output_root"]) / "stage-plans").glob("integration-*.json"))
+    assert len(plans) == 1
+    assert len(json.loads(plans[0].read_text(encoding="utf-8"))["runs"]) == 32
     _validate_manifest(document)
 
 
@@ -240,14 +296,95 @@ def test_run_replay_is_idempotent_single_append_only_manifest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _clear_environment(monkeypatch)
-    paths = _seal_stage_inputs(tmp_path)
+    paths = _seal_stage_inputs(tmp_path, integration_inputs=True)
 
-    assert _run(paths) == 0
+    command = (
+        "--integration-scenarios",
+        paths["integration_scenarios"],
+        "--integration-limits",
+        paths["integration_limits"],
+    )
+    assert _run(paths, "integration", *command) == 0
     first = _sole_manifest(paths)
-    assert _run(paths) == 0
+    assert _run(paths, "integration", *command) == 0
     second = _sole_manifest(paths)
 
     assert first == second
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        (),
+        ("--integration-scenarios", "integration_scenarios"),
+        ("--integration-limits", "integration_limits"),
+    ),
+)
+def test_integration_run_requires_complete_plan_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    arguments: tuple[str, ...],
+) -> None:
+    _clear_environment(monkeypatch)
+    paths = _seal_stage_inputs(tmp_path, integration_inputs=True)
+    command = tuple(
+        paths[value] if value in {"integration_scenarios", "integration_limits"} else value
+        for value in arguments
+    )
+
+    assert _run(paths, "integration", *command) == 2
+
+    manifest = _sole_manifest(paths)
+    assert json.loads(capsys.readouterr().out.strip()) == manifest
+    assert manifest["terminal_status"] == "refused"
+    assert manifest["error_code"] in {
+        "integration_plan_required",
+        "integration_limits_missing",
+        "integration_scenario_plan_missing",
+    }
+
+
+def test_installed_cli_refuses_missing_integration_plan_authority(tmp_path: Path) -> None:
+    paths = _seal_stage_inputs(tmp_path)
+    executable = shutil.which("memrelay-eval")
+    assert executable is not None
+    command = (
+        executable,
+        "run",
+        "--stage",
+        "integration",
+        "--entry-bundle",
+        paths["entry"],
+        "--predecessor-exit",
+        paths["predecessor"],
+        "--authorization",
+        paths["authorization"],
+        "--conformance-report",
+        paths["conformance"],
+        "--bootstrap-receipt",
+        paths["bootstrap"],
+        "--output-root",
+        paths["output_root"],
+    )
+
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {*CI_MARKERS, *AMBIENT_MARKERS}
+    }
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+    assert completed.returncode == 2
+    manifest = json.loads(completed.stdout)
+    assert manifest["error_code"] == "integration_plan_required"
+    assert manifest["terminal_status"] == "refused"
 
 
 @pytest.mark.parametrize("stage", ("integration", "pilot", "primary", "secondary"))
@@ -382,14 +519,24 @@ def test_manifest_publish_failure_still_emits_the_manifest_before_raising(
     from memrelay_eval.domain.errors import StageControlError
 
     def _boom(path: Path, data: bytes) -> None:
-        raise StageControlError("stage_command_manifest_publish_failed", (str(path),))
+        if path.parent.name == "commands":
+            raise StageControlError("stage_command_manifest_publish_failed", (str(path),))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
 
     monkeypatch.setattr(commands_module, "_write_immutable_stage_manifest", _boom)
     _clear_environment(monkeypatch)
-    paths = _seal_stage_inputs(tmp_path)
+    paths = _seal_stage_inputs(tmp_path, integration_inputs=True)
 
     with pytest.raises(StageControlError) as failure:
-        _run(paths)
+        _run(
+            paths,
+            "integration",
+            "--integration-scenarios",
+            paths["integration_scenarios"],
+            "--integration-limits",
+            paths["integration_limits"],
+        )
 
     assert failure.value.code == "stage_command_manifest_publish_failed"
     printed = json.loads(capsys.readouterr().out.strip())
