@@ -80,8 +80,11 @@ def _service(tmp_path, *, link_failure: bool = False):
     )
 
     class LinkFailingBackup(TerminalEvidenceBackup):
+        remaining_link_failures = int(link_failure)
+
         def _link_receipt(self, *args):  # type: ignore[no-untyped-def]
-            if link_failure:
+            if self.remaining_link_failures:
+                self.remaining_link_failures -= 1
                 raise BackupConformanceError("backup_receipt_link_failed")
             return super()._link_receipt(*args)
 
