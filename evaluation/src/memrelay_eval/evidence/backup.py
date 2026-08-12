@@ -262,7 +262,7 @@ class TerminalEvidenceBackup:
             )
             lock = _BackupLock(self.backup_root / ".memrelay-backup.lock")
             with lock:
-                self._verify_prior_generations()
+                self._verify_prior_generations(run_id, attempt_id)
                 started_at = _utc_now()
                 staging = self.backup_root / ".staging" / uuid.uuid4().hex
                 snapshot = staging / "ledger.sqlite"
@@ -338,8 +338,8 @@ class TerminalEvidenceBackup:
         _fsync_directory(generations)
         _verify_generation(destination, receipt)
 
-    def _verify_prior_generations(self) -> None:
-        """Refuse publication while any previously sealed backup generation is damaged."""
+    def _verify_prior_generations(self, run_id: RunId, attempt_id: AttemptId) -> None:
+        """Verify only the immutable prior generations scoped to this terminal attempt."""
 
         generations = self.backup_root / "generations"
         if not generations.exists():
@@ -348,7 +348,13 @@ class TerminalEvidenceBackup:
             if not candidate.is_dir() or candidate.is_symlink():
                 continue
             existing = _load_receipt(candidate)
-            _verify_generation(candidate, existing)
+            try:
+                receipt_run_id = RunId(existing.run_id)
+                receipt_attempt_id = AttemptId(existing.attempt_id)
+            except ValueError as error:
+                raise BackupConformanceError("backup_receipt_scope_malformed") from error
+            if receipt_run_id == run_id and receipt_attempt_id == attempt_id:
+                _verify_generation(candidate, existing)
 
     def _link_receipt(self, receipt: BackupReceipt, run_id: RunId, attempt_id: AttemptId) -> None:
         store = FilesystemArtifactStore(self.artifacts_root)
