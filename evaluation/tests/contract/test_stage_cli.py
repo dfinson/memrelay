@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -367,7 +368,18 @@ def test_installed_cli_refuses_missing_integration_plan_authority(tmp_path: Path
         paths["output_root"],
     )
 
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {*CI_MARKERS, *AMBIENT_MARKERS}
+    }
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
 
     assert completed.returncode == 2
     manifest = json.loads(completed.stdout)
