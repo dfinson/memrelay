@@ -262,7 +262,7 @@ class TerminalEvidenceBackup:
             )
             lock = _BackupLock(self.backup_root / ".memrelay-backup.lock")
             with lock:
-                self._verify_prior_attempt_generations(run_id, attempt_id)
+                self._verify_prior_generations()
                 started_at = _utc_now()
                 staging = self.backup_root / ".staging" / uuid.uuid4().hex
                 snapshot = staging / "ledger.sqlite"
@@ -338,8 +338,8 @@ class TerminalEvidenceBackup:
         _fsync_directory(generations)
         _verify_generation(destination, receipt)
 
-    def _verify_prior_attempt_generations(self, run_id: RunId, attempt_id: AttemptId) -> None:
-        """Refuse a retry if any earlier generation for this terminal attempt is damaged."""
+    def _verify_prior_generations(self) -> None:
+        """Refuse publication while any previously sealed backup generation is damaged."""
 
         generations = self.backup_root / "generations"
         if not generations.exists():
@@ -348,8 +348,7 @@ class TerminalEvidenceBackup:
             if not candidate.is_dir() or candidate.is_symlink():
                 continue
             existing = _load_receipt(candidate)
-            if existing.run_id == str(run_id) and existing.attempt_id == str(attempt_id):
-                _verify_generation(candidate, existing)
+            _verify_generation(candidate, existing)
 
     def _link_receipt(self, receipt: BackupReceipt, run_id: RunId, attempt_id: AttemptId) -> None:
         store = FilesystemArtifactStore(self.artifacts_root)
