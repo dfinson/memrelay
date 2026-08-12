@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
+import sys
 import uuid
 from argparse import Namespace
 from collections.abc import Awaitable, Callable
@@ -71,6 +73,22 @@ from memrelay_eval.domain.observation import (
     require_new_protocol,
 )
 from memrelay_eval.evidence.backup import preflight_backup_root
+from memrelay_eval.evidence.conformance import (
+    CONFORMANCE_LABEL,
+    ConformanceContext,
+    ProbeResult,
+    ProofRegistry,
+    build_bootstrap_receipt,
+    build_conformance_report,
+    load_bootstrap_receipt,
+    observed_probe_result,
+    provider_proof_registry,
+    report_bytes,
+    require_enrollment_conformance,
+    unpaid_proof_registry,
+    write_bootstrap_receipt,
+    write_conformance_report,
+)
 from memrelay_eval.evidence.manifest import (
     observation_qualification_manifest,
     stage_command_manifest,
@@ -223,6 +241,28 @@ def _run_enrollable_stage(args: Namespace) -> int:
         admission_entry = load_entry_bundle(entry_bytes)
         predecessor_exit = load_exit_bundle(predecessor_bytes)
         authorization = load_authorization(authorization_bytes)
+        report_path = getattr(args, "conformance_report", None)
+        if not report_path:
+            raise StageControlError("conformance_report_missing")
+        bootstrap_path = getattr(args, "bootstrap_receipt", None)
+        if not bootstrap_path:
+            raise StageControlError("bootstrap_receipt_missing")
+        try:
+            report_bytes_input = Path(report_path).read_bytes()
+            bootstrap_bytes_input = Path(bootstrap_path).read_bytes()
+        except OSError as error:
+            raise StageControlError("conformance_authority_unreadable") from error
+        # The initial paid stage must lock the complete conformance authority to
+        # its exact immutable inputs. Later stages still require the intact passed
+        # report, but link their own predecessor exit through Story 6.1 bundles.
+        try:
+            require_enrollment_conformance(
+                report_bytes_input,
+                bootstrap_data=bootstrap_bytes_input,
+                stage_locks=admission_entry.locks if stage == "integration" else None,
+            )
+        except ConformancePauseError as error:
+            raise StageControlError(error.code) from error
         runtime_lock_sha256 = admission_entry.locks["runtime_lock_sha256"]
         protocol_sha256 = admission_entry.locks["protocol_sha256"]
         authorize_stage_entry(
@@ -556,12 +596,268 @@ def bootstrap(
         else root / "collector" / DEFAULT_COLLECTOR_ARCHIVE_NAME
     )
     verification = telemetry_verifier(root, archive_path)
-    runtime_bootstrap(repository, root / "uv.lock")
+    runtime_lock = runtime_bootstrap(repository, root / "uv.lock")
+    if not isinstance(runtime_lock, dict):
+        runtime_lock = repository.read("runtime-lock.json")
+    if not isinstance(runtime_lock, dict):
+        raise ConformancePauseError(
+            "bootstrap_runtime_lock_missing", "runtime bootstrap produced no lock"
+        )
+    environment_sha256 = getattr(args, "environment_sha256", None)
+    protocol_sha256 = getattr(args, "protocol_sha256", None)
+    if not isinstance(environment_sha256, str):
+        environment_sha256 = sha256(
+            canonical_bytes(
+                {
+                    "implementation": sys.implementation.name,
+                    "python": tuple(sys.version_info[:3]),
+                    "platform": sys.platform,
+                }
+            )
+        ).hexdigest()
+    if not isinstance(protocol_sha256, str):
+        protocol_sha256 = sha256(
+            canonical_bytes(
+                {
+                    "bootstrap_protocol": "2.0.0",
+                    "runtime_lock": runtime_lock["lock_sha256"],
+                }
+            )
+        ).hexdigest()
+    telemetry_sha256 = getattr(getattr(verification, "evidence", None), "sha256", None)
+    if not isinstance(telemetry_sha256, str):
+        raise ConformancePauseError(
+            "bootstrap_telemetry_evidence_missing", "telemetry verification retained no evidence"
+        )
+    receipt = build_bootstrap_receipt(
+        mode=getattr(args, "mode", "provider_qualification"),
+        runtime_lock=runtime_lock,
+        input_hashes={
+            "collector_archive": sha256(archive_path.read_bytes()).hexdigest(),
+            "runtime_lock": str(runtime_lock["lock_sha256"]),
+            "uv_lock": sha256((root / "uv.lock").read_bytes()).hexdigest(),
+        },
+        output_hashes={
+            "backup_second_volume_preflight": sha256(
+                canonical_bytes(
+                    {
+                        "backup_root": str(backup_root),
+                        "artifact_root": str(root / "artifacts"),
+                    }
+                )
+            ).hexdigest(),
+            "telemetry_bootstrap": telemetry_sha256,
+        },
+        environment_sha256=environment_sha256,
+        protocol_sha256=protocol_sha256,
+        runtime_download_disabled=os.environ.get("COPILOT_SKIP_CLI_DOWNLOAD") == "1",
+    )
+    receipt_path = write_bootstrap_receipt(root / "artifacts", receipt)
     print(
         "Copilot runtime and telemetry substrate verified; "
-        f"telemetry evidence {verification.evidence.sha256} retained"
+        f"telemetry evidence {telemetry_sha256} retained; bootstrap receipt {receipt_path}"
     )
     return 0
+
+
+def conformance(
+    args: Namespace,
+    *,
+    proof_registry: ProofRegistry | None = None,
+    provider_probe: Callable[[str, ConformanceContext], ProbeResult] | None = None,
+) -> int:
+    """Execute the required proof registry under explicit unpaid or paid authority."""
+
+    from memrelay_eval.orchestration.planning import plan_offline
+
+    mode = getattr(args, "mode", "unpaid_ci")
+    root = Path(args.output_root)
+    catalog_path = Path(args.catalog)
+    stage_locks = _canonical_stage_locks(Path(args.stage_locks))
+    bootstrap_path = getattr(args, "bootstrap_receipt", None)
+    if not bootstrap_path:
+        raise ConformancePauseError(
+            "bootstrap_receipt_missing", "conformance requires an immutable bootstrap receipt"
+        )
+    try:
+        bootstrap_bytes = Path(bootstrap_path).read_bytes()
+    except OSError as error:
+        raise ConformancePauseError(
+            "bootstrap_receipt_unreadable", "bootstrap receipt cannot be read"
+        ) from error
+    bootstrap_document = load_bootstrap_receipt(bootstrap_bytes)
+    if (
+        bootstrap_document["mode"] != mode
+        or bootstrap_document["runtime_lock_sha256"] != stage_locks["runtime_lock_sha256"]
+        or bootstrap_document["protocol_sha256"] != stage_locks["protocol_sha256"]
+        or bootstrap_document["environment_sha256"] != stage_locks["environment_sha256"]
+    ):
+        raise ConformancePauseError(
+            "bootstrap_receipt_authority_conflict",
+            "bootstrap receipt does not bind this conformance environment",
+        )
+    if mode == "provider_qualification":
+        _require_provider_qualification_authorization(args)
+        registry = proof_registry or provider_proof_registry(
+            provider_probe or _official_provider_probe
+        )
+    elif mode == "unpaid_ci":
+        registry = proof_registry or unpaid_proof_registry()
+    else:
+        raise ConformancePauseError("conformance_mode_invalid", "invalid conformance mode")
+    catalog_hash = sha256(catalog_path.read_bytes()).hexdigest()
+    planning_root = root / f"unpaid-catalog-{catalog_hash}"
+    synthetic_catalog = planning_root / catalog_path.name
+    if not planning_root.exists():
+        shutil.copytree(catalog_path.parent, planning_root)
+    elif (
+        not synthetic_catalog.is_file()
+        or synthetic_catalog.read_bytes() != catalog_path.read_bytes()
+    ):
+        raise ConformancePauseError(
+            "unpaid_catalog_source_conflict",
+            "the retained synthetic catalog does not match the requested catalog",
+        )
+    result = plan_offline(
+        catalog_path=synthetic_catalog,
+        output_dir=planning_root / "generated",
+        manifest_path=planning_root / "plan-manifest.json",
+        lock_path=planning_root / "catalog-lock.json",
+    )
+    if result.terminal_status != "succeeded":
+        raise ConformancePauseError("unpaid_vertical_slice_failed", result.error_code or "unknown")
+    vertical_slice_hash = sha256(
+        canonical_bytes(
+            {
+                "catalog_input_hashes": dict(sorted(result.input_hashes.items())),
+                "catalog_output_hashes": dict(sorted(result.output_hashes.items())),
+                "manifest_ref": result.manifest_ref,
+                "protocol_id": result.protocol_id,
+            }
+        )
+    ).hexdigest()
+    evaluation_root = Path(__file__).parents[3]
+    context = ConformanceContext(
+        mode=mode,
+        evaluation_root=evaluation_root,
+        run_root=planning_root,
+        stage_locks=stage_locks,
+        bootstrap_receipt=bootstrap_document,
+    )
+    receipts = registry.execute(context)
+    report = build_conformance_report(
+        mode=mode,
+        stage_locks=stage_locks,
+        proof_receipts=receipts,
+        input_hashes={
+            "bootstrap_receipt_sha256": sha256(bootstrap_bytes).hexdigest(),
+            "catalog_to_report_sha256": vertical_slice_hash,
+            "catalog_yaml_sha256": catalog_hash,
+            "stage_locks_sha256": sha256(canonical_bytes(stage_locks)).hexdigest(),
+        },
+        bootstrap_receipt_sha256=sha256(bootstrap_bytes).hexdigest(),
+    )
+    path = write_conformance_report(root, report)
+    print(
+        canonical_bytes(
+            {
+                "artifact_type": "conformance_report_reference",
+                "evidence_label": CONFORMANCE_LABEL,
+                "path": str(path),
+                "report_id": report["report_id"],
+                "report_sha256": sha256(report_bytes(report)).hexdigest(),
+                "status": report["status"],
+            }
+        ).decode("utf-8")
+    )
+    return 0 if report["status"] == "passed" else 2
+
+
+def _require_provider_qualification_authorization(args: Namespace) -> None:
+    """Require an independently sealed, paid Story 6.1 authority before any SDK call."""
+
+    _reject_ci_paid_execution(dict(os.environ))
+    entry_path = getattr(args, "entry_bundle", None)
+    authorization_path = getattr(args, "authorization", None)
+    if not entry_path or not authorization_path:
+        raise StageControlError("provider_qualification_authorization_missing")
+    entry = load_entry_bundle(_read_stage_input(entry_path, "stage_entry_bundle_unreadable"))
+    authorization = load_authorization(
+        _read_stage_input(authorization_path, "stage_authorization_unreadable")
+    )
+    if not authorization.paid_execution:
+        raise StageControlError("provider_qualification_paid_authorization_required")
+    if (
+        authorization.stage_id != entry.stage_id
+        or authorization.stage_kind is not entry.stage_kind
+        or authorization.protocol_id != entry.protocol_id
+        or authorization.entry_bundle_sha256 != entry.digest
+        or authorization.envelope_sha256 != entry.envelope_sha256
+        or not authorization.is_current(datetime.now(UTC))
+    ):
+        raise StageControlError("provider_qualification_authorization_invalid")
+
+
+def _official_provider_probe(proof_id: str, context: ConformanceContext) -> ProbeResult:
+    """Cross the official SDK boundary only after explicit paid authorization."""
+
+    client = CopilotSdkClient()
+    if proof_id == "AUTH-COPILOT-SUBSCRIPTION":
+        subject = asyncio.run(client.authenticated_subscription_subject())
+        return observed_probe_result(
+            input_documents={"provider_probe": {"proof_id": proof_id, "mode": context.mode}},
+            output_documents={
+                "subscription_subject_sha256": sha256(subject.encode("utf-8")).hexdigest()
+            },
+            terminal="official_subscription_authenticated",
+        )
+    catalog = asyncio.run(client.archive_models())
+    if proof_id == "MODEL-CATALOG-SNAPSHOT":
+        return observed_probe_result(
+            input_documents={"provider_probe": {"proof_id": proof_id, "mode": context.mode}},
+            output_documents={"native_catalog": catalog.to_document()},
+            terminal="official_catalog_archived",
+        )
+    qualified, evidence = asyncio.run(
+        qualify_native_catalog(
+            catalog,
+            QualificationCaps(
+                credit_cap=float(getattr(context, "credit_cap", 1.0)),
+                token_cap=1_000,
+                active_seconds_cap=30.0,
+                wall_seconds_cap=60.0,
+            ),
+        )
+    )
+    return observed_probe_result(
+        input_documents={"provider_probe": {"proof_id": proof_id, "mode": context.mode}},
+        output_documents={
+            "qualification_evidence": evidence.to_document(),
+            "qualified_native_ids": tuple(item.native_id for item in qualified),
+        },
+        terminal="official_catalog_qualified",
+    )
+
+
+def _canonical_stage_locks(path: Path) -> dict[str, str]:
+    try:
+        data = path.read_bytes()
+        document = json.loads(data.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ConformancePauseError(
+            "conformance_stage_locks_unreadable", "conformance stage locks cannot be read"
+        ) from error
+    if not isinstance(document, dict) or canonical_bytes(document) != data:
+        raise ConformancePauseError(
+            "conformance_stage_locks_not_canonical", "conformance stage locks must be canonical"
+        )
+    if any(
+        not isinstance(key, str) or not isinstance(value, str) for key, value in document.items()
+    ):
+        raise ConformancePauseError(
+            "conformance_stage_locks_invalid", "conformance stage locks must map strings"
+        )
+    return dict(document)
 
 
 def lock_models(

@@ -2,12 +2,25 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
+from pathlib import Path
 
 from memrelay_eval.analysis.gates import CategoricalGateDecision
 from memrelay_eval.cli.main import main
 from memrelay_eval.domain.ids import ProtocolId, StageAuthorizationId, StageId
 from memrelay_eval.domain.policies import STAGE_ENTRY_LOCK_FIELDS
 from memrelay_eval.domain.states import StageKind, StageState
+from memrelay_eval.evidence.conformance import (
+    REQUIRED_PROOF_IDS,
+    ConformanceContext,
+    ConformanceProbe,
+    ProofRegistry,
+    bootstrap_receipt_bytes,
+    build_bootstrap_receipt,
+    build_conformance_report,
+    observed_probe_result,
+    report_bytes,
+)
 from memrelay_eval.orchestration.pilot import (
     FrozenPilotPlan,
     FrozenPowerPublication,
@@ -36,6 +49,53 @@ CI_MARKERS = (
     "TEAMCITY_VERSION",
     "CIRCLECI",
 )
+
+
+def _conformance_authorities(root: Path, locks: dict[str, str]) -> tuple[Path, Path]:
+    bootstrap = bootstrap_receipt_bytes(
+        build_bootstrap_receipt(
+            mode="unpaid_ci",
+            runtime_lock={"lock_sha256": locks["runtime_lock_sha256"]},
+            input_hashes={"runtime": HASH},
+            output_hashes={"telemetry": HASH},
+            environment_sha256=locks["environment_sha256"],
+            protocol_sha256=locks["protocol_sha256"],
+        )
+    )
+    registry = ProofRegistry(
+        tuple(
+            ConformanceProbe(
+                proof_id,
+                f"test/{proof_id}",
+                lambda _, proof_id=proof_id: observed_probe_result(
+                    input_documents={"proof": proof_id},
+                    output_documents={"observation": proof_id},
+                ),
+            )
+            for proof_id in REQUIRED_PROOF_IDS
+        )
+    )
+    receipts = registry.execute(
+        ConformanceContext(
+            mode="unpaid_ci",
+            evaluation_root=Path(__file__).parents[2],
+            run_root=root,
+            stage_locks=locks,
+            bootstrap_receipt={},
+        )
+    )
+    report = build_conformance_report(
+        mode="unpaid_ci",
+        stage_locks=locks,
+        proof_receipts=receipts,
+        input_hashes={"catalog_to_report_sha256": HASH},
+        bootstrap_receipt_sha256=sha256(bootstrap).hexdigest(),
+    )
+    report_path = root / "conformance-report.json"
+    bootstrap_path = root / "bootstrap-receipt.json"
+    report_path.write_bytes(report_bytes(report))
+    bootstrap_path.write_bytes(bootstrap)
+    return report_path, bootstrap_path
 
 
 def _pilot_plan(stage_id: StageId, protocol_id: ProtocolId) -> FrozenPilotPlan:
@@ -151,6 +211,7 @@ def test_pilot_entry_requires_sealed_128_unit_plan(monkeypatch, tmp_path, capsys
     entry_path.write_bytes(entry.bytes())
     predecessor_path.write_bytes(predecessor.bytes())
     authorization_path.write_bytes(authorization.bytes())
+    report_path, bootstrap_path = _conformance_authorities(tmp_path, entry.locks)
 
     assert (
         main(
@@ -164,6 +225,10 @@ def test_pilot_entry_requires_sealed_128_unit_plan(monkeypatch, tmp_path, capsys
                 str(predecessor_path),
                 "--authorization",
                 str(authorization_path),
+                "--conformance-report",
+                str(report_path),
+                "--bootstrap-receipt",
+                str(bootstrap_path),
                 "--output-root",
                 str(tmp_path / "artifacts"),
             ]
@@ -186,6 +251,10 @@ def test_pilot_entry_requires_sealed_128_unit_plan(monkeypatch, tmp_path, capsys
                 str(predecessor_path),
                 "--authorization",
                 str(authorization_path),
+                "--conformance-report",
+                str(report_path),
+                "--bootstrap-receipt",
+                str(bootstrap_path),
                 "--pilot-plan",
                 str(plan_path),
                 "--output-root",

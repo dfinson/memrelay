@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,17 @@ from memrelay_eval.cli.main import main
 from memrelay_eval.domain.ids import ProtocolId, StageAuthorizationId, StageId
 from memrelay_eval.domain.policies import STAGE_ENTRY_LOCK_FIELDS
 from memrelay_eval.domain.states import StageKind, StageState
+from memrelay_eval.evidence.conformance import (
+    REQUIRED_PROOF_IDS,
+    ConformanceContext,
+    ConformanceProbe,
+    ProofRegistry,
+    bootstrap_receipt_bytes,
+    build_bootstrap_receipt,
+    build_conformance_report,
+    observed_probe_result,
+    report_bytes,
+)
 from memrelay_eval.orchestration.stages import (
     StageAuthorization,
     StageEntryBundle,
@@ -68,6 +80,31 @@ def _accepted_predecessor() -> StageExitBundle:
     )
 
 
+def _observed_receipts(locks: dict[str, str]) -> tuple[object, ...]:
+    registry = ProofRegistry(
+        tuple(
+            ConformanceProbe(
+                proof_id,
+                f"test/{proof_id}",
+                lambda _, proof_id=proof_id: observed_probe_result(
+                    input_documents={"proof": proof_id},
+                    output_documents={"observation": proof_id},
+                ),
+            )
+            for proof_id in REQUIRED_PROOF_IDS
+        )
+    )
+    return registry.execute(
+        ConformanceContext(
+            mode="unpaid_ci",
+            evaluation_root=Path(__file__).parents[2],
+            run_root=Path(__file__).parent,
+            stage_locks=locks,
+            bootstrap_receipt={},
+        )
+    )
+
+
 def _seal_stage_inputs(
     tmp_path: Path,
     *,
@@ -106,10 +143,33 @@ def _seal_stage_inputs(
     entry_path.write_bytes(entry.bytes())
     predecessor_path.write_bytes(predecessor.bytes())
     authorization_path.write_bytes(authorization.bytes())
+    bootstrap = bootstrap_receipt_bytes(
+        build_bootstrap_receipt(
+            mode="unpaid_ci",
+            runtime_lock={"lock_sha256": entry.locks["runtime_lock_sha256"]},
+            input_hashes={"runtime": HASH_A},
+            output_hashes={"telemetry": HASH_A},
+            environment_sha256=entry.locks["environment_sha256"],
+            protocol_sha256=entry.locks["protocol_sha256"],
+        )
+    )
+    conformance = build_conformance_report(
+        mode="unpaid_ci",
+        stage_locks=entry.locks,
+        proof_receipts=_observed_receipts(entry.locks),  # type: ignore[arg-type]
+        input_hashes={"catalog_to_report_sha256": HASH_A},
+        bootstrap_receipt_sha256=sha256(bootstrap).hexdigest(),
+    )
+    conformance_path = tmp_path / "conformance-report.json"
+    bootstrap_path = tmp_path / "bootstrap-receipt.json"
+    conformance_path.write_bytes(report_bytes(conformance))
+    bootstrap_path.write_bytes(bootstrap)
     return {
         "entry": str(entry_path),
         "predecessor": str(predecessor_path),
         "authorization": str(authorization_path),
+        "conformance": str(conformance_path),
+        "bootstrap": str(bootstrap_path),
         "output_root": str(tmp_path / "artifacts"),
     }
 
@@ -126,6 +186,10 @@ def _run(paths: dict[str, str], stage: str = "integration") -> int:
             paths["predecessor"],
             "--authorization",
             paths["authorization"],
+            "--conformance-report",
+            paths["conformance"],
+            "--bootstrap-receipt",
+            paths["bootstrap"],
             "--output-root",
             paths["output_root"],
         ]
@@ -204,6 +268,32 @@ def test_missing_authority_refuses_before_enrollment_with_typed_status(
     assert document["error_code"] == "stage_inputs_incomplete"
     assert document["stage"] == stage
     _validate_manifest(document)
+
+
+def test_missing_conformance_report_refuses_before_integration_enrollment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _clear_environment(monkeypatch)
+    paths = _seal_stage_inputs(tmp_path)
+
+    exit_code = main(
+        [
+            "run",
+            "--stage",
+            "integration",
+            "--entry-bundle",
+            paths["entry"],
+            "--predecessor-exit",
+            paths["predecessor"],
+            "--authorization",
+            paths["authorization"],
+            "--output-root",
+            paths["output_root"],
+        ]
+    )
+
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out)["error_code"] == "conformance_report_missing"
 
 
 def test_rejected_predecessor_refuses_entry(
