@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["artifact_type", "control", "repository_id", "issuer_id", "authority_id", "policy_version", "proof_schema_version", "proof_version", "policy_sha256", "schema_sha256", "evidence_sha256", "authority_sha256", "observed_inputs_sha256", "observed_outputs_sha256", "failure_evidence_sha256", "observed_inputs", "observed_outputs", "failure_evidence", "valid_from", "valid_until", "revocation_generation", "status"],
+  "properties": {
+    "artifact_type": {"const": "dgr_proof"},
+    "repository_id": {"type": "string", "pattern": "^repository_[a-f0-9]{32}$"},
+    "policy_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "schema_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "authority_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "observed_inputs_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "observed_outputs_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "failure_evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "observed_inputs": {"type": "object"},
+    "observed_outputs": {"type": "object"},
+    "failure_evidence": {"type": "object"},
+    "status": {"enum": ["passed", "failed", "revoked"]}
+  }
+}

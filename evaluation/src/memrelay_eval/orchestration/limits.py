@@ -592,6 +592,8 @@ class CircuitBreakerAdmissionController:
         with self._lock:
             if self._state is not CircuitBreakerState.CLOSED:
                 raise StageControlError("circuit_breaker_resume_not_closed")
+            if self._trip_reason is CircuitBreakerReason.GOVERNANCE_REVOKED:
+                raise StageControlError("circuit_breaker_governance_revocation_terminal")
             if (
                 authorization.stage_id != self._stage_id
                 or authorization.reason is not self._trip_reason

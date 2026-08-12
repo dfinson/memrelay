@@ -234,14 +234,29 @@ class StageEntryBundle:
     protocol_id: ProtocolId
     predecessor_stage_kind: StageKind
     locks: Mapping[str, str]
+    dgr_bundle_sha256: str | None = None
+    cross_repository_plan_sha256: str | None = None
 
     def __post_init__(self) -> None:
         require_stage_entry_locks(self.locks)
         require_stage_predecessor(self.stage_kind, self.predecessor_stage_kind)
+        if self.stage_kind is StageKind.CROSS_REPOSITORY:
+            _require_sha256(
+                self.dgr_bundle_sha256,
+                "cross_repository_dgr_bundle_required",
+                "dgr_bundle_sha256",
+            )
+            _require_sha256(
+                self.cross_repository_plan_sha256,
+                "cross_repository_plan_required",
+                "cross_repository_plan_sha256",
+            )
+        elif self.dgr_bundle_sha256 is not None or self.cross_repository_plan_sha256 is not None:
+            raise StageControlError("cross_repository_binding_out_of_scope")
         object.__setattr__(self, "locks", types.MappingProxyType(dict(sorted(self.locks.items()))))
 
     def to_document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "schema_version": STAGE_BUNDLE_SCHEMA_VERSION,
             "artifact_type": "stage_entry_bundle",
             "stage_id": str(self.stage_id),
@@ -250,6 +265,10 @@ class StageEntryBundle:
             "predecessor_stage_kind": self.predecessor_stage_kind.value,
             "locks": {key: str(value) for key, value in self.locks.items()},
         }
+        if self.dgr_bundle_sha256 is not None:
+            document["dgr_bundle_sha256"] = self.dgr_bundle_sha256
+            document["cross_repository_plan_sha256"] = self.cross_repository_plan_sha256
+        return document
 
     @property
     def digest(self) -> str:
@@ -408,6 +427,14 @@ def load_entry_bundle(data: bytes) -> StageEntryBundle:
             protocol_id=ProtocolId(document["protocol_id"]),
             predecessor_stage_kind=StageKind(document["predecessor_stage_kind"]),
             locks={str(k): str(v) for k, v in dict(document["locks"]).items()},
+            dgr_bundle_sha256=(
+                str(document["dgr_bundle_sha256"]) if "dgr_bundle_sha256" in document else None
+            ),
+            cross_repository_plan_sha256=(
+                str(document["cross_repository_plan_sha256"])
+                if "cross_repository_plan_sha256" in document
+                else None
+            ),
         )
     except (KeyError, TypeError, ValueError) as error:
         raise StageControlError("stage_entry_bundle_corrupt") from error
@@ -529,7 +556,8 @@ def authorize_stage_entry(
     predecessor_exit: StageExitBundle | None,
     authorization: StageAuthorization,
     now: datetime,
-    cross_repository_qualified: bool = False,
+    dgr_bundle: object | None = None,
+    cross_repository_plan: object | None = None,
 ) -> None:
     """Refuse stage entry with a typed status before any enrollment.
 
@@ -549,8 +577,29 @@ def authorize_stage_entry(
         raise StageControlError("predecessor_exit_incomplete", (stage_kind.value,))
     if entry_bundle.locks["preceding_exit_sha256"] != predecessor_exit.digest:
         raise StageControlError("predecessor_exit_link_mismatch", (stage_kind.value,))
-    if stage_kind is StageKind.CROSS_REPOSITORY and not cross_repository_qualified:
-        raise StageControlError("cross_repository_qualification_required")
+    if stage_kind is StageKind.CROSS_REPOSITORY:
+        from memrelay_eval.domain.repositories import CrossRepositoryStagePlan
+        from memrelay_eval.evidence.governance import DgrBundle
+
+        if not isinstance(dgr_bundle, DgrBundle) or not isinstance(
+            cross_repository_plan, CrossRepositoryStagePlan
+        ):
+            raise StageControlError("cross_repository_qualification_required")
+        if (
+            entry_bundle.dgr_bundle_sha256 != dgr_bundle.digest
+            or entry_bundle.cross_repository_plan_sha256 != cross_repository_plan.digest
+            or cross_repository_plan.dgr_bundle_sha256 != dgr_bundle.digest
+            or {cluster.repository_id for cluster in cross_repository_plan.clusters}
+            != set(dgr_bundle.repository_ids)
+            or cross_repository_plan.protocol_sha256 != entry_bundle.locks["protocol_sha256"]
+            or cross_repository_plan.catalog_sha256 != entry_bundle.locks["catalog_sha256"]
+            or cross_repository_plan.model_sha256 != entry_bundle.locks["model_lock_sha256"]
+            or cross_repository_plan.environment_sha256 != entry_bundle.locks["environment_sha256"]
+            or cross_repository_plan.limits_sha256 != entry_bundle.locks["limits_sha256"]
+        ):
+            raise StageControlError("cross_repository_qualification_link_invalid")
+        if not dgr_bundle.is_current(now):
+            raise StageControlError("cross_repository_dgr_bundle_not_current")
     if (
         authorization.stage_id != entry_bundle.stage_id
         or authorization.protocol_id != entry_bundle.protocol_id

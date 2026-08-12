@@ -72,6 +72,7 @@ from memrelay_eval.domain.observation import (
     observation_contract_from_document,
     require_new_protocol,
 )
+from memrelay_eval.domain.repositories import load_cross_repository_stage_plan
 from memrelay_eval.evidence.backup import preflight_backup_root
 from memrelay_eval.evidence.conformance import (
     CONFORMANCE_LABEL,
@@ -89,6 +90,7 @@ from memrelay_eval.evidence.conformance import (
     write_bootstrap_receipt,
     write_conformance_report,
 )
+from memrelay_eval.evidence.governance import load_dgr_bundle
 from memrelay_eval.evidence.manifest import (
     observation_qualification_manifest,
     stage_command_manifest,
@@ -198,16 +200,102 @@ def run_stage(args: Namespace) -> int:
     """
 
     if args.stage == "cross-repo":
-        try:
-            refuse_cross_repository_stage()
-        except CrossRepositoryDeniedError as error:
-            print(f"execution denied: {error.reason}")
-            return 2
-        raise AssertionError("cross-repository execution must remain unavailable in evaluator v1")
+        if not (
+            getattr(args, "dgr_bundle", None)
+            and getattr(args, "cross_repository_plan", None)
+            and getattr(args, "primary_conclusion", None)
+        ):
+            try:
+                refuse_cross_repository_stage()
+            except CrossRepositoryDeniedError as error:
+                print(f"execution denied: {error.reason}")
+                return 2
+            raise AssertionError("cross-repository execution must remain unavailable without DG-R")
+        return _run_cross_repository_stage(args)
 
     if args.stage not in _ENROLLABLE_STAGE_CHOICES:
         raise ValueError("unsupported evaluator stage")
     return _run_enrollable_stage(args)
+
+
+def _run_cross_repository_stage(args: Namespace) -> int:
+    """Admit only the sealed DG-R, primary-evidence, exact-24 envelope."""
+
+    from memrelay_eval.domain.states import StageKind
+
+    stage = "cross-repo"
+    input_hashes: dict[str, str] = {}
+    output_hashes: dict[str, str] = {}
+    runtime_lock_sha256: str | None = None
+    protocol_sha256: str | None = None
+    error_code: str | None = None
+    terminal_status = "succeeded"
+    exit_code = 0
+    try:
+        _reject_ambient_stage_environment(dict(os.environ))
+        _reject_ci_paid_execution(dict(os.environ))
+        entry_path, predecessor_path, authorization_path = _require_stage_inputs(args)
+        paths = {
+            "authorization": authorization_path,
+            "dgr_bundle": args.dgr_bundle,
+            "cross_repository_plan": args.cross_repository_plan,
+            "predecessor_exit": predecessor_path,
+            "primary_conclusion": args.primary_conclusion,
+            "stage_entry_bundle": entry_path,
+        }
+        raw = {name: _read_stage_input(path, f"{name}_unreadable") for name, path in paths.items()}
+        input_hashes = {name: sha256(value).hexdigest() for name, value in raw.items()}
+        entry = load_entry_bundle(raw["stage_entry_bundle"])
+        predecessor = load_exit_bundle(raw["predecessor_exit"])
+        authorization = load_authorization(raw["authorization"])
+        dgr_bundle = load_dgr_bundle(raw["dgr_bundle"])
+        cross_plan = load_cross_repository_stage_plan(raw["cross_repository_plan"])
+        conclusion = load_primary_stage_conclusion(raw["primary_conclusion"])
+        runtime_lock_sha256 = entry.locks["runtime_lock_sha256"]
+        protocol_sha256 = entry.locks["protocol_sha256"]
+        if (
+            cross_plan.primary_conclusion_sha256 != conclusion.digest
+            or conclusion.reconciliation_sha256 != predecessor.reconciliation_sha256
+        ):
+            raise StageControlError("cross_repository_primary_evidence_link_invalid")
+        authorize_stage_entry(
+            stage_kind=StageKind.CROSS_REPOSITORY,
+            entry_bundle=entry,
+            predecessor_exit=predecessor,
+            authorization=authorization,
+            now=datetime.now(UTC),
+            dgr_bundle=dgr_bundle,
+            cross_repository_plan=cross_plan,
+        )
+        output_hashes = {
+            "cross_repository_plan": cross_plan.digest,
+            "dgr_bundle": dgr_bundle.digest,
+            "stage_authorization": authorization.digest,
+            "stage_entry_bundle": entry.digest,
+        }
+    except StageControlError as error:
+        error_code = error.code
+        terminal_status = "refused"
+        exit_code = 2
+
+    manifest = stage_command_manifest(
+        command="run",
+        stage=stage,
+        terminal_status=terminal_status,
+        exit_code=exit_code,
+        input_hashes=input_hashes,
+        output_hashes=output_hashes,
+        runtime_lock_sha256=runtime_lock_sha256,
+        protocol_sha256=protocol_sha256,
+        error_code=error_code,
+    )
+    digest = json.loads(manifest.decode("utf-8"))["digest"]
+    manifest_path = Path(args.output_root) / "commands" / f"run-{stage}-{digest}.json"
+    try:
+        _write_immutable_stage_manifest(manifest_path, manifest)
+    finally:
+        print(manifest.decode("utf-8"))
+    return exit_code
 
 
 def _run_enrollable_stage(args: Namespace) -> int:

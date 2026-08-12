@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import shutil
 import time
 from datetime import UTC, datetime
@@ -80,8 +81,11 @@ def _service(tmp_path, *, link_failure: bool = False):
     )
 
     class LinkFailingBackup(TerminalEvidenceBackup):
+        remaining_link_failures = int(link_failure)
+
         def _link_receipt(self, *args):  # type: ignore[no-untyped-def]
-            if link_failure:
+            if self.remaining_link_failures:
+                self.remaining_link_failures -= 1
                 raise BackupConformanceError("backup_receipt_link_failed")
             return super()._link_receipt(*args)
 
@@ -109,14 +113,62 @@ def test_partial_generation_never_becomes_a_valid_receipt(tmp_path) -> None:
         service.backup_terminal_run(run_id=run, attempt_id=attempt)
 
     generation = next((backup / "generations").iterdir())
-    next(
-        path
-        for path in generation.rglob("*")
-        if path.is_file() and path.name != "backup-receipt.json"
-    ).unlink()
+    _corrupt_generation(backup, generation.name)
     with pytest.raises(BackupConformanceError) as error:
         service.backup_terminal_run(run_id=run, attempt_id=attempt)
+    assert error.value.code in {
+        "backup_generation_incomplete",
+        "backup_stale_or_tampered_receipt",
+    }
+    ledger.close()
+
+
+def _corrupt_generation(backup: Path, generation_id: str) -> None:
+    generation = backup / "generations" / generation_id
+    receipt = backup_module._load_receipt(generation)
+    item = next(item for item in receipt.items if item["path"] != "ledger.sqlite")
+    (generation / str(item["path"])).unlink()
+
+
+def test_prior_generation_validation_is_scoped_to_run_and_attempt(tmp_path) -> None:
+    service, ledger, run_a, attempt_a, backup = _service(tmp_path)
+    receipt_a = service.backup_terminal_run(run_id=run_a, attempt_id=attempt_a)
+    attempt_a2 = AttemptId.new()
+    run_b, attempt_b = RunId.new(), AttemptId.new()
+    _corrupt_generation(backup, receipt_a.generation_id)
+
+    # A different attempt in the same run and a different run are not blocked by
+    # corruption outside their immutable receipt scope.
+    service._verify_prior_generations(run_a, attempt_a2)
+    service._verify_prior_generations(run_b, attempt_b)
+    with pytest.raises(BackupConformanceError) as error:
+        service._verify_prior_generations(run_a, attempt_a)
     assert error.value.code in {"backup_generation_incomplete", "backup_stale_or_tampered_receipt"}
+    ledger.close()
+
+
+def test_multiple_healthy_generations_permit_the_same_scoped_retry(tmp_path) -> None:
+    service, ledger, run, attempt, _backup = _service(tmp_path)
+    service.backup_terminal_run(run_id=run, attempt_id=attempt)
+    service.backup_terminal_run(run_id=run, attempt_id=attempt)
+
+    service._verify_prior_generations(run, attempt)
+    ledger.close()
+
+
+def test_malformed_prior_scope_metadata_fails_closed_without_scope_spoofing(tmp_path) -> None:
+    service, ledger, run, attempt, backup = _service(tmp_path)
+    receipt = service.backup_terminal_run(run_id=run, attempt_id=attempt)
+    receipt_path = backup / "generations" / receipt.generation_id / "backup-receipt.json"
+    document = json.loads(receipt_path.read_bytes())
+    document["attempt_id"] = "spoofed-attempt"
+    receipt_path.write_bytes(backup_module.canonical_json_bytes(document))
+    other_run, other_attempt = _seed(ledger)
+
+    with pytest.raises(BackupConformanceError) as error:
+        service.backup_terminal_run(run_id=other_run, attempt_id=other_attempt)
+
+    assert error.value.code == "backup_receipt_scope_malformed"
     ledger.close()
 
 

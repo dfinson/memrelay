@@ -137,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="ROLE:PATH",
         help="matching M1/M2 secondary authorization; repeat for each qualified role",
     )
+    run.add_argument(
+        "--dgr-bundle",
+        help="canonical immutable DG-R bundle required by --stage cross-repo",
+    )
+    run.add_argument(
+        "--cross-repository-plan",
+        help="canonical exact-24 repository-relation plan required by --stage cross-repo",
+    )
     run.set_defaults(handler=run_stage)
     pilot_gate = subcommands.add_parser(
         "pilot-gate",

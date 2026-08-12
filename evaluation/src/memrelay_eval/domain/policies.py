@@ -103,14 +103,15 @@ STAGE_ENTRY_LOCK_FIELDS: frozenset[str] = frozenset(
 _INDEPENDENT_AUTHORIZER_ROLES: frozenset[str] = frozenset({"operator", "scheduler"})
 
 # The enrollable stages the non-interactive ``run`` command drives through the
-# entry guard. Cross-repository is recognized but is denied before discovery by
-# the Story 7.3 deny-by-default authorization, so it is not enrolled here.
+# entry guard. Cross-repository requires the additional typed DG-R authority
+# and therefore cannot be admitted through an ordinary stage authorization.
 ENROLLABLE_STAGES: frozenset[StageKind] = frozenset(
     {
         StageKind.INTEGRATION,
         StageKind.PILOT,
         StageKind.PRIMARY,
         StageKind.SECONDARY,
+        StageKind.CROSS_REPOSITORY,
     }
 )
 
