@@ -1,6 +1,6 @@
 # Story 2.6: Run the Shipped Daemon and MCP Product Stratum
 
-Status: review
+Status: done
 
 ## Story
 

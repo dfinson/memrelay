@@ -1,6 +1,6 @@
 # Story 6.1: Seal Stage Bundles and Enforce the Stage CLI
 
-Status: review
+Status: done
 
 ## Story
 

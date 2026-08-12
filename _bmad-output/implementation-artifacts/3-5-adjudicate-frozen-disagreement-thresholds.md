@@ -1,6 +1,6 @@
 # Story 3.5: Adjudicate Frozen Disagreement Thresholds
 
-Status: ready-for-review
+Status: done
 
 ## Story
 

@@ -1,6 +1,6 @@
 # Story 4.6: Record Separate Quantity and Cost Ledgers
 
-Status: review
+Status: done
 
 ## Story
 

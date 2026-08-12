@@ -1,6 +1,6 @@
 # Story 5.2: Expose Read-Only DuckDB Analysis and Derivation Lineage
 
-Status: review
+Status: done
 
 ## Story
 

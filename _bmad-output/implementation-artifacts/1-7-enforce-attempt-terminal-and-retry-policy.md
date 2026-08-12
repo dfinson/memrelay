@@ -1,6 +1,6 @@
 # Story 1.7: Enforce Attempt Terminal and Retry Policy
 
-Status: review
+Status: done
 
 ## Story
 

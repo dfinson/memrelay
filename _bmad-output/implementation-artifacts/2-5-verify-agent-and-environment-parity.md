@@ -1,6 +1,6 @@
 # Story 2.5: Verify Agent and Environment Parity
 
-Status: review
+Status: done
 
 ## Story
 

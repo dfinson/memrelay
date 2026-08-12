@@ -1,6 +1,6 @@
 # Story 5.1: Materialize Reconciled Terminal Parquet
 
-Status: review
+Status: done
 
 ## Story
 

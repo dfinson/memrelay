@@ -1,6 +1,6 @@
 # Story 2.7: Run the Direct-Engine Upper-Bound Stratum
 
-Status: review
+Status: done
 
 ## Story
 

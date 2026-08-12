@@ -1,6 +1,6 @@
 # Story 3.4: Calibrate and Gate Panel Reliability
 
-Status: review
+Status: done
 
 ## Story
 

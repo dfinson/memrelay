@@ -1,6 +1,6 @@
 # Story 4.3: Capture Versioned Telemetry Semantics and Classes
 
-Status: review
+Status: done
 
 ## Story
 

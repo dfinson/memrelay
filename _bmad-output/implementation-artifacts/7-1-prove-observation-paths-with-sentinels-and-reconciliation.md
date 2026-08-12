@@ -1,6 +1,6 @@
 # Story 7.1: Prove Observation Paths with Sentinels and Reconciliation
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 

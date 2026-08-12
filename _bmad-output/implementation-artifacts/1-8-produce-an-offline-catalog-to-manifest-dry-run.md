@@ -4,7 +4,7 @@ baseline_commit: 205d087f84db73485bc2cd06d0f606d43cdc2155
 
 # Story 1.8: Produce an Offline Catalog-to-Manifest Dry Run
 
-Status: review
+Status: done
 
 ## Story
 

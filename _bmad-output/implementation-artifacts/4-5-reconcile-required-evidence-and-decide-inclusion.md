@@ -1,6 +1,6 @@
 # Story 4.5: Reconcile Required Evidence and Decide Inclusion
 
-Status: review
+Status: done
 
 ## Story
 

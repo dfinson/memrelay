@@ -1,6 +1,6 @@
 # Story 6.5: Run Primary and Secondary Model Stages
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
