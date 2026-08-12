@@ -1,6 +1,6 @@
 # Story 2.4: Execute Copilot Through Inspect Authority
 
-Status: review
+Status: done
 
 ## Story
 

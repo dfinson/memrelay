@@ -1,6 +1,6 @@
 # Story 6.6: Stop New Attempts with Evidence-Preserving Circuit Breakers
 
-Status: review
+Status: done
 
 ## Story
 

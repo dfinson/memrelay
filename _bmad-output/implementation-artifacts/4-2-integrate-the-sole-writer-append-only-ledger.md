@@ -1,6 +1,6 @@
 # Story 4.2: Integrate the Sole-Writer Append-Only Ledger
 
-Status: review
+Status: done
 
 ## Story
 

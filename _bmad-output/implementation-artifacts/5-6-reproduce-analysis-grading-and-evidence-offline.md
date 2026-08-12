@@ -1,6 +1,6 @@
 # Story 5.6: Reproduce Analysis, Grading, and Evidence Offline
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 

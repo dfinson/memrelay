@@ -1,6 +1,6 @@
 # Story 6.3: Run and Exit the 32-Run Integration Stage
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 

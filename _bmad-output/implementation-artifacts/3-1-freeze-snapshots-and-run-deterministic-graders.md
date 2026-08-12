@@ -1,6 +1,6 @@
 # Story 3.1: Freeze Snapshots and Run Deterministic Graders
 
-Status: review
+Status: done
 
 ## Story
 

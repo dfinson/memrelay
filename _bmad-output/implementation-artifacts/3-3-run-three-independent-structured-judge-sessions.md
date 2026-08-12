@@ -1,6 +1,6 @@
 # Story 3.3: Run Three Independent Structured Judge Sessions
 
-Status: review
+Status: done
 
 ## Story
 

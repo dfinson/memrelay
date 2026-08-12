@@ -1,6 +1,6 @@
 # Story 3.2: Generate Deterministic Blinded Evidence Views
 
-Status: review
+Status: done
 
 ## Story
 

@@ -1,6 +1,6 @@
 # Story 4.7: Reprice Retained Quantities Without Rewriting History
 
-Status: review
+Status: done
 
 ## Story
 

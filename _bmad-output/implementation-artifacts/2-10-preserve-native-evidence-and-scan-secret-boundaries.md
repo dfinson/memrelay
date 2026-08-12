@@ -1,6 +1,6 @@
 # Story 2.10: Preserve Native Evidence and Scan Secret Boundaries
 
-Status: review
+Status: done
 
 ## Story
 

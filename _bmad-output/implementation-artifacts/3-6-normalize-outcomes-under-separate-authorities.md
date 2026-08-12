@@ -1,6 +1,6 @@
 # Story 3.6: Normalize Outcomes Under Separate Authorities
 
-Status: review
+Status: done
 
 ## Story
 

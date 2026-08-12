@@ -1,6 +1,6 @@
 # Story 4.8: Back Up and Restore Terminal Evidence
 
-Status: review
+Status: done
 
 ## Story
 

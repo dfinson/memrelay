@@ -1,6 +1,6 @@
 # Story 7.2: Bind Release Evidence to Qualified Observation Scope
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 

@@ -1,6 +1,6 @@
 # Story 2.8: Restore Controlled Immutable Histories
 
-Status: review
+Status: done
 
 ## Story
 

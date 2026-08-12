@@ -1,6 +1,6 @@
 # Story 6.4: Run and Gate the 128-Unit Blinded Pilot
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 

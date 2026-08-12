@@ -1,6 +1,6 @@
 # Story 6.2: Gate Bootstrap and Conformance
 
-Status: review
+Status: done
 
 ## Story
 

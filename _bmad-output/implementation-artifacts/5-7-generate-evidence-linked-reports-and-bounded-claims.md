@@ -1,6 +1,6 @@
 # Story 5.7: Generate Evidence-Linked Reports and Bounded Claims
 
-Status: review
+Status: done
 
 ## Story
 

@@ -1,6 +1,6 @@
 # Story 4.4: Separate Provider and Credential-Domain Identities
 
-Status: review
+Status: done
 
 ## Story
 
