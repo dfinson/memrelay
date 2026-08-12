@@ -79,9 +79,7 @@ def _statement(
         ("indeterminate", "indeterminate"),
     ),
 )
-def test_fixture_terminal_statuses_are_typed(
-    terminal_status: str, expected: str
-) -> None:
+def test_fixture_terminal_statuses_are_typed(terminal_status: str, expected: str) -> None:
     result = map_release_evidence((_fixture(terminal_status=terminal_status),), (_statement(),))
 
     assert result.decisions[0].terminal_status == expected
@@ -175,11 +173,9 @@ def test_map_is_immutable_and_scope_conflicts_cannot_substitute() -> None:
 def test_release_map_satisfies_its_contract_schema() -> None:
     result = map_release_evidence((_fixture(),), (_statement(),))
     schema = json.loads(
-        (
-            Path(__file__).parents[3]
-            / "schemas"
-            / "release-evidence-map.schema.json"
-        ).read_text("utf-8")
+        (Path(__file__).parents[3] / "schemas" / "release-evidence-map.schema.json").read_text(
+            "utf-8"
+        )
     )
 
     jsonschema.Draft202012Validator(schema).validate(result.to_document())

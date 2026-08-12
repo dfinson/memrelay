@@ -28,9 +28,9 @@ def test_release_map_terminal_status_golden() -> None:
             replace(_statement(), statement_id="statement-1"),
             replace(
                 _statement(
-                scope=observation_scope,
-                statement_kind="observation_qualification",
-                statement="OBSERVATION-REPLAY-DELIVERY",
+                    scope=observation_scope,
+                    statement_kind="observation_qualification",
+                    statement="OBSERVATION-REPLAY-DELIVERY",
                 ),
                 statement_id="statement-2",
             ),

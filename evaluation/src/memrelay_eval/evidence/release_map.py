@@ -264,9 +264,7 @@ def map_release_evidence(
     for statement in statements:
         item = by_evidence_id.get(statement.scope.evidence_id)
         if item is None:
-            decisions.append(
-                _decision_without_evidence(statement, policy, "evidence_missing")
-            )
+            decisions.append(_decision_without_evidence(statement, policy, "evidence_missing"))
             continue
         decisions.append(_evaluate(item, statement, policy))
     return ReleaseEvidenceMap(policy, evidence, statements, tuple(decisions))
@@ -322,16 +320,21 @@ def release_evidence_map_from_document(value: Mapping[str, object]) -> ReleaseEv
 
 def _evidence_from_document(value: object) -> ReleaseEvidence:
     document = _mapping(value, "evidence")
-    if set(document) != {
-        "schema_version",
-        "artifact_type",
-        "scope",
-        "evidence_class",
-        "supported_statement",
-        "exclusions",
-        "terminal_status",
-        "gate_status",
-    } or document["schema_version"] != "1.0.0" or document["artifact_type"] != "release_evidence":
+    if (
+        set(document)
+        != {
+            "schema_version",
+            "artifact_type",
+            "scope",
+            "evidence_class",
+            "supported_statement",
+            "exclusions",
+            "terminal_status",
+            "gate_status",
+        }
+        or document["schema_version"] != "1.0.0"
+        or document["artifact_type"] != "release_evidence"
+    ):
         raise AnalysisError("release_evidence_map_evidence_invalid")
     return ReleaseEvidence(
         _scope_from_document(document["scope"]),
@@ -495,9 +498,7 @@ def _classification_status(
     raise AssertionError("validated statement kind")
 
 
-def _scope_conflicts(
-    evidence: ReleaseClaimScope, statement: ReleaseClaimScope
-) -> list[str]:
+def _scope_conflicts(evidence: ReleaseClaimScope, statement: ReleaseClaimScope) -> list[str]:
     fields = (
         "artifact_id",
         "artifact_sha256",
