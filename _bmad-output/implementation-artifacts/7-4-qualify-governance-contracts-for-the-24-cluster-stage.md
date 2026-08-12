@@ -157,6 +157,13 @@ GPT-5.6 Terra
 - Added synthetic/provider-free contract, fault, and cluster-ITT tests for every frozen
   TEA identifier. Focused governance and predecessor coverage passed (190 tests); the
   full evaluator run had one unrelated local SDK signature mismatch.
+- Independent review repair: DG-R controls now execute authority-owned behavioral
+  qualifications with proof-specific observed input, output, negative-path, policy,
+  schema, and authority hashes. The revoked restore control invokes the Story 4.8
+  quarantine restore drill, and a live revocation-generation authority trips the
+  Story 6.6 breaker during both pre-start and active-work races.
+- Post-repair validation: 220 focused governance/predecessor tests passed; the
+  dispatched exact-head pinned Python 3.13 CI workflow passed on Ubuntu and Windows.
 
 ### File List
 
