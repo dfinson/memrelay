@@ -1,0 +1,16 @@
+{
+  "artifact_type": "integration_exit",
+  "assigned_run_denominator": 32,
+  "evidence_classification": "infrastructure_conformance",
+  "exit_evidence_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "failure_codes": [
+    "integration_infrastructure_complete_below_30"
+  ],
+  "fresh_stage_required": true,
+  "infrastructure_complete_count": 29,
+  "infrastructure_complete_threshold": 30,
+  "no_favorable_subset": true,
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "schema_version": "1.0.0",
+  "status": "rejected"
+}

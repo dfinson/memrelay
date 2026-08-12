@@ -102,7 +102,15 @@ from memrelay_eval.orchestration.control import (
     reuse_or_reject_model_lock,
     write_model_lock,
 )
+from memrelay_eval.orchestration.integration import (
+    IntegrationExitStore,
+    authorize_integration_plan,
+    load_integration_exit_evidence,
+    load_integration_plan,
+    seal_integration_plan,
+)
 from memrelay_eval.orchestration.limits import (
+    IntegrationStageLimits,
     PrimaryModelStageLimits,
     SecondaryModelStageLimits,
 )
@@ -280,7 +288,31 @@ def _run_enrollable_stage(args: Namespace) -> int:
             pilot_plan = load_pilot_plan(pilot_plan_bytes)
             authorize_pilot_plan(admission_entry, pilot_plan)
             input_hashes["pilot_plan"] = sha256(pilot_plan_bytes).hexdigest()
+        if stage == "integration" and any(
+            (
+                getattr(args, "integration_plan", None),
+                getattr(args, "integration_scenarios", None),
+                getattr(args, "integration_limits", None),
+            )
+        ):
+            integration_plan_bytes = _seal_or_load_integration_plan(
+                args,
+                entry_bundle=admission_entry,
+                conformance_exit=predecessor_exit,
+                authorization=authorization,
+            )
+            integration_plan = load_integration_plan(integration_plan_bytes)
+            authorize_integration_plan(admission_entry, integration_plan)
+            input_hashes.update(_integration_input_hashes(args))
+            output_hashes["integration_plan"] = integration_plan.digest
+            _write_immutable_stage_manifest(
+                Path(args.output_root)
+                / "stage-plans"
+                / f"integration-{integration_plan.digest}.json",
+                integration_plan_bytes,
+            )
         output_hashes = {
+            **output_hashes,
             "stage_authorization": authorization.digest,
             "stage_entry_bundle": admission_entry.digest,
         }
@@ -378,6 +410,74 @@ def _seal_primary_plan(
         limits=_primary_limits(limits_document),
     )
     return plan.bytes()
+
+
+def _seal_or_load_integration_plan(
+    args: Namespace,
+    *,
+    entry_bundle: StageEntryBundle,
+    conformance_exit: StageExitBundle,
+    authorization: StageAuthorization,
+) -> bytes:
+    """Use a presealed integration plan or seal the only permitted 32-run envelope."""
+
+    plan_path = getattr(args, "integration_plan", None)
+    scenario_path = getattr(args, "integration_scenarios", None)
+    limits_path = getattr(args, "integration_limits", None)
+    if plan_path:
+        if scenario_path or limits_path:
+            raise StageControlError("integration_plan_input_conflict")
+        return _read_stage_input(plan_path, "integration_plan_unreadable")
+    scenario_document, _scenario_bytes = _required_canonical_json(
+        scenario_path, "integration_scenario_plan_missing"
+    )
+    limits_document, _limits_bytes = _required_canonical_json(
+        limits_path, "integration_limits_missing"
+    )
+    return seal_integration_plan(
+        entry_bundle=entry_bundle,
+        conformance_exit=conformance_exit,
+        authorization=authorization,
+        now=datetime.now(UTC),
+        scenario_ids=_integration_scenario_ids(scenario_document),
+        limits=_integration_limits(limits_document),
+    ).bytes()
+
+
+def _integration_scenario_ids(document: dict[str, object]):
+    from memrelay_eval.domain.ids import ScenarioId
+
+    values = document.get("scenario_ids")
+    if not isinstance(values, list):
+        raise StageControlError("integration_scenario_plan_invalid")
+    try:
+        return tuple(ScenarioId(value) for value in values)
+    except (TypeError, ValueError) as error:
+        raise StageControlError("integration_scenario_plan_invalid") from error
+
+
+def _integration_limits(document: dict[str, object]) -> IntegrationStageLimits:
+    try:
+        return IntegrationStageLimits(
+            ai_credit_cap=float(document["ai_credit_cap"]),
+            usd_cap=float(document["usd_cap"]),
+            per_run_tool_call_cap=int(document["per_run_tool_call_cap"]),
+        )
+    except (KeyError, TypeError, ValueError, StageControlError) as error:
+        raise StageControlError("integration_limits_invalid") from error
+
+
+def _integration_input_hashes(args: Namespace) -> dict[str, str]:
+    paths = {
+        "integration_plan": getattr(args, "integration_plan", None),
+        "integration_scenarios": getattr(args, "integration_scenarios", None),
+        "integration_limits": getattr(args, "integration_limits", None),
+    }
+    return {
+        name: sha256(_read_stage_input(path, f"{name}_unreadable")).hexdigest()
+        for name, path in paths.items()
+        if path
+    }
 
 
 def _seal_secondary_plan(args: Namespace, *, primary_exit: StageExitBundle) -> bytes:
@@ -568,6 +668,18 @@ def gate_pilot(args: Namespace) -> int:
     plan = load_pilot_plan(plan_bytes)
     evidence = load_pilot_exit_evidence(evidence_bytes)
     decision, _path, _outcome = PilotExitStore(Path(args.output_root)).gate(plan, evidence)
+    print(decision.bytes().decode("utf-8"))
+    return 0 if decision.status == "accepted" else 2
+
+
+def gate_integration(args: Namespace) -> int:
+    """Seal a whole-stage integration exit from reconciled, outcome-blind evidence."""
+
+    plan_bytes = _read_stage_input(args.integration_plan, "integration_plan_unreadable")
+    evidence_bytes = _read_stage_input(args.exit_evidence, "integration_exit_evidence_unreadable")
+    plan = load_integration_plan(plan_bytes)
+    evidence = load_integration_exit_evidence(evidence_bytes)
+    decision, _path, _outcome = IntegrationExitStore(Path(args.output_root)).gate(plan, evidence)
     print(decision.bytes().decode("utf-8"))
     return 0 if decision.status == "accepted" else 2
 

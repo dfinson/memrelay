@@ -19,6 +19,7 @@ from memrelay_eval.cli.commands import (
     bootstrap,
     compile_authored_catalog,
     conformance,
+    gate_integration,
     gate_pilot,
     lock_models,
     observation_conformance,
@@ -100,6 +101,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="sealed 128-unit blinded pilot plan; required when --stage pilot",
     )
     run.add_argument(
+        "--integration-plan",
+        dest="integration_plan",
+        help="sealed 32-run integration plan to bind before integration attempts start",
+    )
+    run.add_argument(
+        "--integration-scenarios",
+        dest="integration_scenarios",
+        help="canonical opaque eight-scenario input used only to seal an integration plan",
+    )
+    run.add_argument(
+        "--integration-limits",
+        dest="integration_limits",
+        help="canonical frozen integration paid-limit document used only to seal a plan",
+    )
+    run.add_argument(
         "--output-root",
         dest="output_root",
         default="artifacts",
@@ -147,6 +163,15 @@ def build_parser() -> argparse.ArgumentParser:
     pilot_gate.add_argument("--output-root", default="artifacts")
     _add_command_manifest_root(pilot_gate)
     pilot_gate.set_defaults(handler=gate_pilot, stage="pilot")
+    integration_gate = subcommands.add_parser(
+        "integration-gate",
+        help="seal an accepted or rejected 32-run integration exit from reconciled evidence",
+    )
+    integration_gate.add_argument("--integration-plan", required=True)
+    integration_gate.add_argument("--exit-evidence", required=True)
+    integration_gate.add_argument("--output-root", default="artifacts")
+    _add_command_manifest_root(integration_gate)
+    integration_gate.set_defaults(handler=gate_integration, stage="integration")
     bootstrap_parser = subcommands.add_parser(
         "bootstrap", help="explicitly verify and lock the official Copilot runtime"
     )
@@ -478,6 +503,7 @@ _LEGACY_MANIFESTED_COMMANDS = frozenset(
         "allocate-stochastic-rerun",
         "report",
         "pilot-gate",
+        "integration-gate",
     }
 )
 
@@ -504,6 +530,7 @@ _INPUT_PATH_FIELDS = {
     "allocate-stochastic-rerun": ("original_evidence_root",),
     "report": ("stage_evidence", "parquet_root"),
     "pilot-gate": ("pilot_plan", "exit_evidence"),
+    "integration-gate": ("integration_plan", "exit_evidence"),
 }
 
 _OUTPUT_PATH_FIELDS = {
@@ -522,6 +549,7 @@ _OUTPUT_PATH_FIELDS = {
     "allocate-stochastic-rerun": ("output_root",),
     "report": ("output_root",),
     "pilot-gate": ("output_root",),
+    "integration-gate": ("output_root",),
 }
 
 
