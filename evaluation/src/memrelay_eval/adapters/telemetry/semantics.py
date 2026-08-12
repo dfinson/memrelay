@@ -44,6 +44,10 @@ _SAFE_ATTRIBUTE_NAMES = frozenset(
         "artifact_sha256",
         "expected_count",
         "actual_count",
+        "sentinel_id",
+        "sentinel_sequence",
+        "observation_path",
+        "restart_epoch",
     }
 )
 GENAI_DEVELOPMENT_FIELD_MAP = {
@@ -53,6 +57,13 @@ GENAI_DEVELOPMENT_FIELD_MAP = {
     "gen_ai.usage.input_tokens": "memrelay.eval.genai.input_tokens",
     "gen_ai.usage.output_tokens": "memrelay.eval.genai.output_tokens",
 }
+OBSERVATION_SENTINEL_ATTRIBUTE_MAP = {
+    "sentinel_id": "opaque synthetic identifier",
+    "sentinel_sequence": "frozen expected order",
+    "observation_path": "configured product composition",
+    "restart_epoch": "capture restart epoch",
+}
+_SENTINEL_ID = re.compile(r"^sentinel_[a-f0-9]{32}$")
 
 
 class SpanClass(StrEnum):
@@ -286,7 +297,19 @@ def _validate_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
     for key, value in attributes.items():
         if key not in _SAFE_ATTRIBUTE_NAMES:
             raise TelemetryConformanceError("prohibited_or_unknown_telemetry_attribute")
-        if isinstance(value, (bool, int)) or (isinstance(value, float) and math.isfinite(value)):
+        if key in {"sentinel_sequence", "restart_epoch"}:
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TelemetryConformanceError("unsafe_telemetry_attribute_value", (key,))
+            safe[key] = value
+        elif key == "sentinel_id":
+            if not isinstance(value, str) or not _SENTINEL_ID.fullmatch(value):
+                raise TelemetryConformanceError("unsafe_telemetry_attribute_value", (key,))
+            safe[key] = value
+        elif key == "observation_path":
+            if value not in {"replay", "file_watch"}:
+                raise TelemetryConformanceError("unsafe_telemetry_attribute_value", (key,))
+            safe[key] = value
+        elif isinstance(value, (bool, int)) or (isinstance(value, float) and math.isfinite(value)):
             safe[key] = value
         elif key in {"status_code", "transport_status"} and isinstance(value, str):
             safe[key] = _require_code(value, key)

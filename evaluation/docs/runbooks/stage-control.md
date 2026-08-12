@@ -89,7 +89,8 @@ any unverified precondition: an open circuit breaker
 (`resume_circuit_breaker_open`), a stale authorization (`stale_authorization`),
 lock drift (`resume_lock_drift`), receipt conflict (`resume_receipt_conflict`),
 or ledger/CAS conflict (`resume_ledger_cas_conflict`). Terminal units are never
-rerun and no attempt is replaced; partial evidence is preserved untouched.
+rerun; started units are never restarted, and no attempt is replaced; partial
+evidence is preserved untouched.
 
 ## Monitor status (outcome-blind)
 

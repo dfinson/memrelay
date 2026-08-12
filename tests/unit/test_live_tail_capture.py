@@ -27,6 +27,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from memrelay.daemon.session_discovery import LiveTailCapture, SessionDiscoveryPoller
 from memrelay.providers.base import SessionRef
 
@@ -192,3 +194,53 @@ def test_lru_eviction_tears_down_live_tail(copilot_fixture: Path) -> None:
     for _sid, cap, src in made:
         assert cap._tail_task is None
         assert src.exited is True
+
+
+def test_live_tail_uses_real_replay_backstop_and_terminal_drain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The configured live-tail composition retains replay's final drain on shutdown."""
+    import memrelay.ingest.graphiti_sink as graphiti_sink
+
+    replay_calls: list[bool] = []
+    replay_started = asyncio.Event()
+    tail_started = asyncio.Event()
+
+    async def fake_run_observe(*_args: object, **kwargs: object) -> None:
+        replay_calls.append(bool(kwargs["final"]))
+        if not kwargs["final"]:
+            replay_started.set()
+
+    async def fake_run_tail(*_args: object, **kwargs: object) -> None:
+        tail_started.set()
+        stop = kwargs["stop"]
+        assert isinstance(stop, asyncio.Event)
+        await stop.wait()
+
+    monkeypatch.setattr(graphiti_sink, "run_observe", fake_run_observe)
+    monkeypatch.setattr(graphiti_sink, "run_tail", fake_run_tail)
+
+    async def scenario() -> LiveTailCapture:
+        async def parking_wait(_interval: float, stop: asyncio.Event) -> None:
+            await stop.wait()
+
+        capture = LiveTailCapture(
+            SessionRef(
+                session_id="sentinel_00000000000000000000000000000001",
+                agent_id="copilot",
+                path="C:/synthetic/events.jsonl",
+            ),
+            spool=RecordingSpool(),
+            provider=None,
+            config=None,
+            wait=parking_wait,
+        )
+        capture.start()
+        await asyncio.wait_for(replay_started.wait(), timeout=5.0)
+        await asyncio.wait_for(tail_started.wait(), timeout=5.0)
+        await capture.stop()
+        return capture
+
+    capture = asyncio.run(scenario())
+    assert replay_calls == [False, True]
+    assert capture._tail_task is None

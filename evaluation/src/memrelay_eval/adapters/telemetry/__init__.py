@@ -1,5 +1,6 @@
 """Local, versioned telemetry adapters."""
 
+from .observation import ObservationTelemetryEvidence, observation_telemetry_evidence
 from .otel import (
     CollectorArchive,
     CollectorLifecycle,
@@ -30,6 +31,7 @@ __all__ = [
     "CollectorLifecycle",
     "GENAI_MAP_VERSION",
     "OtelTelemetry",
+    "ObservationTelemetryEvidence",
     "REQUIRED_SPAN_CLASSES",
     "SpanClass",
     "TELEMETRY_SCHEMA_VERSION",
@@ -40,6 +42,7 @@ __all__ = [
     "TelemetrySpan",
     "persist_collector_verification",
     "persist_telemetry_evidence",
+    "observation_telemetry_evidence",
     "reconcile_telemetry",
     "telemetry_evidence_bytes",
     "verify_collector_archive",

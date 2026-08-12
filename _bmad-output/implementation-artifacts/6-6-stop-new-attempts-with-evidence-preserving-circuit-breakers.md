@@ -1,6 +1,6 @@
 # Story 6.6: Stop New Attempts with Evidence-Preserving Circuit Breakers
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -25,24 +25,24 @@ so that overruns stop enrollment without erasing active-attempt evidence.
 
 ## Tasks / Subtasks
 
-- [ ] Define frozen limit and breaker domain contracts (AC: 1)
-  - [ ] Model per-run/stage token, tool, AI-credit, framework input/output/USD, active/elapsed time, quota, throttle, model, infrastructure-failure, evidence-loss, authorization, and governance-revocation limits with units and source hashes.
-  - [ ] Append idempotent typed `open|tripped|draining|closed` records; breaker reset/closure never deletes the triggering event or authorizes promotion.
-- [ ] Enforce atomic start admission and stop propagation (AC: 1)
-  - [ ] Atomically reserve consumption and recheck the immutable per-run, stage, model, and provider envelopes immediately before each start receipt; deny and trip when the requested start would exceed a cap so concurrent workers cannot oversubscribe.
-  - [ ] On trip, reject all new starts, notify local control, and drain or cancel already-started attempts only under frozen policy.
-- [ ] Preserve active and terminal evidence (AC: 1, 2)
-  - [ ] Retain partial native/ledger/CAS/telemetry/cost/exposure/cleanup evidence and immutable terminal classifications in ITT.
-  - [ ] Never replace capped, failed, canceled, ambiguous-exposure, or post-exposure attempts; retain the one authorized pre-exposure retry rule.
-- [ ] Implement pause/resume and independent reauthorization (AC: 1-3)
-  - [ ] Repeated trip delivery is idempotent; resume verifies repair evidence, unchanged locks, reconciliation/backup health, remaining limits, and a new role-attributed authorization scoped to the same stage and breaker reason.
-  - [ ] Limit changes, model substitution, new provider, or threshold changes require a new protocol/stage; an old tripped stage cannot silently continue.
-- [ ] Add local monitoring, alerts, and runbooks (AC: 1-3)
-  - [ ] Expose remaining/consumed envelopes, breaker state/reason, active/draining counts, quota reset/throttle/model status, infrastructure-failure rate, evidence-loss rate, arm/order/concurrency balance, and backup/reconciliation lag.
-  - [ ] Alerts stop new work for each integrity/resource signal. Runbooks preserve evidence, isolate credentials if needed, drain/cancel, reconcile/backup, classify scope, independently authorize repair/resume or reject/rerun, and record provider-time strata.
-  - [ ] DG-R revocation immediately trips cross-repository work, preserves active evidence, and forbids fallback repositories or partial aggregate claims.
-- [ ] Add concurrency, fault, and accounting tests (AC: 1-3)
-  - [ ] Race starts against trips; test exact cap boundaries, duplicate signals, restart/resume, partial telemetry, model loss, quota reset, repeated infrastructure failure, evidence loss, and active cancellation.
+- [x] Define frozen limit and breaker domain contracts (AC: 1)
+  - [x] Model per-run/stage token, tool, AI-credit, framework input/output/USD, active/elapsed time, quota, throttle, model, infrastructure-failure, evidence-loss, authorization, and governance-revocation limits with units and source hashes.
+  - [x] Append idempotent typed `open|tripped|draining|closed` records; breaker reset/closure never deletes the triggering event or authorizes promotion.
+- [x] Enforce atomic start admission and stop propagation (AC: 1)
+  - [x] Atomically reserve consumption and recheck the immutable per-run, stage, model, and provider envelopes immediately before each start receipt; deny and trip when the requested start would exceed a cap so concurrent workers cannot oversubscribe.
+  - [x] On trip, reject all new starts, notify local control, and drain or cancel already-started attempts only under frozen policy.
+- [x] Preserve active and terminal evidence (AC: 1, 2)
+  - [x] Retain partial native/ledger/CAS/telemetry/cost/exposure/cleanup evidence and immutable terminal classifications in ITT.
+  - [x] Never replace capped, failed, canceled, ambiguous-exposure, or post-exposure attempts; retain the one authorized pre-exposure retry rule.
+- [x] Implement pause/resume and independent reauthorization (AC: 1-3)
+  - [x] Repeated trip delivery is idempotent; resume verifies repair evidence, unchanged locks, reconciliation/backup health, remaining limits, and a new role-attributed authorization scoped to the same stage and breaker reason.
+  - [x] Limit changes, model substitution, new provider, or threshold changes require a new protocol/stage; an old tripped stage cannot silently continue.
+- [x] Add local monitoring, alerts, and runbooks (AC: 1-3)
+  - [x] Expose remaining/consumed envelopes, breaker state/reason, active/draining counts, quota reset/throttle/model status, infrastructure-failure rate, evidence-loss rate, arm/order/concurrency balance, and backup/reconciliation lag.
+  - [x] Alerts stop new work for each integrity/resource signal. Runbooks preserve evidence, isolate credentials if needed, drain/cancel, reconcile/backup, classify scope, independently authorize repair/resume or reject/rerun, and record provider-time strata.
+  - [x] DG-R revocation immediately trips cross-repository work, preserves active evidence, and forbids fallback repositories or partial aggregate claims.
+- [x] Add concurrency, fault, and accounting tests (AC: 1-3)
+  - [x] Race starts against trips; test exact cap boundaries, duplicate signals, restart/resume, partial telemetry, model loss, quota reset, repeated infrastructure failure, evidence loss, and active cancellation.
 
 ## Dependencies
 
@@ -100,12 +100,27 @@ Current-checkout fact: no `evaluation/` tree exists and predecessor stories are 
 
 ### Agent Model Used
 
-To be recorded by the implementing dev agent.
+GPT-5.6 Terra
 
 ### Debug Log References
 
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created
+- Implemented source-hashed per-run and stage envelopes, append-only breaker records,
+  atomic admission-and-claim, drain-only cancellation, recovery-safe journal handling,
+  single-use independent resume authorization, and cross-repository revocation gating.
+- Added focused breaker, admission, resume, finite-headroom, paid-execution, and
+  revocation coverage plus the local operations runbook.
+- Full evaluator suite: 1441 passed, 46 skipped (platform-limited capabilities).
 
 ### File List
+
+- `evaluation/src/memrelay_eval/orchestration/limits.py`
+- `evaluation/src/memrelay_eval/orchestration/attempt.py`
+- `evaluation/src/memrelay_eval/orchestration/control.py`
+- `evaluation/src/memrelay_eval/orchestration/stages.py`
+- `evaluation/tests/unit/orchestration/test_limits.py`
+- `evaluation/tests/unit/domain/test_stage_policy.py`
+- `evaluation/tests/fault/test_governance_revocation.py`
+- `evaluation/docs/runbooks/circuit-breakers.md`

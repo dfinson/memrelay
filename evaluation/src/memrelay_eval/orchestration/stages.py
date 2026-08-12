@@ -354,6 +354,7 @@ class StageAuthorization:
         require_independent_authorizer_role(self.authorizer_role)
         if not isinstance(self.authorizer_id, str) or not self.authorizer_id:
             raise StageAuthorizationError("authorization_authorizer_invalid")
+        object.__setattr__(self, "paid_execution", _require_bool(self.paid_execution))
         _require_sha256(
             self.entry_bundle_sha256, "authorization_hash_invalid", "entry_bundle_sha256"
         )
@@ -561,6 +562,8 @@ def authorize_stage_entry(
     if authorization.envelope_sha256 != entry_bundle.envelope_sha256:
         raise StageAuthorizationError("authorization_envelope_mismatch")
     require_independent_authorizer_role(authorization.authorizer_role)
+    if not authorization.paid_execution:
+        raise StageAuthorizationError("paid_execution_required")
     if not authorization.is_current(now):
         raise StageAuthorizationError("stale_authorization")
 
@@ -571,6 +574,7 @@ class StageUnit:
 
     unit_id: str
     terminal: bool
+    started: bool = False
 
 
 _PRIMARY_FAMILIES = tuple(f"F{index}" for index in range(1, 9))
@@ -1263,7 +1267,7 @@ def plan_stage_resume(
         raise StageControlError("resume_receipt_conflict")
     if not ledger_cas_consistent:
         raise StageControlError("resume_ledger_cas_conflict")
-    return tuple(unit.unit_id for unit in units if not unit.terminal)
+    return tuple(unit.unit_id for unit in units if not unit.terminal and not unit.started)
 
 
 class StageBundleStore:
@@ -1287,6 +1291,17 @@ class StageBundleStore:
     def record_authorization(self, authorization: StageAuthorization) -> tuple[Path, str]:
         path = self._root / f"authorization-{authorization.authorization_id}.json"
         outcome = self._write_once(path, authorization.bytes(), "authorization_mutation")
+        return path, outcome
+
+    def append_circuit_breaker_record(self, record: object) -> tuple[Path, str]:
+        """Persist one typed breaker record without permitting journal replacement."""
+
+        from memrelay_eval.orchestration.limits import CircuitBreakerRecord
+
+        if not isinstance(record, CircuitBreakerRecord):
+            raise StageControlError("circuit_breaker_record_invalid")
+        path = self._root / "circuit-breakers" / f"{record.sequence:08d}-{record.digest}.json"
+        outcome = self._write_once(path, record.bytes(), "circuit_breaker_record_conflict")
         return path, outcome
 
     def _write_once(self, path: Path, data: bytes, conflict_code: str) -> str:
@@ -1332,6 +1347,7 @@ def stage_status_projection(
     evidence_loss_signals: int,
     authorization_valid_until: datetime,
     now: datetime,
+    circuit_breaker: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Project a treatment-neutral, outcome-blind local status document.
 
@@ -1357,12 +1373,14 @@ def stage_status_projection(
         "evidence_loss_signals": evidence_loss_signals,
         "authorization_expiry": _stage_utc(authorization_valid_until, "authorization_valid_until"),
         "authorization_expired": authorization_expired,
+        "circuit_breaker": dict(circuit_breaker) if circuit_breaker is not None else None,
         "pause_new_work": bool(
             exhausted
             or authorization_expired
             or evidence_loss_signals > 0
             or not throttle_healthy
             or not model_healthy
+            or (circuit_breaker is not None and circuit_breaker.get("state") not in {None, "open"})
         ),
     }
 
@@ -1375,6 +1393,10 @@ _STAGE_ALERTS: tuple[tuple[str, str], ...] = (
     ("stale_authorization", "pause new work until an operator or scheduler re-authorizes"),
     ("backup_failure", "pause paid work until backup and restore proof passes"),
     ("dg_r_revocation", "disable the entire cross-repository stage"),
+    (
+        "circuit_breaker",
+        "stop new attempts, retain partial evidence, then drain or cancel by policy",
+    ),
 )
 
 

@@ -65,6 +65,39 @@ decision through the control-owned ledger. The command emits a canonical
 manifest with input, output, runtime, and protocol hashes, and makes no
 provider or analysis calls.
 
+## Observation sentinel qualification
+
+Observation conformance qualifies `replay` and `file_watch` independently. Each
+path freezes hashes of the current discovery/capture implementation, semantic
+map, configuration, runtime lock, sentinel contract, and reconciliation policy
+before injecting opaque synthetic sentinels. Evidence retains only sentinel IDs,
+sequence numbers, timestamps, restart epochs, and boundary names across
+discovery, capture, pre-idempotency input, spool, daemon, MCP-visible graph,
+telemetry, manifests, terminal flush, and reconciliation. `file_watch` retains
+its own live-tail deliveries; replay-backstop delivery cannot qualify a tail
+that failed or emitted no sentinel.
+
+A post-idempotency duplicate, missing/gapped/reordered/delayed sentinel,
+restart-recovery failure, terminal-flush failure, authority conflict, or
+unreconciled telemetry fails that path and emits no completeness claim.
+Changing a hashed implementation or semantic-map input derives a new
+conformance hash and protocol version; previously written evidence retains its
+original binding. These decisions support only the named path's frozen sentinel
+contract, not efficacy, safety, economics, production-wide reliability, or
+cross-repository fitness.
+
+Use `memrelay-eval observation-conformance --input <canonical-contract.json>
+--product-config <product.toml> --runtime-lock <runtime-lock.json>
+--output-root <artifacts-root>` to retain one immutable decision and
+path-specific manifest. The canonical input contains only a prior serialized
+contract identity; boundary evidence and caller-selected decision times are
+rejected. At execution the evaluator rehashes the imported configured
+composition, semantic map, product configuration, and runtime-lock bytes,
+rejecting an identity mismatch with a typed drift failure. It then creates the
+frozen window and fresh sentinels, drives the real poller/capture composition,
+emits and collects value-safe telemetry from actually observed sentinels, and
+retains source/product-record timestamps without post-run relabeling.
+
 ## Terminal evidence backup and restore
 
 `memrelay-eval bootstrap --backup-root <second-volume-path>` proves a writable
