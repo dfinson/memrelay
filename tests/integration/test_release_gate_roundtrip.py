@@ -1,9 +1,9 @@
-"""THE pre-release trust gate: a fixture SESSION is observed, ingested, and later
-surfaced by the agent's ``memory_recall`` MCP tool against the real embedded graph (E11-S3 #19).
+"""The bounded ``EV-ROUNDTRIP-MCP`` / ``CL-PIPELINE-SEAM`` regression fixture: a SESSION is
+observed, ingested, and later surfaced by the agent's ``memory_recall`` MCP tool against the real
+embedded graph (E11-S3 #19).
 
-This is the single end-to-end flow that mirrors what a coding agent actually experiences in
-production, and it deliberately composes the two halves that ship on ``main`` but which no other
-test joins:
+This single end-to-end fixture composes the product components used for capture and agent-facing
+recall, joining the two halves that ship on ``main`` but which no other test joins:
 
 * ``test_observe_to_engine_e2e`` proves the *capture* half -- a raw Copilot ``events.jsonl`` ->
   ``run_observe`` -> durable :class:`Spool` -> :func:`default_ingester_factory` ingester -> real
@@ -13,13 +13,14 @@ test joins:
   ``DaemonClient`` -> daemon socket -> real engine -> ``mcp.format`` renderer -- but seeds the graph
   with ``memory_note`` (an agent explicitly writing a fact), **not** an observed session.
 
-The release gate is the join: a fixture **session** is driven through the real observe -> spool ->
-ingest path into the real engine, and then the ingested memory is recalled **through the daemon +
-MCP ``memory_recall`` tool surface** -- the exact seam the agent calls. A regression anywhere along
-capture, spooling, ingestion, namespace derivation, the daemon transport, or the map renderer breaks
-this one test, which is why it is the trust gate a human runs before cutting a release.
+The bounded pipeline-seam fixture is the join: a fixture **session** is driven through the real
+observe -> spool -> ingest path into the real engine, and then the ingested memory is recalled
+**through the daemon + MCP ``memory_recall`` tool surface** -- the exact seam the agent calls. A
+regression anywhere along capture, spooling, ingestion, namespace derivation, the daemon transport,
+or the map renderer breaks this test. It does not establish product efficacy, safety, economics,
+production completeness, generalization, or cross-repository fitness.
 
-Fully hermetic and keyless -- that IS the "runs headless" acceptance criterion. The deterministic
+Fully hermetic and keyless -- that is the "runs headless" acceptance criterion. The deterministic
 in-process mock LLM + the real/offline embedder from ``conftest.py`` stand in for extraction and
 embeddings, namespace is derived from a throwaway git repo's remote, and the graph is embedded
 Ladybug on ``tmp_path``: no network, no API key, no external database, never a real ``~/.memrelay``.
@@ -54,10 +55,11 @@ EXPECTED_REPO = "acme/widgets"
 #: anchor (the Zephyr/Quasar recipe from ``test_cross_agent_recall``) so the query resolves to it
 #: deterministically under BOTH the real fastembed embedder and the offline hashing fallback.
 FACT = (
-    "memrelay's pre-release trust is verified by the Larkspur roundtrip gate, and memrelay "
-    "records the Larkspur gate outcome in its embedded memory graph."
+    "memrelay's bounded Larkspur pipeline-seam fixture is EV-ROUNDTRIP-MCP supporting only "
+    "CL-PIPELINE-SEAM, and memrelay records the Larkspur fixture outcome in its embedded memory "
+    "graph."
 )
-RECALL_QUERY = "Larkspur roundtrip gate that verifies memrelay pre-release trust"
+RECALL_QUERY = "Larkspur bounded pipeline-seam fixture supporting CL-PIPELINE-SEAM"
 #: Entities the deterministic mock LLM "extracts" from ``FACT``.
 VOCAB = ["memrelay", "Larkspur"]
 
@@ -176,7 +178,7 @@ def test_release_gate_fixture_session_recalled_through_mcp(
             assert ingester.stats()["episodes_ingested"] == 1
             assert ingester.stats()["spool_pending"] == 0
 
-            # --- recall THROUGH the agent-facing daemon + MCP tool surface (the release gate) ---
+            # --- recall THROUGH the agent-facing daemon + MCP tool surface (the bounded seam) ---
             endpoint = resolve_endpoint(tmp_path)
             daemon = DaemonServer(engine, endpoint)
             await daemon.start()

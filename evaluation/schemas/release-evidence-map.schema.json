@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://memrelay.dev/evaluation/schemas/release-evidence-map-1.0.0.json",
+  "title": "Immutable release evidence map",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "artifact_type", "policy", "evidence", "statements", "decisions"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "artifact_type": {"const": "release_evidence_map"},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "artifact_type", "allow_unqualified"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "artifact_type": {"const": "release_map_policy"},
+        "allow_unqualified": {"type": "boolean"}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "statements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/statement"}
+    },
+    "decisions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/decision"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifact_id", "artifact_sha256", "evidence_id", "path", "observation_mode", "configuration_sha256", "source_implementation_sha256", "runtime_lock_sha256", "version_sha256", "protocol_sha256", "population_id", "model_id", "stratum", "history_regime", "endpoint_id", "estimand_id", "source_sha256", "derivation_sha256", "reconciliation_sha256", "gate_id", "gate_sha256"],
+      "properties": {
+        "artifact_id": {"type": "string", "minLength": 1},
+        "artifact_sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_id": {"type": "string", "minLength": 1},
+        "path": {"type": "string", "minLength": 1},
+        "observation_mode": {"type": "string", "minLength": 1},
+        "configuration_sha256": {"$ref": "#/$defs/sha256"},
+        "source_implementation_sha256": {"$ref": "#/$defs/sha256"},
+        "runtime_lock_sha256": {"$ref": "#/$defs/sha256"},
+        "version_sha256": {"$ref": "#/$defs/sha256"},
+        "protocol_sha256": {"$ref": "#/$defs/sha256"},
+        "population_id": {"type": "string", "minLength": 1},
+        "model_id": {"type": "string", "minLength": 1},
+        "stratum": {"enum": ["product", "engine"]},
+        "history_regime": {"type": "string", "minLength": 1},
+        "endpoint_id": {"type": "string", "minLength": 1},
+        "estimand_id": {"type": "string", "minLength": 1},
+        "source_sha256": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/sha256"}},
+        "derivation_sha256": {"$ref": "#/$defs/sha256"},
+        "reconciliation_sha256": {"$ref": "#/$defs/sha256"},
+        "gate_id": {"type": "string", "minLength": 1},
+        "gate_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "artifact_type", "scope", "evidence_class", "supported_statement", "exclusions", "terminal_status", "gate_status"],
+      "properties": {
+        "schema_version": {"const": "1.0.0"},
+        "artifact_type": {"const": "release_evidence"},
+        "scope": {"$ref": "#/$defs/scope"},
+        "evidence_class": {"enum": ["fixture_retrieval", "fixture_roundtrip", "observation_sentinel", "observational_characterization", "randomized_reconciled_product", "engine_upper_bound", "pilot"]},
+        "supported_statement": {"type": "string", "minLength": 1},
+        "exclusions": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+        "terminal_status": {"enum": ["passed", "null", "harmful", "indeterminate", "expired", "drifted", "conflicting", "missing", "blocked"]},
+        "gate_status": {"enum": ["passed", "failed", "expired", "drifted", "conflicting", "missing"]}
+      }
+    },
+    "statement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement_id", "statement_kind", "scope", "statement"],
+      "properties": {
+        "statement_id": {"type": "string", "minLength": 1},
+        "statement_kind": {"enum": ["bounded_product_regression", "observation_qualification", "confirmatory_shipped_product_efficacy", "randomized_treatment_estimand"]},
+        "scope": {"$ref": "#/$defs/scope"},
+        "statement": {"type": "string", "minLength": 1}
+      }
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statement_id", "evidence_id", "evidence_sha256", "terminal_status", "supports", "does_not_support", "reasons", "decision_sha256"],
+      "properties": {
+        "statement_id": {"type": "string", "minLength": 1},
+        "evidence_id": {"type": "string", "minLength": 1},
+        "evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "terminal_status": {"enum": ["positive", "null", "harmful", "indeterminate", "estimation-only", "unqualified", "blocked"]},
+        "supports": {"type": "string", "pattern": "^Supports only "},
+        "does_not_support": {"type": "string", "pattern": "^Does not support "},
+        "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "decision_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

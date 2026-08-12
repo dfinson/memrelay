@@ -45,7 +45,11 @@
     },
     "release_fitness": {"type": "object"},
     "reproduction_status": {"enum": ["verified", "pending", "failed"]},
-    "sections": {"type": "object"}
+    "sections": {"type": "object"},
+    "release_evidence_map": {
+      "type": "object",
+      "properties": {"artifact_type": {"const": "release_evidence_map"}}
+    }
   },
   "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
 }

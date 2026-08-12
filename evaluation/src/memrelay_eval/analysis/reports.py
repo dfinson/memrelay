@@ -11,6 +11,7 @@ from pathlib import Path
 
 from memrelay_eval.canonical import canonical_bytes, canonical_digest
 from memrelay_eval.domain.errors import AnalysisError
+from memrelay_eval.evidence.release_map import ReleaseEvidenceMap
 
 from .claims import SOURCE_KINDS, BoundedClaim, ClaimScope, bound_claim
 from .gates import (
@@ -180,6 +181,7 @@ class ReportInput:
     source_authority: SourceAuthority
     reproduction_status: str
     sections: Mapping[str, tuple[ReportItem, ...]]
+    release_evidence_map: ReleaseEvidenceMap | None = None
 
     def __post_init__(self) -> None:
         hashes = (
@@ -229,6 +231,17 @@ class ReportInput:
             for values in self.sections.values()
         ):
             raise AnalysisError("report_item_lineage_conflict")
+        if self.release_evidence_map is not None and any(
+            item.scope.protocol_sha256 != self.scope.protocol_sha256
+            or item.scope.population_id != self.scope.population_id
+            or item.scope.model_id != self.scope.model_id
+            or item.scope.stratum != self.scope.stratum
+            or item.scope.history_regime != self.scope.history_regime
+            or item.scope.source_sha256 != self.scope.source_sha256
+            or item.scope.derivation_sha256 != self.scope.derivation_sha256
+            for item in self.release_evidence_map.evidence
+        ):
+            raise AnalysisError("report_release_evidence_scope_conflict")
 
     @property
     def release_fitness(self) -> ReleaseFitnessDecision:
@@ -267,7 +280,7 @@ class ReportInput:
         return canonical_digest(self.to_document())
 
     def to_document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "schema_version": "1.0.0",
             "artifact_type": "frozen_report_input",
             "report_id": self.report_id,
@@ -301,6 +314,9 @@ class ReportInput:
             },
             "release_fitness": self.release_fitness.to_document(),
         }
+        if self.release_evidence_map is not None:
+            document["release_evidence_map"] = self.release_evidence_map.to_document()
+        return document
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,7 +339,7 @@ class EvidenceLinkedReport:
         return canonical_digest(self.to_document())
 
     def to_document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "schema_version": "1.0.0",
             "artifact_type": "evidence_linked_report",
             "report_input_sha256": self.report_input.input_sha256,
@@ -354,6 +370,9 @@ class EvidenceLinkedReport:
             "claims": [item.to_document() for item in self.claims],
             "release_fitness": self.report_input.release_fitness.to_document(),
         }
+        if self.report_input.release_evidence_map is not None:
+            document["release_evidence_map"] = self.report_input.release_evidence_map.to_document()
+        return document
 
 
 def render_report(report_input: ReportInput) -> EvidenceLinkedReport:

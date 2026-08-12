@@ -22,6 +22,14 @@ SOURCE_KINDS = frozenset(
         "pilot",
     }
 )
+RELEASE_STATEMENT_KINDS = frozenset(
+    {
+        "bounded_product_regression",
+        "observation_qualification",
+        "confirmatory_shipped_product_efficacy",
+        "randomized_treatment_estimand",
+    }
+)
 _PROHIBITED_LANGUAGE = (
     "safe",
     "zero risk",
@@ -88,6 +96,104 @@ class ClaimScope:
             "source_sha256": sorted(self.source_sha256),
             "derivation_sha256": self.derivation_sha256,
             "evidence_ids": sorted(self.evidence_ids),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseClaimScope:
+    """Exact, privacy-preserving scope used to bind release evidence to one statement.
+
+    This is deliberately stricter than ``ClaimScope``.  Story 5.7 claim scope
+    remains the authority for statistical decisions; this extension prevents
+    release evidence from being reused across configured product paths.
+    """
+
+    artifact_id: str
+    artifact_sha256: str
+    evidence_id: str
+    path: str
+    observation_mode: str
+    configuration_sha256: str
+    source_implementation_sha256: str
+    runtime_lock_sha256: str
+    version_sha256: str
+    protocol_sha256: str
+    population_id: str
+    model_id: str
+    stratum: str
+    history_regime: str
+    endpoint_id: str
+    estimand_id: str
+    source_sha256: tuple[str, ...]
+    derivation_sha256: str
+    reconciliation_sha256: str
+    gate_id: str
+    gate_sha256: str
+
+    def __post_init__(self) -> None:
+        hashes = (
+            self.artifact_sha256,
+            self.configuration_sha256,
+            self.source_implementation_sha256,
+            self.runtime_lock_sha256,
+            self.version_sha256,
+            self.protocol_sha256,
+            self.derivation_sha256,
+            self.reconciliation_sha256,
+            self.gate_sha256,
+        )
+        if not all(_SHA256.fullmatch(value) for value in hashes):
+            raise AnalysisError("release_claim_scope_lineage_invalid")
+        source = tuple(sorted(set(self.source_sha256)))
+        if not source or not all(_SHA256.fullmatch(value) for value in source):
+            raise AnalysisError("release_claim_scope_source_missing")
+        if self.stratum not in {"product", "engine"}:
+            raise AnalysisError("release_claim_scope_stratum_invalid")
+        if not all(
+            isinstance(value, str) and value
+            for value in (
+                self.artifact_id,
+                self.evidence_id,
+                self.path,
+                self.observation_mode,
+                self.population_id,
+                self.model_id,
+                self.history_regime,
+                self.endpoint_id,
+                self.estimand_id,
+                self.gate_id,
+            )
+        ):
+            raise AnalysisError("release_claim_scope_dimension_missing")
+        object.__setattr__(self, "source_sha256", source)
+
+    @property
+    def scope_sha256(self) -> str:
+        return canonical_digest(self.to_document())
+
+    def to_document(self) -> dict[str, object]:
+        return {
+            "artifact_id": self.artifact_id,
+            "artifact_sha256": self.artifact_sha256,
+            "evidence_id": self.evidence_id,
+            "path": self.path,
+            "observation_mode": self.observation_mode,
+            "configuration_sha256": self.configuration_sha256,
+            "source_implementation_sha256": self.source_implementation_sha256,
+            "runtime_lock_sha256": self.runtime_lock_sha256,
+            "version_sha256": self.version_sha256,
+            "protocol_sha256": self.protocol_sha256,
+            "population_id": self.population_id,
+            "model_id": self.model_id,
+            "stratum": self.stratum,
+            "history_regime": self.history_regime,
+            "endpoint_id": self.endpoint_id,
+            "estimand_id": self.estimand_id,
+            "source_sha256": list(self.source_sha256),
+            "derivation_sha256": self.derivation_sha256,
+            "reconciliation_sha256": self.reconciliation_sha256,
+            "gate_id": self.gate_id,
+            "gate_sha256": self.gate_sha256,
         }
 
 

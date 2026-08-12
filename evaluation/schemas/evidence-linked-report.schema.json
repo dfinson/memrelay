@@ -33,7 +33,11 @@
     "input_hashes": {"type": "object"},
     "sections": {"type": "object"},
     "claims": {"type": "array", "minItems": 1},
-    "release_fitness": {"type": "object"}
+    "release_fitness": {"type": "object"},
+    "release_evidence_map": {
+      "type": "object",
+      "properties": {"artifact_type": {"const": "release_evidence_map"}}
+    }
   },
   "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
 }

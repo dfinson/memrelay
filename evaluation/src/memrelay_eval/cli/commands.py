@@ -93,6 +93,7 @@ from memrelay_eval.evidence.manifest import (
     observation_qualification_manifest,
     stage_command_manifest,
 )
+from memrelay_eval.evidence.release_map import release_evidence_map_from_document
 from memrelay_eval.orchestration.configuration import (
     load_evaluator_toml,
     resolve_effective_configuration,
@@ -1563,6 +1564,11 @@ def _canonical_report_input(data: bytes) -> ReportInput:
             )
             for name, values in document["sections"].items()
         }
+        release_evidence_map = (
+            None
+            if "release_evidence_map" not in document
+            else release_evidence_map_from_document(document["release_evidence_map"])
+        )
         result = ReportInput(
             report_id=document["report_id"],
             stage=document["stage"],
@@ -1588,6 +1594,7 @@ def _canonical_report_input(data: bytes) -> ReportInput:
             source_authority=source_authority,
             reproduction_status=document["reproduction_status"],
             sections=sections,
+            release_evidence_map=release_evidence_map,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise AnalysisError("report_input_schema_invalid") from error

@@ -163,10 +163,34 @@ jobs:
           fi
           echo "release tag matches the built version ($meta_version); publish may proceed."
 
+  bounded-release-gate:
+    name: bounded pipeline-seam gate (hermetic, checked-out source)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # This gate intentionally runs from a checkout: the fixture exercises the source-level
+      # observe -> spool -> daemon -> MCP seam, which install-verify cannot cover by design.
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install source with test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run the bounded release gate
+        run: python -m pytest tests/integration/test_release_gate_roundtrip.py -q
+
   publish-testpypi:
     name: publish to TestPyPI (dry-run rehearsal)
     if: github.event_name == 'workflow_dispatch' && inputs.testpypi
-    needs: [build, install-verify]
+    needs: [build, install-verify, bounded-release-gate]
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
@@ -186,7 +210,7 @@ jobs:
   publish-pypi:
     name: publish to PyPI
     if: github.event_name == 'release'
-    needs: [build, install-verify]
+    needs: [build, install-verify, bounded-release-gate]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

@@ -68,14 +68,19 @@ def test_release_workflow_defines_release_gated_tag_guard() -> None:
 
 
 def test_publish_is_gated_on_the_job_that_carries_the_guard() -> None:
-    """``publish-pypi`` must stay downstream of ``install-verify`` (which hosts the guard), so a
-    failed guard blocks the real PyPI publish before it can run."""
+    """Both publication jobs must remain downstream of every release gate."""
     text = _release_yml()
 
-    # The guard lives in install-verify; the publish jobs `needs` it, so publish is gated.
-    assert "needs: [build, install-verify]" in text, (
-        "publish jobs must `needs` install-verify so the tag guard gates publish"
-    )
+    # The tag guard lives in install-verify and the bounded fixture gate runs from checked-out
+    # source; either failure must block both TestPyPI and PyPI publication.
+    for job_name in ("publish-testpypi", "publish-pypi"):
+        job = re.search(
+            rf"\n  {re.escape(job_name)}:\n.*?(?=\n  [\w-]+:|\Z)", text, flags=re.DOTALL
+        )
+        assert job is not None, f"{job_name} job is missing"
+        assert "needs: [build, install-verify, bounded-release-gate]" in job.group(0), (
+            f"{job_name} must need install-verify and bounded-release-gate"
+        )
     # The guard step sits inside install-verify, ahead of the first publish job.
     install_verify = text.find("\n  install-verify:")
     guard = text.find(GUARD_STEP_NAME)
